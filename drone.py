@@ -19,6 +19,9 @@ from RPIO import PWM
 import RPIO
 import subprocess
 from datetime import datetime
+import shutil
+import ctypes
+from ctypes.util import find_library
 
 ############################################################################################
 #
@@ -1098,9 +1101,26 @@ def CleanShutdown():
 	if shoot_video:
 		video.send_signal(signal.SIGINT)
 
+	#-----------------------------------------------------------------------------------
+	# Copy logs from /dev/shm (shared / virtual memory) to the Logs directory.
+	#-----------------------------------------------------------------------------------
+	now = datetime.now()
+	now_string = now.strftime("%y%m%d-%H:%M:%S")
+	log_file_name = "dronestats" + now_string + ".csv"
+	shutil.move("/dev/shm/dronelogs", log_file_name)
+
+	#-----------------------------------------------------------------------------------
+	# Clean up PWM / GPIO
+	#-----------------------------------------------------------------------------------
 	PWM.cleanup()
 	RPIO.output(RPIO_STATUS_SOUNDER, RPIO.LOW)
 	RPIO.cleanup()
+
+	#-----------------------------------------------------------------------------------
+	# Unlock memory we've used from RAM
+	#-----------------------------------------------------------------------------------
+	munlockall()
+
 	sys.exit(0)
 
 ############################################################################################
@@ -1123,6 +1143,23 @@ def SignalHandler(signal, frame):
 # Main
 #
 ############################################################################################
+MCL_CURRENT = 1
+MCL_FUTURE  = 2
+
+def mlockall(flags=MCL_CURRENT|MCL_FUTURE):
+        result = libc.mlockall(flags)
+        if result != 0:
+                raise Exception("cannot lock memmory, errno=%s" % ctypes.get_errno())
+
+def munlockall():
+        result = libc.munlockall()
+        if result != 0:
+                raise Exception("cannot lock memmory, errno=%s" % ctypes.get_errno())
+
+
+libc_name = ctypes.util.find_library("c")
+libc = ctypes.CDLL(libc_name, use_errno=True)
+mlockall()
 
 G_FORCE = 9.80665
 
@@ -1178,7 +1215,7 @@ logger.setLevel(logging.INFO)
 #-------------------------------------------------------------------------------------------
 # Create file and console logger handlers
 #-------------------------------------------------------------------------------------------
-file_handler = logging.FileHandler('dronestats.csv', 'w')
+file_handler = logging.FileHandler("/dev/shm/dronelogs", 'w')
 file_handler.setLevel(logging.WARNING)
 
 console_handler = logging.StreamHandler()
@@ -1229,8 +1266,8 @@ if test_drone:
 	#-------------------------------------------------------------------------------------------
 	# The vertical speed controls stable rise / fall rate in the z direction
 	#-------------------------------------------------------------------------------------------
-	PID_VERT_SPEED_P_GAIN = vsp_gain  # 150 default guess based on stats
-	PID_VERT_SPEED_I_GAIN = vsi_gain  # 200 default guess base don P/I ratio that work
+	PID_VERT_SPEED_P_GAIN = vsp_gain  # 175 default guess based on testing - may well still go up?
+	PID_VERT_SPEED_I_GAIN = vsi_gain  # 150 default guess base don P/I ratio that work
 	PID_VERT_SPEED_D_GAIN = vsd_gain  # 0.1 default guess based on stats
 
 	#-------------------------------------------------------------------------------------------
@@ -1250,9 +1287,9 @@ if test_drone:
 	#-------------------------------------------------------------------------------------------
 	# The YAW PID controls rotation about the Z-axis
 	#-------------------------------------------------------------------------------------------
-	PID_YAW_RATE_P_GAIN = 2.5         # 0 yaw value proven in test
-	PID_YAW_RATE_I_GAIN = 4.0         # 0 yaw yalue proven in test
-	PID_YAW_RATE_D_GAIN = 0.12        # 0 yaw value proven in test
+	PID_YAW_RATE_P_GAIN = 2.5
+	PID_YAW_RATE_I_GAIN = 4.0
+	PID_YAW_RATE_D_GAIN = 0.12
 
 	#-------------------------------------------------------------------------------------------
 	# The vertical acceleration controls rise / fall acceleration in the z direction
@@ -1451,14 +1488,18 @@ for blade in blade_list:
 CountdownBeep(1)
 
 #-------------------------------------------------------------------------------------------
-# Start up the video camera if required - this runs from take-off through to shutdown automatically
+# Start up the video camera if required - this runs from take-off through to shutdown automatically.
+# Run it in its own process group so that Ctrl-C for drone doesn't get through and stop the video
 #-------------------------------------------------------------------------------------------
+def Daemonize():
+	os.setpgrp()
+
 if shoot_video:
 	now = datetime.now()
 	now_string = now.strftime("%y%m%d-%H:%M:%S")
-	video = subprocess.Popen(["raspivid", "-rot", "180", "-o", "/home/pi/Videos/dronevid_" + now_string + ".h264", "-n", "-t", "0", "&"])
+	video = subprocess.Popen(["raspivid", "-rot", "180", "-w", "1280", "-h", "720", "-o", "/home/pi/Videos/dronevid_" + now_string + ".h264", "-n", "-t", "0", "-fps", "30", "-b", "5000000"], preexec_fn =  Daemonize)
 
-#-------------------------------------------------------------------------------------------
+#------------------------------------------------------------------------------------------
 # Last bits of state setup before takeoff
 #-------------------------------------------------------------------------------------------
 keep_looping = True
@@ -1528,7 +1569,7 @@ if use_mpu6050:
 	roll_rate_pid = PID(PID_ROLL_RATE_P_GAIN, PID_ROLL_RATE_I_GAIN, PID_ROLL_RATE_D_GAIN)
 	yaw_rate_pid = PID(PID_YAW_RATE_P_GAIN, PID_YAW_RATE_I_GAIN, PID_YAW_RATE_D_GAIN)
 
-        vert_speed_pid_active = False
+	vert_speed_pid_active = False
 #	vert_speed_pid = PID(PID_VERT_SPEED_P_GAIN, PID_VERT_SPEED_I_GAIN, PID_VERT_SPEED_D_GAIN)
 #	vert_accel_pid = PID(PID_VERT_ACCEL_P_GAIN, PID_VERT_ACCEL_I_GAIN, PID_VERT_ACCEL_D_GAIN)
 
@@ -1541,11 +1582,11 @@ current_time = start_time
 while keep_looping:
 	loop_count += 1
 
-        #---------------------------------------------------------------------------
-        # FSM inputs are mostly generated on a timer; the exceptions are
-        # - SIGNAL generated by a Ctrl-C
-        # - LEVELLED triggered when vertical speed post take-off becomes < 0
-        #---------------------------------------------------------------------------
+	#---------------------------------------------------------------------------
+	# FSM inputs are mostly generated on a timer; the exceptions are
+	# - SIGNAL generated by a Ctrl-C
+	# - LEVELLED triggered when vertical speed post take-off becomes < 0
+	#---------------------------------------------------------------------------
 	if fsm_input != INPUT_SIGNAL and fsm_input != INPUT_LEVELLED:
 		if elapsed_time >= 0.0:
 			fsm_input = INPUT_TAKEOFF
@@ -1573,7 +1614,7 @@ while keep_looping:
 		logger.info('FSM action handover')
 		fsm_state = STATE_LEVELLING
 		fsm_input = INPUT_NONE
-                #--------------------------NOT STRICTLY NECESSARY--------------------
+		#--------------------------NOT STRICTLY NECESSARY--------------------
 		vert_speed_target = 0.0
 
 		# -------------------------------EXPERIMENTAL------------------------
@@ -1586,7 +1627,7 @@ while keep_looping:
 		logger.info('FSM action handover')
 		fsm_state = STATE_HOVERING
 		fsm_input = INPUT_NONE
-                #--------------------------NOT STRICTLY NECESSARY--------------------
+		#--------------------------NOT STRICTLY NECESSARY--------------------
 		vert_speed_target = 0.0
 
 		RPIO.output(RPIO_STATUS_SOUNDER, RPIO.LOW)
@@ -1784,16 +1825,16 @@ while keep_looping:
 
 		#---------------------------------------------------------------------------
 		# If we are in levelling state, and the vertical speed has now gone negative
-                # (the drone has just started to fall), engage the vertical speed PID and
-                # set the fsm_input to INPUT_LEVELLED so we then transit into HOVERING state
-                # and saving the levelled time from which two seconds of hover starts.
+		# (the drone has just started to fall), engage the vertical speed PID and
+		# set the fsm_input to INPUT_LEVELLED so we then transit into HOVERING state
+		# and saving the levelled time from which two seconds of hover starts.
 		#---------------------------------------------------------------------------
-                if fsm_state == STATE_LEVELLING and vert_speed < 0.0:
-                        fsm_input = INPUT_LEVELLED
-                        levelled_time = elapsed_time
-                        vert_speed_pid = PID(PID_VERT_SPEED_P_GAIN, PID_VERT_SPEED_I_GAIN, PID_VERT_SPEED_D_GAIN)
-                        vert_speed_pid_active = True
-                        vert_speed_target = 0.0
+		if fsm_state == STATE_LEVELLING and vert_speed < 0.0:
+			fsm_input = INPUT_LEVELLED
+			levelled_time = elapsed_time
+			vert_speed_pid = PID(PID_VERT_SPEED_P_GAIN, PID_VERT_SPEED_I_GAIN, PID_VERT_SPEED_D_GAIN)
+			vert_speed_pid_active = True
+			vert_speed_target = 0.0
 
 
 		#---------------------------------------------------------------------------
@@ -1825,14 +1866,14 @@ while keep_looping:
 		#---------------------------------------------------------------------------
 		# Run the vertical velocity PID for the z dimension to maintain height.
 		#---------------------------------------------------------------------------
-                if vert_speed_pid_active:
-                        [p_out, i_out, d_out] = vert_speed_pid.Compute(vert_speed, vert_speed_target)
-                else:
-                        p_out = 0.0
-                        i_out = 0.0
-                        d_out = 0.0
+		if vert_speed_pid_active:
+			[p_out, i_out, d_out] = vert_speed_pid.Compute(vert_speed, vert_speed_target)
+		else:
+			p_out = 0.0
+			i_out = 0.0
+			d_out = 0.0
 
-                vs_diags = "%f, %f, %f" % (p_out, i_out, d_out)
+		vs_diags = "%f, %f, %f" % (p_out, i_out, d_out)
 		vert_speed_out = p_out + i_out + d_out
 
 
@@ -1942,5 +1983,3 @@ logger.critical("yaw angle - integrated: %f; euler %f", yaw_angle, iphi)
 # Time for telly bye byes
 #-------------------------------------------------------------------------------------------
 CleanShutdown()
-
-
