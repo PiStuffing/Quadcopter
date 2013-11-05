@@ -1,4 +1,4 @@
 Quadcopter
 ==========
 
-Python project for Phoebe the quadcopter
+Python project for Phoebe the Raspberry Pi Quadcopter
