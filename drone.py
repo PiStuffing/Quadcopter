@@ -137,65 +137,6 @@ class I2C:
 				logger.exception('Error %d, %s accessing 0x%02X: Check your I2C address', err.errno, err.strerror, self.address)
 				time.sleep(0.001)
 
-
-############################################################################################
-#
-#  PCA9685 class for setting blade PWM frequencies
-#
-############################################################################################
-class PCA9685 :
-	i2c = None
-
-	# Registers/etc.
-	__SUBADR1	    = 0x02
-	__SUBADR2	    = 0x03
-	__SUBADR3	    = 0x04
-	__MODE1	      = 0x00
-	__PRESCALE	   = 0xFE
-	__LED0_ON_L	  = 0x06
-	__LED0_ON_H	  = 0x07
-	__LED0_OFF_L	 = 0x08
-	__LED0_OFF_H	 = 0x09
-	__ALLLED_ON_L	= 0xFA
-	__ALLLED_ON_H	= 0xFB
-	__ALLLED_OFF_L       = 0xFC
-	__ALLLED_OFF_H       = 0xFD
-
-	def __init__(self, address=0x40):
-		self.i2c = I2C(address)
-		self.address = address
-		logger.info('Reseting PCA9685')
-		self.i2c.write8(self.__MODE1, 0x00)
-
-	def setPCA9685Freq(self, freq):
-		"Sets the PWM frequency"
-		prescaleval = 25000000.0    # 25MHz
-		prescaleval /= 4096.0       # 12-bit
-		prescaleval /= float(freq)
-		prescaleval -= 1.0
-					
-		logger.info('Setting PWM frequency to %d Hz', freq)
-		logger.debug('Estimated pre-scale: %d', prescaleval)
-
-		prescale = math.floor(prescaleval + 0.5)
-
-		logger.info('Final pre-scale: %d', prescale)
-
-		oldmode = self.i2c.readU8(self.__MODE1)
-		newmode = (oldmode & 0x7F) | 0x10	     # sleep
-		self.i2c.write8(self.__MODE1, newmode)	# go to sleep
-		self.i2c.write8(self.__PRESCALE, int(math.floor(prescale)))
-		self.i2c.write8(self.__MODE1, oldmode)
-		time.sleep(0.005)
-		self.i2c.write8(self.__MODE1, oldmode | 0x80)
-
-	def setPCA9685(self, channel, on, off):
-		"Sets a single PWM channel"
-		self.i2c.write8(self.__LED0_ON_L + 4 * channel, on & 0xFF)
-		self.i2c.write8(self.__LED0_ON_H + 4 * channel, on >> 8)
-		self.i2c.write8(self.__LED0_OFF_L + 4 * channel, off & 0xFF)
-		self.i2c.write8(self.__LED0_OFF_H + 4 * channel, off >> 8)
-
 ############################################################################################
 #
 #  Gyroscope / Accelerometer class for reading position / movement
@@ -525,18 +466,6 @@ class MPU6050 :
 		#---------------------------------------------------------------------------
 		self.i2c.write8(self.__MPU6050_RA_INT_ENABLE, 0x00)
 
-#       	#---------------------------------------------------------------------------
-#       	# Read the sensor data, keeping the interrupt latched
-#       	#---------------------------------------------------------------------------
-#       	ax = self.i2c.readS16(self.__MPU6050_RA_ACCEL_XOUT_H)
-#       	ay = self.i2c.readS16(self.__MPU6050_RA_ACCEL_YOUT_H)
-#       	az = self.i2c.readS16(self.__MPU6050_RA_ACCEL_ZOUT_H)
-#       	gx = self.i2c.readS16(self.__MPU6050_RA_GYRO_XOUT_H)
-#       	gy = self.i2c.readS16(self.__MPU6050_RA_GYRO_YOUT_H)
-#       	gz = self.i2c.readS16(self.__MPU6050_RA_GYRO_ZOUT_H)
-#
-#       	self.result_array = [ax, ay, az, 0, gx, gy, gz]
-
 		#---------------------------------------------------------------------------
 		# For speed of reading, read all the sensors and parse to USHORTs after
 		#---------------------------------------------------------------------------
@@ -841,161 +770,6 @@ def RpioSetup():
 	logger.info('Setup MPU6050 interrupt input %s', RPIO_SENSOR_DATA_RDY)
 	RPIO.setup(RPIO_SENSOR_DATA_RDY, RPIO.IN, RPIO.PUD_DOWN)
 
-############################################################################################
-#
-# Parse the received commmand to convert it to the equivalent directional / operational command
-# The message format is a basic TLV with header and footer:
-# Type: 1 byte
-# Len: 1 byte - currently always 4 - includes this header
-# Data: 2 bytes
-#
-############################################################################################
-class TLVSTREAM():
-
-	__CTRL_CMD_ABORT =      0
-	__CTRL_CMD_TAKEOFF =    1
-	__CTRL_CMD_LANDING =    2
-	__CTRL_CMD_HOVER =      3
-	__CTRL_CMD_UP_DOWN =    4
-	__CTRL_CMD_FWD_RVS =    5
-	__CTRL_CMD_LEFT_RIGHT = 6
-	__CTRL_CMD_KEEPALIVE =  7
-	__CTRL_CMD_DATA_ACK =   8
-
-	def __init__(self):
-		self.cache = ""
-
-	def Parser(recv_buff):
-		self.cache += resv_buff
-		send_buff = ""
-
-		fax_target = 0.0
-		fay_target = 0.0
-		faz_target = 0.0
-
-		#---------------------------------------------------------------------------
-		# Parse the message TLVs - assume no exception
-		#---------------------------------------------------------------------------
-		if len(self.cache) >= 4:
-			type, length, msg_id = struct.unpack_from('!BBH', self.cache, 0)
-
-			#-----------------------------------------------------------
-			# If we have a complete TLV, parse it
-			#-----------------------------------------------------------
-			if len(self.cache) >= 4 + length:
-
-				#---------------------------------------------------------------------------
-				# If we've received a valid message type, then respond with an ACK
-				#---------------------------------------------------------------------------
-				send_buff = struct.pack('!BBH', __CTRL_CMD_DATA_ACK, 4, msg_id)
-				drc_sck.send(send_buff)
-				send_buff = ""
-
-				#---------------------------------------------------------------------------
-				# If the message content length > 0, unpack that too
-				#---------------------------------------------------------------------------
-				if length > 0:
-					value = struct.unpack_from('!I', self.cache, 4)
-					logger.info('type %d, length 0, msg_id %d', type, length, msg_id)
-				else:
-					logger.info('type %d, length %d, msg_id %d, value %d', type, length, msg_id, value)
-
-
-				#---------------------------------------------------------------------------
-				# Enact the command - decide the targets for the PID algorithm
-				#---------------------------------------------------------------------------
-				if type == __CTRL_CMD_ABORT:
-					#----------------------------------------------------------------------------
-					# Hard shutdown
-					#----------------------------------------------------------------------------
-					logger.warning('ABORT')
-					os.kill(os.getpid(), signal.SIGINT)
-
-				elif type == __CTRL_CMD_TAKEOFF:
-					#----------------------------------------------------------------------------
-					# Spin each blade up to the calibrated 0g point and then increment slight for a while beofre setting back to 0g
-					#----------------------------------------------------------------------------
-					logger.info('TAKEOFF')
-					fax_target = 0.0
-					fay_target = 0.0
-
-					#AB: I think this shoud be a manual incremental increase in blade speeds to achieve takeoff before handover to hover
-					faz_target = 1.01
-
-				elif type == __CTRL_CMD_LANDING:
-					#----------------------------------------------------------------------------
-					# Spin each blade down to the calibrated 0g point and them decrement slightly for a controlled landing
-					#----------------------------------------------------------------------------
-					logger.info('LANDING')
-					fax_target = 0.0
-					fay_target = 0.0
-					#AB: Less sure about this one though
-					faz_target = 0.99
-
-				elif type == __CTRL_CMD_HOVER:
-					#----------------------------------------------------------------------------
-					# Spin each blade down to the calibrated 0g point
-					#----------------------------------------------------------------------------
-					logger.info('HOVER')
-					fax_target = 0.0
-					fay_target = 0.0
-					faz_target = 1.0
-
-				elif type == __CTRL_CMD_UP_DOWN:
-					#----------------------------------------------------------------------------
-					# Increment the speed of all blades proportially to the command data
-					#----------------------------------------------------------------------------
-					logger.info('UP/DOWN %d', int(value))
-					fax_target = 0.0
-					fay_target = 0.0
-					faz_target = 1.0 + (float(value * 0.05) / 128)
-
-				elif type == __CTRL_CMD_FWD_RVS:
-					#----------------------------------------------------------------------------
-					# ????????????????
-					#----------------------------------------------------------------------------
-					logger.info('FWD/RVS %d', int(value))
-
-				elif type == __CTRL_CMD_LEFT_RIGHT:
-					#----------------------------------------------------------------------------
-					# ????????????????
-					#----------------------------------------------------------------------------
-					logger.info('LEFT/RIGHT %d', int(value))
-
-				elif type == __CTRL_CMD_KEEPALIVE:
-					#----------------------------------------------------------------------------
-					# No change to blade power, keep stable at the current setting
-					#----------------------------------------------------------------------------
-					logger.debug('KEEPALIVE')
-				else:
-					#----------------------------------------------------------------------------
-					# Unrecognised command - treat as an abort
-					#----------------------------------------------------------------------------
-					logger.warning('UNRECOGNISED COMMAND: ABORT')
-					os.kill(os.getpid(), signal.SIGINT)
-
-				#---------------------------------------------------------------------------
-				# TLV is wholly parsed, decrease the cache size
-				#----------------------------------------------------------------------------
-				self.cache = self.cache[4 + length : len(self.cache)]
-			else:
-				#---------------------------------------------------------------------------
-				# Insufficient data to form a whole TLV, get out
-				#---------------------------------------------------------------------------
-				parsed_tlv = False
-
-
-		else:
-			#---------------------------------------------------------------------------
-			# Insufficient data to parse, leave target unchanged !!!!!!!!!!!!!!!!!!!!!!!!
-			#---------------------------------------------------------------------------
-			parsed_tlv = False
-
-		#---------------------------------------------------------------------------
-		# No more complete TLVs to part, get out, returning how much data we have dealt with
-		#---------------------------------------------------------------------------
-		return fax_target, fay_target, faz_target
-
 
 ############################################################################################
 #
@@ -1003,67 +777,77 @@ class TLVSTREAM():
 #
 ############################################################################################
 def CheckCLI(argv):
-	cli_calibrate = False
 	cli_fly = False
-	cli_test = False
+	cli_calibrate = False
 	cli_video = False
-	cli_test_speed = -1
-	cli_vsp_gain = 0.0
-	cli_vsi_gain = 0.0
+	cli_takeoff_speed = 590
+	cli_vsp_gain = 175.0
+	cli_vsi_gain = 100.0
 	cli_vsd_gain = 0.0
+	cli_hsp_gain = 12.5
+	cli_hsi_gain = 0.05
+	cli_hsd_gain = 0.0
 
 
 	try:
-		opts, args = getopt.getopt(argv,"fcvt:p:i:d:")
+		opts, args = getopt.getopt(argv,'fcvt:', ['vsp=', 'vsi=', 'vsd=', 'hsp=', 'hsi=', 'hsd='])
 	except getopt.GetoptError:
-		logger.critical('dronepi.py [-f|-t speed] [-c] [-v] [-p proportional] [-i integral] [-ddifferential]')
+		logger.critical('dronepi.py [-f] [-t take_off_speed] [-c] [-v]')
 		sys.exit(2)
 
 	for opt, arg in opts:
 		if opt == '-f':
 			cli_fly = True
 
-		if opt == '-c':
+		elif opt == '-c':
 			cli_calibrate = True
 
-		if opt in '-t':
-			cli_test = True
-			cli_test_speed = int(arg)
+		elif opt in '-t':
+			cli_takeoff_speed = int(arg)
 
-		if opt in '-v':
+		elif opt in '-v':
 			cli_video = True
 
-		if opt in '-p':
+		elif opt in '--vsp':
 			cli_vsp_gain = float(arg)
 
-		if opt in '-i':
+		elif opt in '--vsi':
 			cli_vsi_gain = float(arg)
 
-		if opt in '-d':
-			cli_vsd_gain = float(arg)
+		elif opt in '--vsd':
+			cli_hsd_gain = float(arg)
+
+		elif opt in '--hsp':
+			cli_hsp_gain = float(arg)
+
+		elif opt in '--hsi':
+			cli_vsi_gain = float(arg)
+
+		elif opt in '--hsd':
+			cli_hsd_gain = float(arg)
 
 
-	if not cli_fly and not cli_calibrate and not cli_test and not cli_video:
-		logger.critical('Must set at least one CLI parameter')
-		logger.critical('  dronepi.py [-f|-t speed] [-c] [-v videolength]')
-		logger.critical('  -f fly the drone on auto-pilot')
-		logger.critical('  -t test the drone balancing at given blade spin speed')
+	if not cli_calibrate and not cli_fly:
+		logger.critical('Must specify -f and/or -c')
+		logger.critical('  dronepi.py [-f] [-t speed] [-c] [-v]')
+		logger.critical('  -f set whether to fly')
+		logger.critical('  -t set the takeoff speed')
 		logger.critical('  -c calibrate and save the sensor outputs')
 		logger.critical('  -v video the flight')
-		logger.critical('  -i set the vertical speed integral gain for take off speed')
-		logger.critical('  -p set the vertical speed proportional gain for take off speed')
+		logger.critical('  --vsp set vertical speed PID P gain')
+		logger.critical('  --vsi set vertical speed PID P gain')
+		logger.critical('  --vsd set vertical speed PID P gain')
+		logger.critical('  --hsp set horizontal speed PID P gain')
+		logger.critical('  --hsi set horizontal speed PID I gain')
+		logger.critical('  --hsd set horizontal speed PID D gain')
 		sys.exit(2)
 
-	if cli_test and cli_fly:
-		logger.crical('Choose between flying (-f) or testing (-t)')
-		sys.exit(2)
-
-	if cli_test and (cli_test_speed < 0 or cli_test_speed > 1000):
+	if cli_fly and (cli_takeoff_speed < 0 or cli_takeoff_speed > 1000):
 		logger.critical('Test speed must lie in the following range')
 		logger.critical('0 <= test speed <= 1000')
 		sys.exit(2)
 
-	return cli_calibrate, cli_fly, cli_test, cli_test_speed, cli_video, cli_vsp_gain, cli_vsi_gain, cli_vsd_gain
+	return cli_calibrate, cli_fly, cli_takeoff_speed, cli_video, cli_vsp_gain, cli_vsi_gain, cli_vsd_gain, cli_hsp_gain, cli_hsi_gain, cli_hsd_gain
 
 ############################################################################################
 #
@@ -1147,14 +931,14 @@ MCL_CURRENT = 1
 MCL_FUTURE  = 2
 
 def mlockall(flags=MCL_CURRENT|MCL_FUTURE):
-        result = libc.mlockall(flags)
-        if result != 0:
-                raise Exception("cannot lock memmory, errno=%s" % ctypes.get_errno())
+	result = libc.mlockall(flags)
+	if result != 0:
+		raise Exception("cannot lock memmory, errno=%s" % ctypes.get_errno())
 
 def munlockall():
-        result = libc.munlockall()
-        if result != 0:
-                raise Exception("cannot lock memmory, errno=%s" % ctypes.get_errno())
+	result = libc.munlockall()
+	if result != 0:
+		raise Exception("cannot lock memmory, errno=%s" % ctypes.get_errno())
 
 
 libc_name = ctypes.util.find_library("c")
@@ -1239,132 +1023,77 @@ logger.addHandler(file_handler)
 #-------------------------------------------------------------------------------------------
 # Check the command line to see if we are calibrating or flying - if neither are set, CheckCLI sys.exit(0)s
 #-------------------------------------------------------------------------------------------
-normalize_sensors, fly_drone, test_drone, testing_speed, shoot_video, vsp_gain, vsi_gain, vsd_gain = CheckCLI(sys.argv[1:])
+calibrate_sensors, fly_drone, takeoff_speed, shoot_video, vsp_gain, vsi_gain, vsd_gain, hsp_gain, hsi_gain, hsd_gain = CheckCLI(sys.argv[1:])
 
-if test_drone:
-	#-------------------------------------------------------------------------------------------
-	# The PITCH PID controls rotation about the Y-axis
-	#-------------------------------------------------------------------------------------------
-	PID_PITCH_ANGLE_P_GAIN = 0.0
-	PID_PITCH_ANGLE_I_GAIN = 0.0
-	PID_PITCH_ANGLE_D_GAIN = -0.0
-	
-	#-------------------------------------------------------------------------------------------
-	# The ROLL PID controls rotation about the X-axis
-	#-------------------------------------------------------------------------------------------
-	PID_ROLL_ANGLE_P_GAIN = 0.0
-	PID_ROLL_ANGLE_I_GAIN = 0.0
-	PID_ROLL_ANGLE_D_GAIN = -0.0
-	
-	#-------------------------------------------------------------------------------------------
-	# The YAW PID controls rotation about the Z-axis
-	#-------------------------------------------------------------------------------------------
-	PID_YAW_ANGLE_P_GAIN = 0.0
-	PID_YAW_ANGLE_I_GAIN = 0.0
-	PID_YAW_ANGLE_D_GAIN = -0.0
-	
-	#-------------------------------------------------------------------------------------------
-	# The vertical speed controls stable rise / fall rate in the z direction
-	#-------------------------------------------------------------------------------------------
-	PID_VERT_SPEED_P_GAIN = vsp_gain  # 175 default guess based on testing - may well still go up?
-	PID_VERT_SPEED_I_GAIN = vsi_gain  # 150 default guess base don P/I ratio that work
-	PID_VERT_SPEED_D_GAIN = vsd_gain  # 0.1 default guess based on stats
+#-------------------------------------------------------------------------------------------
+# The earth X axis speed controls forward / backward speed
+#-------------------------------------------------------------------------------------------
+PID_EAX_SPEED_P_GAIN = hsp_gain  # 12.5 default
+PID_EAX_SPEED_I_GAIN = hsi_gain  # 0.05 default
+PID_EAX_SPEED_D_GAIN = hsd_gain	 # 0.00 default
 
-	#-------------------------------------------------------------------------------------------
-	# The PITCH PID controls rotation about the Y-axis
-	#-------------------------------------------------------------------------------------------
-	PID_PITCH_RATE_P_GAIN = 2.5
-	PID_PITCH_RATE_I_GAIN = 5.0
-	PID_PITCH_RATE_D_GAIN = 0.15
+#-------------------------------------------------------------------------------------------
+# The earth Y axis speed controls left / right speed
+#-------------------------------------------------------------------------------------------
+PID_EAY_SPEED_P_GAIN = hsp_gain  # 12.5 default
+PID_EAY_SPEED_I_GAIN = hsi_gain  # 0.05 default
+PID_EAY_SPEED_D_GAIN = hsd_gain	 # 0.00 default
 
-	#-------------------------------------------------------------------------------------------
-	# The ROLL PID controls rotation about the X-axis
-	#-------------------------------------------------------------------------------------------
-	PID_ROLL_RATE_P_GAIN = 2.5
-	PID_ROLL_RATE_I_GAIN = 5.0
-	PID_ROLL_RATE_D_GAIN = 0.15
+#-------------------------------------------------------------------------------------------
+# The earth Z axis speed controls rise / fall speed
+#-------------------------------------------------------------------------------------------
+PID_EAZ_SPEED_P_GAIN = vsp_gain  # 175 default
+PID_EAZ_SPEED_I_GAIN = vsi_gain  # 100 default
+PID_EAZ_SPEED_D_GAIN = vsd_gain  # 0.0 default
 
-	#-------------------------------------------------------------------------------------------
-	# The YAW PID controls rotation about the Z-axis
-	#-------------------------------------------------------------------------------------------
-	PID_YAW_RATE_P_GAIN = 2.5
-	PID_YAW_RATE_I_GAIN = 4.0
-	PID_YAW_RATE_D_GAIN = 0.12
+#-------------------------------------------------------------------------------------------
+# The PITCH PID controls stable rotation speed about the Y-axis
+#-------------------------------------------------------------------------------------------
+PID_PITCH_RATE_P_GAIN = 2.5
+PID_PITCH_RATE_I_GAIN = 5.0
+PID_PITCH_RATE_D_GAIN = 0.1      # Downgraded from 0.15 for safety
 
-	#-------------------------------------------------------------------------------------------
-	# The vertical acceleration controls rise / fall acceleration in the z direction
-	#-------------------------------------------------------------------------------------------
-	PID_VERT_ACCEL_P_GAIN = 20.0
-	PID_VERT_ACCEL_I_GAIN = 13.3
-	PID_VERT_ACCEL_D_GAIN = -0.0
+#-------------------------------------------------------------------------------------------
+# The ROLL PID controls stable rotation speed about the X-axis
+#-------------------------------------------------------------------------------------------
+PID_ROLL_RATE_P_GAIN = 2.5
+PID_ROLL_RATE_I_GAIN = 5.0
+PID_ROLL_RATE_D_GAIN = 0.1       # Downgraded from 0.15 for safety
 
-else:
-	#-------------------------------------------------------------------------------------------
-	# The PITCH PID controls rotation about the Y-axis
-	#-------------------------------------------------------------------------------------------
-	PID_PITCH_ANGLE_P_GAIN = 0.0
-	PID_PITCH_ANGLE_I_GAIN = 0.0
-	PID_PITCH_ANGLE_D_GAIN = -0.0
-	
-	#-------------------------------------------------------------------------------------------
-	# The ROLL PID controls rotation about the X-axis
-	#-------------------------------------------------------------------------------------------
-	PID_ROLL_ANGLE_P_GAIN = 0.0
-	PID_ROLL_ANGLE_I_GAIN = 0.0
-	PID_ROLL_ANGLE_D_GAIN = -0.0
-	
-	#-------------------------------------------------------------------------------------------
-	# The YAW PID controls rotation about the Z-axis
-	#-------------------------------------------------------------------------------------------
-	PID_YAW_ANGLE_P_GAIN = 0.0
-	PID_YAW_ANGLE_I_GAIN = 0.0
-	PID_YAW_ANGLE_D_GAIN = -0.0
-	
-	#-------------------------------------------------------------------------------------------
-	# The vertical speed controls stable rise / fall rate in the z direction
-	#-------------------------------------------------------------------------------------------
-	PID_VERT_SPEED_P_GAIN = 0.0
-	PID_VERT_SPEED_I_GAIN = 10.0
-	PID_VERT_SPEED_D_GAIN = -0.0
+#-------------------------------------------------------------------------------------------
+# The YAW PID controls stable rotation speed about the Z-axis
+#-------------------------------------------------------------------------------------------
+PID_YAW_RATE_P_GAIN = 2.5
+PID_YAW_RATE_I_GAIN = 5.0
+PID_YAW_RATE_D_GAIN = 0.1	# Downgraded from 0.15 for safety
 
-	#-------------------------------------------------------------------------------------------
-	# The PITCH PID controls rotation about the Y-axis
-	#-------------------------------------------------------------------------------------------
-	PID_PITCH_RATE_P_GAIN = 3.3
-	PID_PITCH_RATE_I_GAIN = 2.2
-	PID_PITCH_RATE_D_GAIN = 0.2
+#-------------------------------------------------------------------------------------------
+# The pitch angle PID maintains a stable tilt angle about the Y-axis - UNNECESSARY
+#-------------------------------------------------------------------------------------------
+PID_PITCH_ANGLE_P_GAIN = 0.0
+PID_PITCH_ANGLE_I_GAIN = 0.0
+PID_PITCH_ANGLE_D_GAIN = -0.0
 
-	#-------------------------------------------------------------------------------------------
-	# The ROLL PID controls rotation about the X-axis
-	#-------------------------------------------------------------------------------------------
-	PID_ROLL_RATE_P_GAIN = 3.3
-	PID_ROLL_RATE_I_GAIN = 2.2
-	PID_ROLL_RATE_D_GAIN = 0.2
+#-------------------------------------------------------------------------------------------
+# The roll angle PID maintans a stable tilt angle about the X-axis - UNNECESSARY
+#-------------------------------------------------------------------------------------------
+PID_ROLL_ANGLE_P_GAIN = 0.0
+PID_ROLL_ANGLE_I_GAIN = 0.0
+PID_ROLL_ANGLE_D_GAIN = -0.0
 
-	#-------------------------------------------------------------------------------------------
-	# The YAW PID controls rotation about the Z-axis
-	#-------------------------------------------------------------------------------------------
-	PID_YAW_RATE_P_GAIN = 0.0
-	PID_YAW_RATE_I_GAIN = 0.0
-	PID_YAW_RATE_D_GAIN = -0.0
-
-	#-------------------------------------------------------------------------------------------
-	# The vertical acceleration controls rise / fall acceleration in the z direction
-	#-------------------------------------------------------------------------------------------
-	PID_VERT_ACCEL_P_GAIN = 0.0
-	PID_VERT_ACCEL_I_GAIN = 0.0
-	PID_VERT_ACCEL_D_GAIN = -0.0
-
+#-------------------------------------------------------------------------------------------
+# The yaw angle PID maintains a stable tilt angle about the Z-axis - UNNECESSARY
+#-------------------------------------------------------------------------------------------
+PID_YAW_ANGLE_P_GAIN = 0.0
+PID_YAW_ANGLE_I_GAIN = 0.0
+PID_YAW_ANGLE_D_GAIN = -0.0
 
 #-------------------------------------------------------------------------------------------
 # Assign blade names according to the channel, physical location and spin start calibration
 #-------------------------------------------------------------------------------------------
 blade_list = []
-if use_pca9685:
-	pin_list = [BLADE_CHAN_FL, BLADE_CHAN_FR, BLADE_CHAN_BL, BLADE_CHAN_BR]
-else:
-	pin_list = [BLADE_RPIO_FL, BLADE_RPIO_FR, BLADE_RPIO_BL, BLADE_RPIO_BR]
 
+pin_list = [BLADE_RPIO_FL, BLADE_RPIO_FR, BLADE_RPIO_BL, BLADE_RPIO_BR]
 location_list = [BLADE_LOC_FRONT | BLADE_LOC_LEFT, BLADE_LOC_FRONT | BLADE_LOC_RIGHT, BLADE_LOC_BACK | BLADE_LOC_LEFT, BLADE_LOC_BACK | BLADE_LOC_RIGHT]
 rotation_list = [BLADE_ROT_ACW, BLADE_ROT_CW, BLADE_ROT_CW, BLADE_ROT_ACW]
 name_list = ['front left', 'front right', 'back left', 'back right']
@@ -1377,11 +1106,9 @@ for blade_index in range(0, 4):
 	blade_list.append(blade)
 
 #-------------------------------------------------------------------------------------------
-# Now the PCA9685 is primed, enable the output to shut the ESCs up.
+# Setup the RPIO interface
 #-------------------------------------------------------------------------------------------
 RpioSetup()
-if use_pca9685:
-	RPIO.output(RPIO_PCA9685_OE_BAR, RPIO.LOW)
 
 #-------------------------------------------------------------------------------------------
 # Initialize the gyroscope / accelerometer I2C object
@@ -1397,7 +1124,7 @@ if use_mpu6050:
 	#-----------------------------------------------------------------------------------
 	# Check the sensors for any offsets to ensure compensated accurate readings
 	#-----------------------------------------------------------------------------------
-	if normalize_sensors:
+	if calibrate_sensors:
 		if not mpu6050.updateOffsets('./dronesensors.cfg'):
 			print 'Sensor normalization error'
 			sys.exit(1)
@@ -1412,51 +1139,14 @@ if use_mpu6050:
 #-------------------------------------------------------------------------------------------
 # Are we flying tonight?
 #-------------------------------------------------------------------------------------------
-if not fly_drone and not test_drone:
-	print 'Not flying tonight, sleep well, drone'
+if not fly_drone:
+	print 'Calibration complete'
 	sys.exit(0)
 
 #-------------------------------------------------------------------------------------------
 # 4 beeps + 2s wait
 #-------------------------------------------------------------------------------------------
 CountdownBeep(4)
-
-#-------------------------------------------------------------------------------------------
-# Wait pending a sockets connection with the RC if required
-#-------------------------------------------------------------------------------------------
-inputs = []
-outputs = []
-if use_sockets:
-	try:
-		serversock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-	except socket.error as msg:
-		serversock = None
-
-	try:
-#		serversock.setblocking(False)  # <=====???????????
-		serversock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-		serversock.bind((socket.gethostname(), 12345))
-		logger.info('Listening as host %s', socket.gethostname())
-		serversock.listen(NUM_SOCK)
-	except socket.error as msg:
-		serversock.close()
-		serversock = None
-
-	if serversock is None:
-		sys.exit(1)
-
-	#-----------------------------------------------------------------------------------
-	# Wait to accept a connection from the drone RC
-	#-----------------------------------------------------------------------------------
-	drc_socket, drc_addr = serversock.accept()
-	drc_socket.setblocking(False)
-	inputs = [drc_socket]
-	logger.info('Connected to %s', drc_socket.getpeername())
-
-#-------------------------------------------------------------------------------------------
-# Now we have a connection, power up the TCP data TLV parsing engine
-#-------------------------------------------------------------------------------------------
-tlvstream = TLVSTREAM()
 
 #-------------------------------------------------------------------------------------------
 # 3 beeps + 2s wait
@@ -1506,24 +1196,25 @@ keep_looping = True
 delta_time = 0.0
 SCAN_TIME = 0.05
 sleep_time = SCAN_TIME / 2
-last_int_gyro_angle = 0.0
-int_gyro_angle = 0.0
 
 pitch_angle = 0.0
 roll_angle = 0.0
 yaw_angle = 0.0
 
-pitch_angle_target = 0.0
-roll_angle_target = 0.0
-yaw_angle_target = 0.0
-
+prev_eax = 0.0
+prev_eay = 0.0
+prev_eaz = 0.0
 prev_fgx = 0.0
 prev_fgy = 0.0
 prev_fgz = 0.0
 
-vert_speed = 0.0
-vert_speed_target = 0.0
-prev_faz = 0.0
+eax_speed = 0.0
+eay_speed = 0.0
+eaz_speed = 0.0
+
+eax_speed_target = 0.0
+eay_speed_target = 0.0
+eaz_speed_target = 0.0
 
 INPUT_NONE = 0
 INPUT_TAKEOFF = 1
@@ -1554,24 +1245,20 @@ for beep_count in range(0, BLADE_TAKEOFF_READY_RATE, 10):
 #---------------------------------------------------------------------------
 # Diagnostic statistics log header
 #---------------------------------------------------------------------------
-logger.warning(', Time, DT, Loop, fgx, fgy, fgz, fax, fay, faz, pitch, roll, yaw, vert, prp, pri, prd, pap, pai, pad, rrp, rri, rrd, rap, rai, rad, yrp, yri, yrd, yap, yai, yad, vsp, vsi, vsd, pitch out, rollout, yaw out, vert speed_out, FL spin, FR spin, BL spin, BR spin')
+logger.warning(', Time, DT, Loop, fgx, fgy, fgz, fax, fay, faz, pitch, roll, yaw, vert, prp, pri, prd, rrp, rri, rrd, yrp, yri, yrd, ezp, ezi, ezd, pitch target, roll target, yaw target, pitch out, roll_out, yaw out, vert speed out, FL spin, FR spin, BL spin, BR spin')
 
 #-------------------------------------------------------------------------------------------
 # Enable time dependent factors PIDs - everything beyond here and "while keep_looping:" is time
-# critical and should be kept to a minimum.
+# critical and should be kept to an absolute minimum.
 #-------------------------------------------------------------------------------------------
 if use_mpu6050:
-	pitch_angle_pid = PID(PID_PITCH_ANGLE_P_GAIN, PID_PITCH_ANGLE_I_GAIN, PID_PITCH_ANGLE_D_GAIN)
-	roll_angle_pid = PID(PID_ROLL_ANGLE_P_GAIN, PID_ROLL_ANGLE_I_GAIN, PID_ROLL_ANGLE_D_GAIN)
-	yaw_angle_pid = PID(PID_YAW_ANGLE_P_GAIN, PID_YAW_ANGLE_I_GAIN, PID_YAW_ANGLE_D_GAIN)
-
 	pitch_rate_pid = PID(PID_PITCH_RATE_P_GAIN, PID_PITCH_RATE_I_GAIN, PID_PITCH_RATE_D_GAIN)
 	roll_rate_pid = PID(PID_ROLL_RATE_P_GAIN, PID_ROLL_RATE_I_GAIN, PID_ROLL_RATE_D_GAIN)
 	yaw_rate_pid = PID(PID_YAW_RATE_P_GAIN, PID_YAW_RATE_I_GAIN, PID_YAW_RATE_D_GAIN)
 
-	vert_speed_pid_active = False
-#	vert_speed_pid = PID(PID_VERT_SPEED_P_GAIN, PID_VERT_SPEED_I_GAIN, PID_VERT_SPEED_D_GAIN)
-#	vert_accel_pid = PID(PID_VERT_ACCEL_P_GAIN, PID_VERT_ACCEL_I_GAIN, PID_VERT_ACCEL_D_GAIN)
+	eax_speed_pid = PID(PID_EAX_SPEED_P_GAIN, PID_EAX_SPEED_I_GAIN, PID_EAX_SPEED_I_GAIN)
+	eay_speed_pid = PID(PID_EAY_SPEED_P_GAIN, PID_EAY_SPEED_I_GAIN, PID_EAY_SPEED_I_GAIN)
+	eaz_speed_pid_active = False
 
 levelled_time = 0.0
 elapsed_time = 0.0
@@ -1602,12 +1289,12 @@ while keep_looping:
 
 	if fsm_state == STATE_OFF and fsm_input == INPUT_TAKEOFF:
 		# -------------------------------EXPERIMENTAL-----------------------
-		# testing_speed as defined by the CLI
+		# takeoff_speed as defined by the CLI
 		# -------------------------------EXPERIMENTAL-----------------------
 		logger.info('FSM action takeoff')
 		fsm_state = STATE_ASCENDING
 		fsm_input = INPUT_NONE
-		vert_speed_target = 0.0
+		eaz_speed_target = 0.0
 		RPIO.output(RPIO_STATUS_SOUNDER, RPIO.HIGH)
 
 	elif fsm_state == STATE_ASCENDING and (fsm_input == INPUT_HOVER or fsm_input == INPUT_SIGNAL):
@@ -1615,10 +1302,10 @@ while keep_looping:
 		fsm_state = STATE_LEVELLING
 		fsm_input = INPUT_NONE
 		#--------------------------NOT STRICTLY NECESSARY--------------------
-		vert_speed_target = 0.0
+		eaz_speed_target = 0.0
 
 		# -------------------------------EXPERIMENTAL------------------------
-		testing_speed = 580
+		takeoff_speed = 570
 		# -------------------------------EXPERIMENTAL------------------------
 
 		RPIO.output(RPIO_STATUS_SOUNDER, RPIO.LOW)
@@ -1628,7 +1315,7 @@ while keep_looping:
 		fsm_state = STATE_HOVERING
 		fsm_input = INPUT_NONE
 		#--------------------------NOT STRICTLY NECESSARY--------------------
-		vert_speed_target = 0.0
+		eaz_speed_target = 0.0
 
 		RPIO.output(RPIO_STATUS_SOUNDER, RPIO.LOW)
 
@@ -1637,7 +1324,7 @@ while keep_looping:
 		logger.info('FSM action landing')
 		fsm_state = STATE_DESCENDING
 		fsm_input = INPUT_NONE
-		vert_speed_target = -0.15
+		eaz_speed_target = -0.15
 
 
 		RPIO.output(RPIO_STATUS_SOUNDER, RPIO.HIGH)
@@ -1646,139 +1333,14 @@ while keep_looping:
 		logger.info('FSM action shutdown')
 		fsm_state = STATE_OFF
 		fsm_input = INPUT_NONE
-		vert_speed_target = 0.0
+		eaz_speed_target = 0.0
 
 		# -------------------------------EXPERIMENTAL------------------------
-		testing_speed = 0
+		takeoff_speed = 0
 		# -------------------------------EXPERIMENTAL------------------------
 
 		keep_looping = False
 		RPIO.output(RPIO_STATUS_SOUNDER, RPIO.LOW)
-
-	#---------------------------------------------------------------------------
-	# Make sure the TLV stream is empty from the last run before extracting more RC command data
-	#---------------------------------------------------------------------------
-	if use_sockets:
-
-		#---------------------------------------------------------------------------
-		# Select on waiting for a command, or a hello
-		#---------------------------------------------------------------------------
-		readable, writeable, exceptional = select.select(inputs, outputs, inputs, sleep_time)
-
-		#-----------------------------------------------------------------------------------
-		# HELLO timeout - check for receipt and send
-		#-----------------------------------------------------------------------------------
-		if not (readable or writeable or exceptional):
-
-			#---------------------------------------------------------------------------
-			# The timer's popped, which means we've received nothing in the last KEEPALIVE_TIMER seconds.
-			# For safety's sake, commit suicide.
-			#---------------------------------------------------------------------------
-			silent_scan_count += 1
-			if silent_scan_count == RC_SILENCE_LIMIT:
-				#-----------------------------------------------------------
-				# We've not receive a message from RC for 10 scans, close the socket and
-				# enforce an automatic landing
-				#-----------------------------------------------------------
-				logger.error('No message from RC for 10 scans')
-				drc_sck.shutdown(socket.SHUT_RDWR)
-				drc_sck.close()
-
-#				fax_target = 0.0
-#				fay_target = 0.0
-#				faz_target = 0.95
-
-				use_sockets = False
-
-				break
-
-		#-----------------------------------------------------------------------------------
-		# Now check whether we have errors on anything
-		#-----------------------------------------------------------------------------------
-		for drc_sck in exceptional:
-
-			#---------------------------------------------------------------------------
-			# Don't care about the details, set auto-landing
-			#---------------------------------------------------------------------------
-			logger.error('Select socket error')
-			drc_sck.shutdown(socket.SHUT_RDWR)
-			drc_sck.close()
-
-#			fax_target = 0.0
-#			fay_target = 0.0
-#			faz_target = 0.95
-
-			use_sockets = False
-
-			break
-
-		#-----------------------------------------------------------------------------------
-		# Now check whether we have received anything
-		#-----------------------------------------------------------------------------------
-		for drc_sck in readable:
-
-			#---------------------------------------------------------------------------
-			# Check to see what we've received
-			#---------------------------------------------------------------------------
-			drc_data = drc_sck.recv(4096)
-			if not drc_data:
-				#-------------------------------------------------------------------
-				# Client shutdown processing
-				#-------------------------------------------------------------------
-				logger.error('0 data received')
-				drc_sck.shutdown(socket.SHUT_RDWR)
-				drc_sck.close()
-
-#				fax_target = 0.0
-#				fay_target = 0.0
-#				faz_target = 0.95
-
-				use_sockets = False
-
-				break
-
-			#-------------------------------------------------------------------
-			# Parse the control message
-			#-------------------------------------------------------------------
-			fax_target, fay_target, faz_target = tlvstream.Parse(drc_data)
-
-			#-------------------------------------------------------------------
-			# Cycle through each PID applying the appropriate new targets
-			#-------------------------------------------------------------------
-			if fax_target == 0 and fay_target == 0 and faz_target == 0:
-				logger.warning('Nothing parsed!')
-				silent_scan_count += 1
-				if silent_scan_count == RC_SILENCE_LIMIT:
-					#-----------------------------------------------------------
-					# We've not receive a message from RC for 10 scans, close the socket and
-					# enforce an automatic landing
-					#-----------------------------------------------------------
-					logger.error('No message from RC for 10 scans')
-					drc_sck.shutdown(socket.SHUT_RDWR)
-					drc_sck.close()
-
-#       				fax_target = 0.0
-#					fay_target = 0.0
-#					faz_target = 0.95
-
-					use_sockets = False
-					break
-			else:
-				silent_scan_count = 0
-#	else:
-#		#-----------------------------------------------------------------------------------
-#		# Now check whether we have received anything
-#		#-----------------------------------------------------------------------------------
-#		time.sleep(sleep_time)
-#
-#		#-----------------------------------------------------------------------------------
-#		# Simulate acclerometer targets for testing purposes - HOVER
-#		#-----------------------------------------------------------------------------------
-#		if silent_scan_count >= RC_SILENCE_LIMIT:
-#			fax_target = 0.0
-#			fay_target = 0.0
-#			faz_target = 0.95
-
 
 	if use_mpu6050:
 		#---------------------------------------------------------------------------
@@ -1788,7 +1350,7 @@ while keep_looping:
 		[fax, fay, faz, fgx, fgy, fgz] = mpu6050.readSensors()
 
 		#---------------------------------------------------------------------------
-		# Update the elapsed time since start, the time for the last interaction, and
+		# Update the elapsed time since start, the time for the last iteration, and
 		# set the next sleep time to compensate for any overrun in scheduling.
 		#---------------------------------------------------------------------------
 		current_time = time.time()
@@ -1796,12 +1358,7 @@ while keep_looping:
 		elapsed_time = current_time - start_time
 
 		#---------------------------------------------------------------------------
-		# Obtain the Euler angles
-		#---------------------------------------------------------------------------
-#		[theta, psi, phi] = mpu6050.getEulerAngles(fax, fay, faz)
-
-		#---------------------------------------------------------------------------
-		# Integrate the gyros angular velocity to determine absolute angle of tilt in 3D
+		# Integrate the gyros angular velocity to determine absolute angle of tilt
 		#---------------------------------------------------------------------------
 		pitch_angle += (fgy + prev_fgy) * delta_time / 2.0
 		prev_fgy = fgy
@@ -1811,17 +1368,21 @@ while keep_looping:
 		prev_fgz = fgz
 
 		#---------------------------------------------------------------------------
-		# Compensate faz readings to any angular deviation from the horizontal in pitch and roll
-		# This ensure correct vertical speed with respect to earth horizon when drone is tilted
-		# either intentionally via controller or unintentionally via imbalance / wind etc
+		# Convert the accelerometers' g force to earth coordinates, then integrate to
+		# convert to speeds in earth's X and Y axes
 		#---------------------------------------------------------------------------
-#		faz = faz / (math.cos(pitch_angle * math.pi / 180) * math.cos(roll_angle * math.pi / 180))
+		eax = fax * math.cos(pitch_angle * math.pi / 180)
+		eay = fay * math.cos(roll_angle * math.pi / 180)
+		eaz = faz * math.cos(pitch_angle * math.pi / 180) * math.cos(roll_angle * math.pi / 180)
 
-		#---------------------------------------------------------------------------
-		# Integrate the accelerometer g force to determine absolute linear velocity in m/s
-		#---------------------------------------------------------------------------
-		vert_speed += (faz + prev_faz) * delta_time * G_FORCE / 2.0
-		prev_faz = faz
+		eax_speed += (eax + prev_eax) * delta_time * G_FORCE / 2.0
+		prev_eax = eax
+
+		eay_speed += (eay + prev_eay) * delta_time * G_FORCE / 2.0
+		prev_eay = eay
+
+		eaz_speed += (eaz + prev_eaz) * delta_time * G_FORCE / 2.0
+		prev_eaz = eaz
 
 		#---------------------------------------------------------------------------
 		# If we are in levelling state, and the vertical speed has now gone negative
@@ -1829,26 +1390,39 @@ while keep_looping:
 		# set the fsm_input to INPUT_LEVELLED so we then transit into HOVERING state
 		# and saving the levelled time from which two seconds of hover starts.
 		#---------------------------------------------------------------------------
-		if fsm_state == STATE_LEVELLING and vert_speed < 0.0:
+		if fsm_state == STATE_LEVELLING and eaz_speed < 0.0:
 			fsm_input = INPUT_LEVELLED
 			levelled_time = elapsed_time
-			vert_speed_pid = PID(PID_VERT_SPEED_P_GAIN, PID_VERT_SPEED_I_GAIN, PID_VERT_SPEED_D_GAIN)
-			vert_speed_pid_active = True
-			vert_speed_target = 0.0
+			eaz_speed_pid = PID(PID_EAZ_SPEED_P_GAIN, PID_EAZ_SPEED_I_GAIN, PID_EAZ_SPEED_D_GAIN)
+			eaz_speed_pid_active = True
+			eaz_speed_target = 0.0
 
 
 		#---------------------------------------------------------------------------
-		# Run the angle PIDs each rotation axis to determine targets for rate PID.
+		# Run the horizontal speed PIDs each rotation axis to determine targets for angle PID.
 		#---------------------------------------------------------------------------
-		[p_out, i_out, d_out] = pitch_angle_pid.Compute(pitch_angle, pitch_angle_target)
-		pa_diags = "%f, %f, %f" % (p_out, i_out, d_out)
+		[p_out, i_out, d_out] = eax_speed_pid.Compute(eax_speed, eax_speed_target)
+		eax_diags = "%f, %f, %f" % (p_out, i_out, d_out)
 		pitch_rate_target = p_out + i_out + d_out
-		[p_out, i_out, d_out] = roll_angle_pid.Compute(roll_angle, roll_angle_target)
-		ra_diags = "%f, %f, %f" % (p_out, i_out, d_out)
-		roll_rate_target = p_out + i_out + d_out
-		[p_out, i_out, d_out] = yaw_angle_pid.Compute(yaw_angle, yaw_angle_target)
-		ya_diags = "%f, %f, %f" % (p_out, i_out, d_out)
-		yaw_rate_target = p_out + i_out + d_out
+
+		[p_out, i_out, d_out] = eay_speed_pid.Compute(eay_speed, eay_speed_target)
+		eay_diags = "%f, %f, %f" % (p_out, i_out, d_out)
+		roll_rate_target = - p_out - i_out - d_out
+
+		#---------------------------------------------------------------------------
+		# Run the vertical velocity PID for the z dimension to maintain height.
+		#---------------------------------------------------------------------------
+		if eaz_speed_pid_active:
+			[p_out, i_out, d_out] = eaz_speed_pid.Compute(eaz_speed, eaz_speed_target)
+		else:
+			p_out = 0.0
+			i_out = 0.0
+			d_out = 0.0
+
+		eaz_diags = "%f, %f, %f" % (p_out, i_out, d_out)
+		eaz_speed_out = p_out + i_out + d_out
+
+		yaw_rate_target = 0.0
 
 		#---------------------------------------------------------------------------
 		# Run the rate PIDs each rotation axis.
@@ -1863,29 +1437,12 @@ while keep_looping:
 		yr_diags = "%f, %f, %f" % (p_out, i_out, d_out)
 		yaw_out = p_out + i_out + d_out
 
-		#---------------------------------------------------------------------------
-		# Run the vertical velocity PID for the z dimension to maintain height.
-		#---------------------------------------------------------------------------
-		if vert_speed_pid_active:
-			[p_out, i_out, d_out] = vert_speed_pid.Compute(vert_speed, vert_speed_target)
-		else:
-			p_out = 0.0
-			i_out = 0.0
-			d_out = 0.0
-
-		vs_diags = "%f, %f, %f" % (p_out, i_out, d_out)
-		vert_speed_out = p_out + i_out + d_out
-
-
-#		[p_out, i_out, d_out] = vert_accel_pid.Compute(faz, vert_accel_target)
-#		va_diags = "%f, %f, %f" % (p_out, i_out, d_out)
-#		vert_accel_out = p_out + i_out + d_out
 
 		pitch_out = int(round(pitch_out / 2))
 		roll_out = int(round(roll_out / 2))
 		yaw_out = int(round(yaw_out / 2))
 
-		vert_out = testing_speed + vert_speed_out
+		vert_out = takeoff_speed + eaz_speed_out
 
 		#---------------------------------------------------------------------------
 		# Walk through the blades, and depending on their location, apply the output
@@ -1933,19 +1490,9 @@ while keep_looping:
 			blade.spinUpdate(delta_spin)
 
 		#---------------------------------------------------------------------------
-		# Update the elapsed time since start, the time for the last interaction, and
-		# set the next sleep time to compensate for any overrun in scheduling.
-		#---------------------------------------------------------------------------
-#		sleep_time = SCAN_TIME - (delta_time - sleep_time)
-#		if sleep_time < 0.0:
-#			sleep_time = 0
-
-		#---------------------------------------------------------------------------
 		# Diagnostic statistics log
 		#---------------------------------------------------------------------------
-#		if (current_time - last_log_time) >= 0.1:
-		logger.warning(', %f, %f, %d, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %s, %s, %s, %s, %s, %s, %s, %d, %d, %d, %d, %d, %d, %d, %d', elapsed_time, delta_time, loop_count, fgx, fgy, fgz, fax, fay, faz, pitch_angle, roll_angle, yaw_angle, vert_speed, pr_diags, pa_diags, rr_diags, ra_diags, yr_diags, ya_diags, vs_diags, pitch_out, roll_out, yaw_out, vert_speed_out, blade_list[0].current_spin, blade_list[1].current_spin, blade_list[2].current_spin, blade_list[3].current_spin)
-#			last_log_time = last_log_time + 0.1
+		logger.warning(', %f, %f, %d, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %s, %s, %s, %s, %f, %f, %f, %d, %d, %d, %d, %d, %d, %d, %d', elapsed_time, delta_time, loop_count, fgx, fgy, fgz, fax, fay, faz, pitch_angle, roll_angle, yaw_angle, eaz_speed, pr_diags, rr_diags, yr_diags, eaz_diags, pitch_rate_target, roll_rate_target, yaw_rate_target, pitch_out, roll_out, yaw_out, eaz_speed_out, blade_list[0].current_spin, blade_list[1].current_spin, blade_list[2].current_spin, blade_list[3].current_spin)
 
 
 #-------------------------------------------------------------------------------------------
@@ -1975,7 +1522,7 @@ for loop_count in range(0, 100):
 itheta /= 100
 ipsi /= 100
 iphi /= 100
-logger.critical("pitch angle - interated: %f; euler: %f", pitch_angle, itheta)
+logger.critical("pitch angle - integrated: %f; euler: %f", pitch_angle, itheta)
 logger.critical("roll angle - integrated: %f; euler %f", roll_angle, ipsi)
 logger.critical("yaw angle - integrated: %f; euler %f", yaw_angle, iphi)
 
