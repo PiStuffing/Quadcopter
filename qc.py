@@ -458,10 +458,13 @@ class MPU6050 :
 	def getEulerAngles(self, fax, fay, faz):
 		#---------------------------------------------------------------------------
 		# What's the angle in the x and y plane from horizontal in radians?
+                # Note fax, fay, fax are all the calibrated outputs reading 0, 0, 0 on
+                # horizontal ground as a measure of speed in a given direction.  For Euler we
+                # need to re-add gravity of 1g so the sensors read 0, 0, 1 for a horizontal setting
 		#---------------------------------------------------------------------------
-		pitch = -math.atan2(fax + self.grav_x_offset,  faz + self.grav_z_offset)
-		roll = math.atan2(fay + self.grav_y_offset,  faz + self.grav_z_offset)
-		tilt = math.atan2(faz + self.grav_z_offset, math.pow(math.pow(fax + self.grav_x_offset, 2) + math.pow(fay + self.grav_y_offset, 2), 0.5))
+		pitch = -math.atan2(fax, faz + 1.0)
+		roll = math.atan2(fay,  faz + 1.0)
+		tilt = math.atan2(faz + 1.0, math.pow(math.pow(fax, 2) + math.pow(fay, 2), 0.5))
 
 		return pitch, roll, tilt
 
@@ -472,10 +475,10 @@ class MPU6050 :
 		return temp
 
 
-#############################################################################################
+############################################################################################
 # PID algorithm to take input accelerometer readings, and target accelermeter requirements, and
 # as a result feedback new rotor speeds.
-#############################################################################################
+############################################################################################
 class PID:
 
 	def __init__(self, p_gain, i_gain, d_gain):
@@ -498,21 +501,21 @@ class PID:
 		now = time.time()
 		dt = (now - self.last_time)
 
-		#--------------------------------------------------------------------
+		#---------------------------------------------------------------------------
 		# Error is what the PID alogithm acts upon to derive the output
-		#--------------------------------------------------------------------
+		#---------------------------------------------------------------------------
 		error = target - input
 
-		#--------------------------------------------------------------------
+		#---------------------------------------------------------------------------
 		# The proportional term takes the distance between current input and target
 		# and uses this proportially (based on Kp) to control the ESC pulse width
-		#--------------------------------------------------------------------
+		#---------------------------------------------------------------------------
 		p_error = error
 
-		#--------------------------------------------------------------------
+		#---------------------------------------------------------------------------
 		# The integral term sums the errors across many compute calls to allow for
 		# external factors like wind speed and friction
-		#--------------------------------------------------------------------
+		#---------------------------------------------------------------------------
 		self.i_error += (error + self.last_error) * dt
 		if self.i_gain != 0.0 and self.i_error > self.i_err_max:
 			self.i_error = self.i_err_max
@@ -520,29 +523,29 @@ class PID:
 			self.i_error = self.i_err_min
 		i_error = self.i_error
 
-		#--------------------------------------------------------------------
+		#---------------------------------------------------------------------------
 		# The differential term accounts for the fact that as error approaches 0,
 		# the output needs to be reduced proportionally to ensure factors such as
 		# momentum do not cause overshoot.
-		#--------------------------------------------------------------------
+		#---------------------------------------------------------------------------
 		d_error = (error - self.last_error) / dt
 
-		#--------------------------------------------------------------------
+		#---------------------------------------------------------------------------
 		# The overall output is the sum of the (P)roportional, (I)ntegral and (D)iffertial terms
-		#--------------------------------------------------------------------
+		#---------------------------------------------------------------------------
 		p_output = self.p_gain * p_error
 		i_output = self.i_gain * i_error
 		d_output = self.d_gain * d_error
 
-		#--------------------------------------------------------------------
+		#---------------------------------------------------------------------------
 		# Store off last input (for the next differential calulation) and time for calculating the integral value
-		#--------------------------------------------------------------------
+		#---------------------------------------------------------------------------
 		self.last_error = error
 		self.last_time = now
 
-		#--------------------------------------------------------------------
+		#---------------------------------------------------------------------------
 		# Return the output, which has been tuned to be the increment / decrement in ESC PWM
-		#--------------------------------------------------------------------
+		#---------------------------------------------------------------------------
 		return p_output, i_output, d_output
 
 ############################################################################################
@@ -618,161 +621,6 @@ def RpioSetup():
 	logger.info('Setup MPU6050 interrupt input %s', RPIO_SENSOR_DATA_RDY)
 	RPIO.setup(RPIO_SENSOR_DATA_RDY, RPIO.IN, RPIO.PUD_DOWN)
 
-############################################################################################
-#
-# Parse the received commmand to convert it to the equivalent directional / operational command
-# The message format is a basic TLV with header and footer:
-# Type: 1 byte
-# Len: 1 byte - currently always 4 - includes this header
-# Data: 2 bytes
-#
-############################################################################################
-class TLVSTREAM():
-
-	__CTRL_CMD_ABORT =      0
-	__CTRL_CMD_TAKEOFF =    1
-	__CTRL_CMD_LANDING =    2
-	__CTRL_CMD_HOVER =      3
-	__CTRL_CMD_UP_DOWN =    4
-	__CTRL_CMD_FWD_RVS =    5
-	__CTRL_CMD_LEFT_RIGHT = 6
-	__CTRL_CMD_KEEPALIVE =  7
-	__CTRL_CMD_DATA_ACK =   8
-
-	def __init__(self):
-		self.cache = ""
-
-	def Parser(recv_buff):
-		self.cache += resv_buff
-		send_buff = ""
-
-		eax_speed_target = 0.0
-		eay_speed_target = 0.0
-		eaz_speed_target = 0.0
-
-		#---------------------------------------------------------------------------
-		# Parse the message TLVs - assume no exception
-		#---------------------------------------------------------------------------
-		if len(self.cache) >= 4:
-			type, length, msg_id = struct.unpack_from('!BBH', self.cache, 0)
-
-			#-----------------------------------------------------------
-			# If we have a complete TLV, parse it
-			#-----------------------------------------------------------
-			if len(self.cache) >= 4 + length:
-
-				#---------------------------------------------------------------------------
-				# If we've received a valid message type, then respond with an ACK
-				#---------------------------------------------------------------------------
-				send_buff = struct.pack('!BBH', __CTRL_CMD_DATA_ACK, 4, msg_id)
-				drc_sck.send(send_buff)
-				send_buff = ""
-
-				#---------------------------------------------------------------------------
-				# If the message content length > 0, unpack that too
-				#---------------------------------------------------------------------------
-				if length > 0:
-					value = struct.unpack_from('!I', self.cache, 4)
-					logger.info('type %d, length 0, msg_id %d', type, length, msg_id)
-				else:
-					logger.info('type %d, length %d, msg_id %d, value %d', type, length, msg_id, value)
-
-
-				#---------------------------------------------------------------------------
-				# Enact the command - decide the targets for the PID algorithm
-				#---------------------------------------------------------------------------
-				if type == __CTRL_CMD_ABORT:
-					#----------------------------------------------------------------------------
-					# Hard shutdown
-					#----------------------------------------------------------------------------
-					logger.warning('ABORT')
-					os.kill(os.getpid(), signal.SIGINT)
-
-				elif type == __CTRL_CMD_TAKEOFF:
-					#----------------------------------------------------------------------------
-					# Spin each blade up to the calibrated 0g point and then increment slight for a while beofre setting back to 0g
-					#----------------------------------------------------------------------------
-					logger.info('TAKEOFF')
-					eax_speed_target = 0.0
-					eay_speed_target = 0.0
-
-					#AB: I think this shoud be a manual incremental increase in blade speeds to achieve takeoff before handover to hover
-					faz_target = 1.01
-
-				elif type == __CTRL_CMD_LANDING:
-					#----------------------------------------------------------------------------
-					# Spin each blade down to the calibrated 0g point and them decrement slightly for a controlled landing
-					#----------------------------------------------------------------------------
-					logger.info('LANDING')
-					eax_speed_target = 0.0
-					eay_speed_target = 0.0
-					#AB: Less sure about this one though
-					eaz_speed_target = 0.99
-
-				elif type == __CTRL_CMD_HOVER:
-					#----------------------------------------------------------------------------
-					# Spin each blade down to the calibrated 0g point
-					#----------------------------------------------------------------------------
-					logger.info('HOVER')
-					eax_speed_target = 0.0
-					eay_speed_target = 0.0
-					eaz_speed_target = 1.0
-
-				elif type == __CTRL_CMD_UP_DOWN:
-					#----------------------------------------------------------------------------
-					# Increment the speed of all blades proportially to the command data
-					#----------------------------------------------------------------------------
-					logger.info('UP/DOWN %d', int(value))
-					eax_speed_target = 0.0
-					eay_speed_target = 0.0
-					eaz_speed_target = 1.0 + (float(value * 0.05) / 128)
-
-				elif type == __CTRL_CMD_FWD_RVS:
-					#----------------------------------------------------------------------------
-					# ????????????????
-					#----------------------------------------------------------------------------
-					logger.info('FWD/RVS %d', int(value))
-
-				elif type == __CTRL_CMD_LEFT_RIGHT:
-					#----------------------------------------------------------------------------
-					# ????????????????
-					#----------------------------------------------------------------------------
-					logger.info('LEFT/RIGHT %d', int(value))
-
-				elif type == __CTRL_CMD_KEEPALIVE:
-					#----------------------------------------------------------------------------
-					# No change to blade power, keep stable at the current setting
-					#----------------------------------------------------------------------------
-					logger.debug('KEEPALIVE')
-				else:
-					#----------------------------------------------------------------------------
-					# Unrecognised command - treat as an abort
-					#----------------------------------------------------------------------------
-					logger.warning('UNRECOGNISED COMMAND: ABORT')
-					os.kill(os.getpid(), signal.SIGINT)
-
-				#---------------------------------------------------------------------------
-				# TLV is wholly parsed, decrease the cache size
-				#----------------------------------------------------------------------------
-				self.cache = self.cache[4 + length : len(self.cache)]
-			else:
-				#---------------------------------------------------------------------------
-				# Insufficient data to form a whole TLV, get out
-				#---------------------------------------------------------------------------
-				parsed_tlv = False
-
-
-		else:
-			#---------------------------------------------------------------------------
-			# Insufficient data to parse, leave target unchanged !!!!!!!!!!!!!!!!!!!!!!!!
-			#---------------------------------------------------------------------------
-			parsed_tlv = False
-
-		#---------------------------------------------------------------------------
-		# No more complete TLVs to part, get out, returning how much data we have dealt with
-		#---------------------------------------------------------------------------
-		return eax_speed_target, eay_speed_target, eaz_speed_target
-
 
 ############################################################################################
 #
@@ -787,7 +635,7 @@ def CheckCLI(argv):
 	cli_vsp_gain = 150.0
 	cli_vsi_gain = 50.0
 	cli_vsd_gain = 0.0
-	cli_hsp_gain = 0.0
+	cli_hsp_gain = 1.0
 	cli_hsi_gain = 0.0
 	cli_hsd_gain = 0.0
 
@@ -849,6 +697,14 @@ def CheckCLI(argv):
 		logger.critical('Test speed must lie in the following range')
 		logger.critical('0 <= test speed <= 1000')
 		sys.exit(2)
+
+#	if (math.copysign(1.0, cli_hsp_gain) != math.copysign(1.0, cli_hsi_gain)) and (math.copysign(1.0, cli_hsp_gain) != math.copysign(1.0, cli_hsd_gain)):
+#		logger.critical("All horizonatal gains must have the same sign")
+#		sys.exit(2)
+#
+#	if (math.copysign(1.0, cli_vsp_gain) != math.copysign(1.0, cli_vsi_gain)) and (math.copysign(1.0, cli_vsp_gain) != math.copysign(1.0, cli_vsd_gain)):
+#		logger.critical("All vertical gains must have the same sign")
+#		sys.exit(2)
 
 	return cli_calibrate_gravity, cli_fly, cli_takeoff_speed, cli_video, cli_vsp_gain, cli_vsi_gain, cli_vsd_gain, cli_hsp_gain, cli_hsi_gain, cli_hsd_gain
 
@@ -1030,9 +886,9 @@ logger.critical("calibrate_gravity = %s, fly = %s, takeoff_speed = %d, shoot_vid
 #-------------------------------------------------------------------------------------------
 mpu6050 = MPU6050(0x68)
 
-#-----------------------------------------------------------------------------------
+#-------------------------------------------------------------------------------------------
 # Calibrate to accelometer for exact gravity
-#-----------------------------------------------------------------------------------
+#-------------------------------------------------------------------------------------------
 if calibrate_gravity:
 	if not mpu6050.calibrateGravity('./qcgravity.cfg'):
 		print 'Gravity normalization error'
@@ -1075,52 +931,15 @@ RpioSetup()
 #-------------------------------------------------------------------------------------------
 CountdownBeep(5)
 
-#-----------------------------------------------------------------------------------
+#-------------------------------------------------------------------------------------------
 # Calibrate the gyros
-#-----------------------------------------------------------------------------------
+#-------------------------------------------------------------------------------------------
 mpu6050.calibrateGyros()
 
 #-------------------------------------------------------------------------------------------
-# Countdown: 4 beeps prior to waiting for RC connection
+# Countdown: 4 beeps prior to waiting for RC connection (code deleted as untested)
 #-------------------------------------------------------------------------------------------
 CountdownBeep(4)
-
-#-------------------------------------------------------------------------------------------
-# Wait pending a sockets connection with the RC if required
-#-------------------------------------------------------------------------------------------
-inputs = []
-outputs = []
-if use_sockets:
-	try:
-		serversock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-	except socket.error as msg:
-		serversock = None
-
-	try:
-#		serversock.setblocking(False)  # <=====???????????
-		serversock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-		serversock.bind((socket.gethostname(), 12345))
-		logger.info('Listening as host %s', socket.gethostname())
-		serversock.listen(NUM_SOCK)
-	except socket.error as msg:
-		serversock.close()
-		serversock = None
-
-	if serversock is None:
-		sys.exit(1)
-
-	#-----------------------------------------------------------------------------------
-	# Wait to accept a connection from the QC RC
-	#-----------------------------------------------------------------------------------
-	drc_socket, drc_addr = serversock.accept()
-	drc_socket.setblocking(False)
-	inputs = [drc_socket]
-	logger.info('Connected to %s', drc_socket.getpeername())
-
-#-------------------------------------------------------------------------------------------
-# Now we have a connection, power up the TCP data TLV parsing engine
-#-------------------------------------------------------------------------------------------
-tlvstream = TLVSTREAM()
 
 #-------------------------------------------------------------------------------------------
 # Countdown: 3 beeps for successful RC connection
@@ -1169,10 +988,6 @@ i_yaw = 0.0
 prev_c_pitch = 0.0
 prev_c_roll = 0.0
 
-# pitch_angle_target = 0.0
-# roll_angle_target = 0.0
-# yaw_angle_target = 0.0
-
 eax_speed = 0.0
 eay_speed = 0.0
 eaz_speed = 0.0
@@ -1198,14 +1013,14 @@ STATE_DESCENDING = 3
 fsm_state = STATE_OFF
 
 
-#------------------------------------------------------------------------------------------
+#-------------------------------------------------------------------------------------------
 # Bring the ESCs up to just under takeoff speed
 #-------------------------------------------------------------------------------------------
 for beep_count in range(0, TAKEOFF_READY_RATE, 10):
 	for esc in esc_list:
-		#--------------------------------------------------------------------------
+		#---------------------------------------------------------------------------
 		# Spin up to just under take-off / hover speeds
-		#--------------------------------------------------------------------------
+		#---------------------------------------------------------------------------
 		esc.update(beep_count);
 	
 	RPIO.output(RPIO_STATUS_SOUNDER, not RPIO.input(RPIO_STATUS_SOUNDER))
@@ -1294,9 +1109,9 @@ eax_speed_pid = PID(PID_EAX_SPEED_P_GAIN, PID_EAX_SPEED_I_GAIN, PID_EAX_SPEED_D_
 eay_speed_pid = PID(PID_EAY_SPEED_P_GAIN, PID_EAY_SPEED_I_GAIN, PID_EAY_SPEED_D_GAIN)
 eaz_speed_pid = PID(PID_EAZ_SPEED_P_GAIN, PID_EAZ_SPEED_I_GAIN, PID_EAZ_SPEED_D_GAIN)
 
-#---------------------------------------------------------------------------
+#-------------------------------------------------------------------------------------------
 # Diagnostic statistics log header
-#---------------------------------------------------------------------------
+#-------------------------------------------------------------------------------------------
 logger.warning(', Time, DT, Loop, fgx, fgy, fgz, fax, fay, faz, c pitch, c roll, i yaw, e tilt, evz, prp, pri, prd, pap, pai, pad, rrp, rri, rrd, rap, rai, rad, yrp, yri, yrd, yap, yai, yap, exp, exi, exd, eyp, eyi, eyd, ezp, ezi, ezd, pitch target, roll target, yaw target, pitch out, roll_out, yaw out, vert speed out, FL spin, FR spin, BL spin, BR spin')
 
 time_handling_fsm = 0.0
@@ -1304,7 +1119,7 @@ time_handling_sensors = 0.0
 time_handling_eangles = 0.0
 time_handling_iangles = 0.0
 time_handling_angles_filter = 0.0
-time_handling_sensor_angles = 0.0
+time_handling_axes_shift = 0.0
 time_handling_speed_pids = 0.0
 time_handling_angle_pids = 0.0
 time_handling_pid_outputs = 0.0
@@ -1317,19 +1132,22 @@ current_time = start_time
 prev_sample_time = current_time
 
 while keep_looping:
-	#---------------------------------------------------------------------------
+	#-----------------------------------------------------------------------------------
 	# Update the elapsed time since start, the time for the last iteration, and
 	# set the next sleep time to compensate for any overrun in scheduling.
-	#---------------------------------------------------------------------------
+	#-----------------------------------------------------------------------------------
 	current_time = time.time()
 	delta_time = current_time - start_time - elapsed_time
 	elapsed_time = current_time - start_time
 	loop_count += 1
 
-	#---------------------------------------------------------------------------
-	# Targets: FSM inputs are mostly generated on a timer; the exceptions are
-	# - SIGNAL generated by a Ctrl-C
-	#---------------------------------------------------------------------------
+	#===================================================================================
+	# Interpreter: FSM inputs are mostly generated on a timer for testing; the exceptions are
+	# - SIGNAL generated by a Ctrl-C.  These produce the targets for the PIDs.  In this
+	# case, only the vertical speed target is modified - the horizontal X and Y speed targets
+	# are configured higher up to be 0.0 to create a stable hover regardless of take-off conditions
+	# of any external factors such as wind or weight balance.
+	#===================================================================================
 	if fsm_input != INPUT_SIGNAL:
 		if elapsed_time >= 0.0:
 			fsm_input = INPUT_TAKEOFF
@@ -1340,7 +1158,7 @@ while keep_looping:
 		if elapsed_time >=  6.0:
 			fsm_input = INPUT_LAND
 
-		if elapsed_time >= 12.0:
+		if elapsed_time >= 10.0:
 			fsm_input = INPUT_STOP
 
 	if fsm_state == STATE_OFF and fsm_input == INPUT_TAKEOFF:
@@ -1349,9 +1167,9 @@ while keep_looping:
 		fsm_input = INPUT_NONE
 		RPIO.output(RPIO_STATUS_SOUNDER, RPIO.HIGH)
 
-		#-----------------AUTONOMOUS VERTICAL TAKE-OFF SPEED-----------------
+		#---------------------AUTONOMOUS VERTICAL TAKE-OFF SPEED--------------------
 		eaz_speed_target = 0.5
-		#-----------------AUTONOMOUS VERTICAL TAKE-OFF SPEED-----------------
+		#---------------------AUTONOMOUS VERTICAL TAKE-OFF SPEED--------------------
 
 
 
@@ -1361,9 +1179,9 @@ while keep_looping:
 		fsm_input = INPUT_NONE
 		RPIO.output(RPIO_STATUS_SOUNDER, RPIO.LOW)
 
-		#-------------------AUTONOMOUS VERTICAL HOVER SPEED------------------
+		#-----------------------AUTONOMOUS VERTICAL HOVER SPEED---------------------
 		eaz_speed_target = 0.0
-		#-------------------AUTONOMOUS VERTICAL HOVER SPEED------------------
+		#-----------------------AUTONOMOUS VERTICAL HOVER SPEED---------------------
 
 
 
@@ -1373,9 +1191,9 @@ while keep_looping:
 		fsm_input = INPUT_NONE
 		RPIO.output(RPIO_STATUS_SOUNDER, RPIO.HIGH)
 
-		#-------------------AUTONOMOUS VERTICAL LANDING SPEED------------------
+		#----------------------AUTONOMOUS VERTICAL LANDING SPEED--------------------
 		eaz_speed_target = -0.35
-		#-------------------AUTONOMOUS VERTICAL LANDING SPEED------------------
+		#----------------------AUTONOMOUS VERTICAL LANDING SPEED--------------------
 
 
 
@@ -1387,64 +1205,63 @@ while keep_looping:
 		takeoff_speed = 0
 		RPIO.output(RPIO_STATUS_SOUNDER, RPIO.LOW)
 
-		#-------------------AUTONOMOUS VERTICAL PIN-DOWN SPEED------------------
+		#---------------------AUTONOMOUS VERTICAL PIN-DOWN SPEED--------------------
 		eaz_speed_target = -0.10
-		#-------------------AUTONOMOUS VERTICAL PIN_DOWN SPEED------------------
+		#---------------------AUTONOMOUS VERTICAL PIN_DOWN SPEED--------------------
 
-	#-------------------------------------------------------------------------------
+	#-----------------------------------------------------------------------------------
 	# Track proportion of time handling FSM
-	#-------------------------------------------------------------------------------
+	#-----------------------------------------------------------------------------------
 	sample_time = time.time()
 	time_handling_fsm += sample_time - prev_sample_time
 	prev_sample_time = sample_time
 
-	#---------------------------------------------------------------------------
-	# Inputs: Update the elapsed time since start, the time for the last interaction,
-	# and set the next sleep time to compensate for any overrun in scheduling.
-	#---------------------------------------------------------------------------
+
+	#===================================================================================
+	# Inputs: Read the data from the accelerometer and gyro
+	#===================================================================================
 	[fax, fay, faz, fgx, fgy, fgz] = mpu6050.readSensors()
 
-	#-------------------------------------------------------------------------------
+	#-----------------------------------------------------------------------------------
 	# Track proportion of time handling sensors
-	#-------------------------------------------------------------------------------
+	#-----------------------------------------------------------------------------------
 	sample_time = time.time()
 	time_handling_sensors += sample_time - prev_sample_time
 	prev_sample_time = sample_time
 
-	#---------------------------------------------------------------------------
+	#===================================================================================
 	# Angles: Get the Euler angles in radians
-	#---------------------------------------------------------------------------
+	#===================================================================================
 	e_pitch, e_roll, e_tilt  = mpu6050.getEulerAngles(fax, fay, faz)
 
-	#-------------------------------------------------------------------------------
+	#-----------------------------------------------------------------------------------
 	# Track proportion of time handling euler angles
-	#-------------------------------------------------------------------------------
+	#-----------------------------------------------------------------------------------
 	sample_time = time.time()
 	time_handling_eangles += sample_time - prev_sample_time
 	prev_sample_time = sample_time
 
-	#---------------------------------------------------------------------------
+	#-----------------------------------------------------------------------------------
 	# Integrate the gyros angular velocity to determine absolute angle of tilt in radians
-	#---------------------------------------------------------------------------
+	#-----------------------------------------------------------------------------------
 	i_pitch += fgy * delta_time
 	i_roll += fgx * delta_time
 	i_yaw += fgz * delta_time
 
-	#-------------------------------------------------------------------------------
+	#-----------------------------------------------------------------------------------
 	# Track proportion of time handling integrated angles
-	#-------------------------------------------------------------------------------
+	#-----------------------------------------------------------------------------------
 	sample_time = time.time()
 	time_handling_iangles += sample_time - prev_sample_time
 	prev_sample_time = sample_time
 
-	#---------------------------------------------------------------------------
-	# Filters: Apply complementary filter to ensure long-term accuracy of pitch / roll angles
-	# tau is the handover period of 0.5s (1 / frequency) that the integrated gyro
-	# high pass filter is taken over by the accelerometer Euler low-pass filter.
-	# The combination of tau plus the time increment (delta_time) then provides a
-	# fraction to mix the two angles sources.
-	#---------------------------------------------------------------------------
-	tau = 0.5
+	#===================================================================================
+	# Filter: Apply complementary filter to ensure long-term accuracy of pitch / roll angles
+	# tau is the handover period of 0.1s (1 / frequency) that the integrated gyro high pass
+	# filter is taken over by the accelerometer Euler low-pass filter.  The combination of
+	# tau plus the time increment (delta_time) then provides a fraction to mix the two angles sources.
+	#===================================================================================
+	tau = 0.1
 	tau_fraction = tau / (tau + delta_time)
 
 	c_pitch = tau_fraction * (prev_c_pitch + fgy * delta_time) + (1 - tau_fraction) * e_pitch
@@ -1453,24 +1270,24 @@ while keep_looping:
 	c_roll = tau_fraction * (prev_c_roll + fgx * delta_time) + (1 - tau_fraction) * e_roll
 	prev_c_roll = c_roll
 
-	#-------------------------------------------------------------------------------
-	# Track proportion of time handling angle filter
-	#-------------------------------------------------------------------------------
-	sample_time = time.time()
-	time_handling_angles_filter += sample_time - prev_sample_time
-	prev_sample_time = sample_time
-
-	#---------------------------------------------------------------------------
-	# Choose the ripest apple from the tree
-	#---------------------------------------------------------------------------
+	#-----------------------------------------------------------------------------------
+	# Choose the best measure of the angles
+	#-----------------------------------------------------------------------------------
 	pitch_angle = c_pitch
 	roll_angle = c_roll
 	yaw_angle = i_yaw
 
-	#---------------------------------------------------------------------------
+	#-----------------------------------------------------------------------------------
+	# Track proportion of time handling angle filter
+	#-----------------------------------------------------------------------------------
+	sample_time = time.time()
+	time_handling_angles_filter += sample_time - prev_sample_time
+	prev_sample_time = sample_time
+
+	#===================================================================================
 	# Axes: Convert the accelerometers' g force to earth coordinates, then integrate to
 	# convert to speeds in earth's X and Y axes
-	#---------------------------------------------------------------------------
+	#===================================================================================
 	eax = fax * math.cos(pitch_angle)
 	eay = fay * math.cos(roll_angle)
 	eaz = faz * math.cos(pitch_angle) * math.cos(roll_angle)
@@ -1479,21 +1296,20 @@ while keep_looping:
 	eay_speed += eay * delta_time * G_FORCE
 	eaz_speed += eaz * delta_time * G_FORCE
 
-	#-------------------------------------------------------------------------------
+	#-----------------------------------------------------------------------------------
 	# Track proportion of time handling sensor angles
-	#-------------------------------------------------------------------------------
+	#-----------------------------------------------------------------------------------
 	sample_time = time.time()
-	time_handling_sensor_angles += sample_time - prev_sample_time
+	time_handling_axes_shift += sample_time - prev_sample_time
 	prev_sample_time = sample_time
 
-
-	#---------------------------------------------------------------------------
+	#===================================================================================
 	# PIDs: Run the horizontal speed PIDs each rotation axis to determine targets for angle PID
 	# and the verical speed PID to control height.
-	#---------------------------------------------------------------------------
+	#===================================================================================
 	[p_out, i_out, d_out] = eax_speed_pid.Compute(eax_speed, eax_speed_target)
 	eax_diags = "%f, %f, %f" % (p_out, i_out, d_out)
-	pitch_angle_target = - p_out - i_out - d_out
+	pitch_angle_target = + p_out + i_out + d_out
 
 	[p_out, i_out, d_out] = eay_speed_pid.Compute(eay_speed, eay_speed_target)
 	eay_diags = "%f, %f, %f" % (p_out, i_out, d_out)
@@ -1503,16 +1319,16 @@ while keep_looping:
 	eaz_diags = "%f, %f, %f" % (p_out, i_out, d_out)
 	eaz_speed_out = p_out + i_out + d_out
 
-	#-------------------------------------------------------------------------------
+	#-----------------------------------------------------------------------------------
 	# Track proportion of time handling speed PIDs
-	#-------------------------------------------------------------------------------
+	#-----------------------------------------------------------------------------------
 	sample_time = time.time()
 	time_handling_speed_pids += sample_time - prev_sample_time
 	prev_sample_time = sample_time
 
-	#---------------------------------------------------------------------------
+	#-----------------------------------------------------------------------------------
 	# Run the absolute angle PIDs each rotation axis.
-	#---------------------------------------------------------------------------
+	#-----------------------------------------------------------------------------------
 	[p_out, i_out, d_out] = pitch_angle_pid.Compute(pitch_angle, pitch_angle_target)
 	pa_diags = "%f, %f, %f" % (p_out, i_out, d_out)
 	pitch_rate_target = p_out + i_out + d_out
@@ -1523,9 +1339,9 @@ while keep_looping:
 	ya_diags = "%f, %f, %f" % (p_out, i_out, d_out)
 	yaw_rate_target = p_out + i_out + d_out
 
-	#---------------------------------------------------------------------------
+	#-----------------------------------------------------------------------------------
 	# Run the angular rate PIDs each rotation axis.
-	#---------------------------------------------------------------------------
+	#-----------------------------------------------------------------------------------
 	[p_out, i_out, d_out] = pitch_rate_pid.Compute(fgy, pitch_rate_target)
 	pr_diags = "%f, %f, %f" % (p_out, i_out, d_out)
 	pitch_out = p_out + i_out + d_out
@@ -1536,46 +1352,48 @@ while keep_looping:
 	yr_diags = "%f, %f, %f" % (p_out, i_out, d_out)
 	yaw_out = p_out + i_out + d_out
 
+	#-----------------------------------------------------------------------------------
+	# Track proportion of time handling angle PIDs
+	#-----------------------------------------------------------------------------------
+	sample_time = time.time()
+	time_handling_angle_pids += sample_time - prev_sample_time
+	prev_sample_time = sample_time
+
+	#===================================================================================
+	# Mixer: Walk through the ESCs, and depending on their location, apply the output accordingly
+	#===================================================================================
 	pitch_out = int(round(pitch_out / 2))
 	roll_out = int(round(roll_out / 2))
 	yaw_out = int(round(yaw_out / 2))
 	vert_out = takeoff_speed + eaz_speed_out
 
-	#-------------------------------------------------------------------------------
-	# Track proportion of time handling angle PIDs
-	#-------------------------------------------------------------------------------
-	sample_time = time.time()
-	time_handling_angle_pids += sample_time - prev_sample_time
-	prev_sample_time = sample_time
-
-	#---------------------------------------------------------------------------
-	# Outputs: Walk through the ESCs, and depending on their location, apply the output accordingly
-	#---------------------------------------------------------------------------
 	for esc in esc_list:
-		#-------------------------------------------------------------------
+		#---------------------------------------------------------------------------
 		# Update all blades' power in accordance with the z error
-		#-------------------------------------------------------------------
+		#---------------------------------------------------------------------------
 		delta_spin = vert_out
 
-		#-------------------------------------------------------------------
-		# For a left downwards roll, the x gyro goes negative, so the PID error is positive, meaning
-		# PID output is positive, meaning this needs to be added to the left blades and subtracted from the right.
-		#-------------------------------------------------------------------
+		#---------------------------------------------------------------------------
+		# For a left downwards roll, the x gyro goes negative, so the PID error is positive,
+		# meaning PID output is positive, meaning this needs to be added to the left blades
+		# and subtracted from the right.
+		#---------------------------------------------------------------------------
 		if esc.motor_location & MOTOR_LOCATION_RIGHT:
 			delta_spin -= roll_out
 		else:
 			delta_spin += roll_out
 
-		#-------------------------------------------------------------------
-		# For a forward downwards pitch, the y gyro goes positive, so the PID error is negative, meaning
-		# PID output is negative, meaning this needs to be subtracted from the front blades and added to the back.
-		#-------------------------------------------------------------------
+		#---------------------------------------------------------------------------
+		# For a forward downwards pitch, the y gyro goes positive, so the PID error is
+		# negative, meaning PID output is negative, meaning this needs to be subtracted
+		# from the front blades and added to the back.
+		#---------------------------------------------------------------------------
 		if esc.motor_location & MOTOR_LOCATION_BACK:
 			delta_spin += pitch_out
 		else:
 			delta_spin -= pitch_out
 
-		#-------------------------------------------------------------------
+		#---------------------------------------------------------------------------
 		# An excess CW rotating of the front-right and back-left (FR & BL) blades
 		# results in an ACW rotation of the quadcopter body. The z gyro produces
 		# a positive output as a result. This then leads to the PID error
@@ -1585,30 +1403,34 @@ while keep_looping:
 		# output needs to be added to those blades (thus slowing their rotation)
 		# and subtracted from the ACW FL & BR blades (thus speeding them up) to
 		# compensate for the yaw.
-		#-------------------------------------------------------------------
+		#---------------------------------------------------------------------------
 		if esc.motor_rotation == MOTOR_ROTATION_CW:
 			delta_spin += yaw_out
 		else:
 			delta_spin -= yaw_out
 
+		#---------------------------------------------------------------------------
+		# Apply the blended outputs to the esc PWM signal
+		#---------------------------------------------------------------------------
 		esc.update(delta_spin)
 
-	#-------------------------------------------------------------------------------
+	#-----------------------------------------------------------------------------------
 	# Track proportion of time applying PID outputs
-	#-------------------------------------------------------------------------------
+	#-----------------------------------------------------------------------------------
 	sample_time = time.time()
 	time_handling_pid_outputs += sample_time - prev_sample_time
 	prev_sample_time = sample_time
 
-	#---------------------------------------------------------------------------
+	#-----------------------------------------------------------------------------------
 	# Diagnostic statistics log - every 0.1s
-	#---------------------------------------------------------------------------
-	logger.warning(', %f, %f, %d, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %s, %s, %s, %s, %s, %s, %s, %s, %s, %f, %f, %f, %d, %d, %d, %d, %d, %d, %d, %d', elapsed_time, delta_time, loop_count, fgx, fgy, fgz, fax, fay, faz, math.degrees(c_pitch), math.degrees(c_roll), math.degrees(i_yaw), math.degrees(e_tilt), eaz_speed, pr_diags, pa_diags, rr_diags, ra_diags, yr_diags, ya_diags, eax_diags, eay_diags, eaz_diags, pitch_rate_target, roll_rate_target, yaw_rate_target, pitch_out, roll_out, yaw_out, eaz_speed_out, esc_list[0].current_pulse_width, esc_list[1].current_pulse_width, esc_list[2].current_pulse_width, esc_list[3].current_pulse_width)
-	last_log_time = current_time
+	#-----------------------------------------------------------------------------------
+	if current_time - last_log_time > 0.1:
+		logger.warning(', %f, %f, %d, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %s, %s, %s, %s, %s, %s, %s, %s, %s, %f, %f, %f, %d, %d, %d, %d, %d, %d, %d, %d', elapsed_time, delta_time, loop_count, fgx, fgy, fgz, fax, fay, faz, math.degrees(c_pitch), math.degrees(c_roll), math.degrees(i_yaw), math.degrees(e_tilt), eaz_speed, pr_diags, pa_diags, rr_diags, ra_diags, yr_diags, ya_diags, eax_diags, eay_diags, eaz_diags, pitch_rate_target, roll_rate_target, yaw_rate_target, pitch_out, roll_out, yaw_out, eaz_speed_out, esc_list[0].current_pulse_width, esc_list[1].current_pulse_width, esc_list[2].current_pulse_width, esc_list[3].current_pulse_width)
+		last_log_time = current_time
 
-	#-------------------------------------------------------------------------------
+	#-----------------------------------------------------------------------------------
 	# Track proportion of time applying PID outputs
-	#-------------------------------------------------------------------------------
+	#-----------------------------------------------------------------------------------
 	sample_time = time.time()
 	time_handling_diagnostics += sample_time - prev_sample_time
 	prev_sample_time = sample_time
@@ -1632,7 +1454,7 @@ logger.critical("%% sensors:          %f", time_handling_sensors / elapsed_time 
 logger.critical("%% eangles:          %f", time_handling_eangles / elapsed_time * 100.0)
 logger.critical("%% iangles:          %f", time_handling_iangles / elapsed_time * 100.0)
 logger.critical("%% angles_filter:    %f", time_handling_angles_filter / elapsed_time * 100.0)
-logger.critical("%% sensor_angles:    %f", time_handling_sensor_angles / elapsed_time * 100.0)
+logger.critical("%% axes_shift:       %f", time_handling_axes_shift / elapsed_time * 100.0)
 logger.critical("%% speed_pids:       %f", time_handling_speed_pids / elapsed_time * 100.0)
 logger.critical("%% angle_pids:       %f", time_handling_angle_pids / elapsed_time * 100.0)
 logger.critical("%% pid_outputs:      %f", time_handling_pid_outputs / elapsed_time * 100.0)
