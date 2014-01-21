@@ -623,161 +623,6 @@ def RpioSetup():
 	logger.info('Setup MPU6050 interrupt input %s', RPIO_SENSOR_DATA_RDY)
 	RPIO.setup(RPIO_SENSOR_DATA_RDY, RPIO.IN, RPIO.PUD_DOWN)
 
-############################################################################################
-#
-# Parse the received commmand to convert it to the equivalent directional / operational command
-# The message format is a basic TLV with header and footer:
-# Type: 1 byte
-# Len: 1 byte - currently always 4 - includes this header
-# Data: 2 bytes
-#
-############################################################################################
-class TLVSTREAM():
-
-	__CTRL_CMD_ABORT =      0
-	__CTRL_CMD_TAKEOFF =    1
-	__CTRL_CMD_LANDING =    2
-	__CTRL_CMD_HOVER =      3
-	__CTRL_CMD_UP_DOWN =    4
-	__CTRL_CMD_FWD_RVS =    5
-	__CTRL_CMD_LEFT_RIGHT = 6
-	__CTRL_CMD_KEEPALIVE =  7
-	__CTRL_CMD_DATA_ACK =   8
-
-	def __init__(self):
-		self.cache = ""
-
-	def Parser(recv_buff):
-		self.cache += resv_buff
-		send_buff = ""
-
-		evx_target = 0.0
-		evy_target = 0.0
-		evz_target = 0.0
-
-		#---------------------------------------------------------------------------
-		# Parse the message TLVs - assume no exception
-		#---------------------------------------------------------------------------
-		if len(self.cache) >= 4:
-			type, length, msg_id = struct.unpack_from('!BBH', self.cache, 0)
-
-			#-----------------------------------------------------------
-			# If we have a complete TLV, parse it
-			#-----------------------------------------------------------
-			if len(self.cache) >= 4 + length:
-
-				#---------------------------------------------------------------------------
-				# If we've received a valid message type, then respond with an ACK
-				#---------------------------------------------------------------------------
-				send_buff = struct.pack('!BBH', __CTRL_CMD_DATA_ACK, 4, msg_id)
-				qcrc_sck.send(send_buff)
-				send_buff = ""
-
-				#---------------------------------------------------------------------------
-				# If the message content length > 0, unpack that too
-				#---------------------------------------------------------------------------
-				if length > 0:
-					value = struct.unpack_from('!I', self.cache, 4)
-					logger.info('type %d, length 0, msg_id %d', type, length, msg_id)
-				else:
-					logger.info('type %d, length %d, msg_id %d, value %d', type, length, msg_id, value)
-
-
-				#---------------------------------------------------------------------------
-				# Enact the command - decide the targets for the PID algorithm
-				#---------------------------------------------------------------------------
-				if type == __CTRL_CMD_ABORT:
-					#----------------------------------------------------------------------------
-					# Hard shutdown
-					#----------------------------------------------------------------------------
-					logger.warning('ABORT')
-					os.kill(os.getpid(), signal.SIGINT)
-
-				elif type == __CTRL_CMD_TAKEOFF:
-					#----------------------------------------------------------------------------
-					# Spin each blade up to the calibrated 0g point and then increment slight for a while beofre setting back to 0g
-					#----------------------------------------------------------------------------
-					logger.info('TAKEOFF')
-					evx_target = 0.0
-					evy_target = 0.0
-
-					#AB: I think this shoud be a manual incremental increase in blade speeds to achieve takeoff before handover to hover
-					faz_target = 1.01
-
-				elif type == __CTRL_CMD_LANDING:
-					#----------------------------------------------------------------------------
-					# Spin each blade down to the calibrated 0g point and them decrement slightly for a controlled landing
-					#----------------------------------------------------------------------------
-					logger.info('LANDING')
-					evx_target = 0.0
-					evy_target = 0.0
-					#AB: Less sure about this one though
-					evz_target = 0.99
-
-				elif type == __CTRL_CMD_HOVER:
-					#----------------------------------------------------------------------------
-					# Spin each blade down to the calibrated 0g point
-					#----------------------------------------------------------------------------
-					logger.info('HOVER')
-					evx_target = 0.0
-					evy_target = 0.0
-					evz_target = 1.0
-
-				elif type == __CTRL_CMD_UP_DOWN:
-					#----------------------------------------------------------------------------
-					# Increment the speed of all blades proportially to the command data
-					#----------------------------------------------------------------------------
-					logger.info('UP/DOWN %d', int(value))
-					evx_target = 0.0
-					evy_target = 0.0
-					evz_target = 1.0 + (float(value * 0.05) / 128)
-
-				elif type == __CTRL_CMD_FWD_RVS:
-					#----------------------------------------------------------------------------
-					# ????????????????
-					#----------------------------------------------------------------------------
-					logger.info('FWD/RVS %d', int(value))
-
-				elif type == __CTRL_CMD_LEFT_RIGHT:
-					#----------------------------------------------------------------------------
-					# ????????????????
-					#----------------------------------------------------------------------------
-					logger.info('LEFT/RIGHT %d', int(value))
-
-				elif type == __CTRL_CMD_KEEPALIVE:
-					#----------------------------------------------------------------------------
-					# No change to blade power, keep stable at the current setting
-					#----------------------------------------------------------------------------
-					logger.debug('KEEPALIVE')
-				else:
-					#----------------------------------------------------------------------------
-					# Unrecognised command - treat as an abort
-					#----------------------------------------------------------------------------
-					logger.warning('UNRECOGNISED COMMAND: ABORT')
-					os.kill(os.getpid(), signal.SIGINT)
-
-				#---------------------------------------------------------------------------
-				# TLV is wholly parsed, decrease the cache size
-				#----------------------------------------------------------------------------
-				self.cache = self.cache[4 + length : len(self.cache)]
-			else:
-				#---------------------------------------------------------------------------
-				# Insufficient data to form a whole TLV, get out
-				#---------------------------------------------------------------------------
-				parsed_tlv = False
-
-
-		else:
-			#---------------------------------------------------------------------------
-			# Insufficient data to parse, leave target unchanged !!!!!!!!!!!!!!!!!!!!!!!!
-			#---------------------------------------------------------------------------
-			parsed_tlv = False
-
-		#---------------------------------------------------------------------------
-		# No more complete TLVs to part, get out, returning how much data we have dealt with
-		#---------------------------------------------------------------------------
-		return evx_target, evy_target, evz_target
-
 
 ############################################################################################
 #
@@ -792,15 +637,15 @@ def CheckCLI(argv):
 	cli_vvp_gain = 150.0    # derived through testing - could be increased at risk of noise
 	cli_vvi_gain = 50.0     # derived through testing - by including integrate get slow, more stable height
 	cli_vvd_gain = 0.0
-	cli_hvp_gain = 0.5      # 1m/s target @ 5m/s2 (0.5g) accel => atan2(0.5g/1.0g) = 26 degrees which feels reasonalble
+	cli_hvp_gain = 0.2      # 1m/s target => 0.2g => atan2(0.2g/1.0g) = 0.2 radians = 11 degrees
 	cli_hvi_gain = 0.0
 	cli_hvd_gain = 0.0
-	cli_aap_gain = 5.0      # 0.244 radians => 1.22 radians per second desired target for tuned angular rate PID gain of 150, 300, 2.5 -> +/- 91.5 spinning
+	cli_aap_gain = 2.5      # 0.2 radians (11 degrees) => 0.5 rad / second
 	cli_aai_gain = 0.0
-	cli_aad_gain = 0.0
-	cli_arp_gain = 150
-	cli_ari_gain = 300
-	cli_ard_gain = 5.0
+	cli_aad_gain = 0.1
+	cli_arp_gain = 110      # 0.5 rad / second => +/- 16 PWM => seems plausible and safe
+	cli_ari_gain = 130
+	cli_ard_gain = 2.5
 	cli_test_case = 0
 	hover_speed_defaulted = True
 	arp_set = False
@@ -900,12 +745,19 @@ def CheckCLI(argv):
 		logger.critical('Choose specific test case (--tc) or fly (-f) or calibrate gravity (-g)')
 		sys.exit(2)
 
-	elif cli_test_case != 0 and hover_speed_defaulted:
-		logger.critical('You are running a test (--tc) so you need to specify a test speed (-t).')
+	elif cli_test_case != 0 and cli_test_case != 3 and hover_speed_defaulted:
+		logger.critical('You are running testcase 1 or 2 (--tc) so you need to specify a hover speed (-h).')
 		sys.exit(2)
 
-	elif cli_test_case == 0:
+	elif cli_test_case == 0 and cli_fly:
 		logger.critical('Pre-flight checks passes, enjoy your flight, sir!')
+
+	elif cli_test_case == 0 and cli_calibrate_gravity:
+		logger.critical('Calibrate gravity is it, sir!')
+
+	elif cli_test_case != 3 and hover_speed_defaulted:
+		logger.critical('You are running testcase 1 or 2 (--tc) so you need to specify a hover speed (-h).')
+		sys.exit(2)
 
 	elif cli_test_case < 1 or cli_test_case > 3:
 		logger.critical('Choose test case 1, 2 or 3')
@@ -1040,8 +892,6 @@ G_FORCE = 9.80665
 
 RPIO_DMA_CHANNEL = 1
 
-use_sockets = False
-
 ESC_BCM_BL = 22
 ESC_BCM_FL = 17
 ESC_BCM_FR = 18
@@ -1167,37 +1017,6 @@ CountdownBeep(4)
 #-------------------------------------------------------------------------------------------
 inputs = []
 outputs = []
-if use_sockets:
-	try:
-		serversock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-	except socket.error as msg:
-		serversock = None
-
-	try:
-#		serversock.setblocking(False)  # <=====???????????
-		serversock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-		serversock.bind((socket.gethostname(), 12345))
-		logger.info('Listening as host %s', socket.gethostname())
-		serversock.listen(NUM_SOCK)
-	except socket.error as msg:
-		serversock.close()
-		serversock = None
-
-	if serversock is None:
-		sys.exit(1)
-
-	#-----------------------------------------------------------------------------------
-	# Wait to accept a connection from the QC RC
-	#-----------------------------------------------------------------------------------
-	qcrc_socket, qcrc_addr = serversock.accept()
-	qcrc_socket.setblocking(False)
-	inputs = [qcrc_socket]
-	logger.info('Connected to %s', qcrc_socket.getpeername())
-
-#-------------------------------------------------------------------------------------------
-# Now we have a connection, power up the TCP data TLV parsing engine
-#-------------------------------------------------------------------------------------------
-tlvstream = TLVSTREAM()
 
 #-------------------------------------------------------------------------------------------
 # Countdown: 3 beeps for successful RC connection
@@ -1319,10 +1138,13 @@ elif test_case == 2:
 else:
 	for beep_count in range(0, hover_speed, 10):
 		for esc in esc_list:
-			#---------------------------------------------------------------------------
-			# Spin up to just under take-off / hover speeds
-			#---------------------------------------------------------------------------
-			esc.update(beep_count);
+			if test_case == 3 and (esc.motor_location == (MOTOR_LOCATION_FRONT + MOTOR_LOCATION_RIGHT) or esc.motor_location == (MOTOR_LOCATION_BACK + MOTOR_LOCATION_LEFT)):
+				#---------------------------------------------------------------------------
+				# Spin up to just under take-off / hover speeds
+				#---------------------------------------------------------------------------
+				esc.update(0)
+			else:
+				esc.update(beep_count)
 		
 		RPIO.output(RPIO_STATUS_SOUNDER, not RPIO.input(RPIO_STATUS_SOUNDER))
 		time.sleep(0.01)
@@ -1406,8 +1228,8 @@ PID_RA_D_GAIN = aad_gain
 #-------------------------------------------------------------------------------------------
 # The YAW ANGLE PID controls stable rotation speed about the Z-axis
 #-------------------------------------------------------------------------------------------
-PID_YA_P_GAIN = 2.5
-PID_YA_I_GAIN = 5.0
+PID_YA_P_GAIN = 0.0 # 2.5
+PID_YA_I_GAIN = 0.0 # 5.0
 PID_YA_D_GAIN = 0.0
 
 #-------------------------------------------------------------------------------------------
@@ -1427,9 +1249,9 @@ PID_RR_D_GAIN = ard_gain
 #-------------------------------------------------------------------------------------------
 # The YAW RATE PID controls stable rotation speed about the Z-axis
 #-------------------------------------------------------------------------------------------
-PID_YR_P_GAIN = arp_gain
-PID_YR_I_GAIN = ari_gain
-PID_YR_D_GAIN = ard_gain
+PID_YR_P_GAIN = arp_gain / 5
+PID_YR_I_GAIN = ari_gain / 5
+PID_YR_D_GAIN = ard_gain / 5
 
 #-------------------------------------------------------------------------------------------
 # Enable time dependent factors PIDs - everything beyond here and "while keep_looping:" is time
@@ -1500,13 +1322,13 @@ while keep_looping:
 		if elapsed_time >= 0.0:
 			fsm_input = INPUT_TAKEOFF
 
-		if elapsed_time >= 5.0:
+		if elapsed_time >= 3.0:
 			fsm_input = INPUT_HOVER
 
-		if elapsed_time >=  10.0:
+		if elapsed_time >= 8.0:
 			fsm_input = INPUT_LAND
 
-		if elapsed_time >= 15.0:
+		if elapsed_time >= 11.0:
 			fsm_input = INPUT_STOP
 
 	if fsm_state == STATE_OFF and fsm_input == INPUT_TAKEOFF:
@@ -1516,7 +1338,7 @@ while keep_looping:
 		RPIO.output(RPIO_STATUS_SOUNDER, RPIO.HIGH)
 
 		#---------------------AUTONOMOUS VERTICAL TAKE-OFF SPEED--------------------
-		evz_target = 0.35
+		evz_target = 0.33
 		#---------------------AUTONOMOUS VERTICAL TAKE-OFF SPEED--------------------
 
 
@@ -1540,7 +1362,7 @@ while keep_looping:
 		RPIO.output(RPIO_STATUS_SOUNDER, RPIO.HIGH)
 
 		#----------------------AUTONOMOUS VERTICAL LANDING SPEED--------------------
-		evz_target = -0.35
+		evz_target = -0.33
 		#----------------------AUTONOMOUS VERTICAL LANDING SPEED--------------------
 
 
@@ -1554,7 +1376,7 @@ while keep_looping:
 		RPIO.output(RPIO_STATUS_SOUNDER, RPIO.LOW)
 
 		#---------------------AUTONOMOUS VERTICAL PIN-DOWN SPEED--------------------
-		evz_target = -0.10
+		evz_target = -0.0
 		#---------------------AUTONOMOUS VERTICAL PIN_DOWN SPEED--------------------
 
 	#-----------------------------------------------------------------------------------
@@ -1563,131 +1385,6 @@ while keep_looping:
 	sample_time = time.time()
 	time_handling_fsm += sample_time - prev_sample_time
 	prev_sample_time = sample_time
-
-#       #---------------------------------------------------------------------------
-#       # Make sure the TLV stream is empty from the last run before extracting more RC command data
-#       #---------------------------------------------------------------------------
-#       if use_sockets:
-#
-#       	#---------------------------------------------------------------------------
-#       	# Select on waiting for a command, or a hello
-#       	#---------------------------------------------------------------------------
-#       	readable, writeable, exceptional = select.select(inputs, outputs, inputs, sleep_time)
-#
-#       	#-----------------------------------------------------------------------------------
-#       	# HELLO timeout - check for receipt and send
-#       	#-----------------------------------------------------------------------------------
-#       	if not (readable or writeable or exceptional):
-#
-#       		#---------------------------------------------------------------------------
-#       		# The timer's popped, which means we've received nothing in the last KEEPALIVE_TIMER seconds.
-#       		# For safety's sake, commit suicide.
-#       		#---------------------------------------------------------------------------
-#       		silent_scan_count += 1
-#       		if silent_scan_count == RC_SILENCE_LIMIT:
-#       			#-----------------------------------------------------------
-#       			# We've not receive a message from RC for 10 scans, close the socket and
-#       			# enforce an automatic landing
-#       			#-----------------------------------------------------------
-#       			logger.error('No message from RC for 10 scans')
-#       			qcrc_sck.shutdown(socket.SHUT_RDWR)
-#       			qcrc_sck.close()
-#
-#       			evx_target = 0.0
-#       			evy_target = 0.0
-#       			evz_target = 0.95
-#
-#       			use_sockets = False
-#
-#       			break
-#
-#       	#-----------------------------------------------------------------------------------
-#       	# Now check whether we have errors on anything
-#       	#-----------------------------------------------------------------------------------
-#       	for qcrc_sck in exceptional:
-#
-#       		#---------------------------------------------------------------------------
-#       		# Don't care about the details, set auto-landing
-#       		#---------------------------------------------------------------------------
-#       		logger.error('Select socket error')
-#       		qcrc_sck.shutdown(socket.SHUT_RDWR)
-#       		qcrc_sck.close()
-#
-#       		evx_target = 0.0
-#       		evy_target = 0.0
-#       		evz_target = 0.95
-#
-#       		use_sockets = False
-#
-#       		break
-#
-#       	#-----------------------------------------------------------------------------------
-#       	# Now check whether we have received anything
-#       	#-----------------------------------------------------------------------------------
-#       	for qcrc_sck in readable:
-#
-#       		#---------------------------------------------------------------------------
-#       		# Check to see what we've received
-#       		#---------------------------------------------------------------------------
-#       		qcrc_data = qcrc_sck.recv(4096)
-#       		if not qcrc_data:
-#       			#-------------------------------------------------------------------
-#       			# Client shutdown processing
-#       			#-------------------------------------------------------------------
-#       			logger.error('0 data received')
-#       			qcrc_sck.shutdown(socket.SHUT_RDWR)
-#       			qcrc_sck.close()
-#
-#       			evx_target = 0.0
-#       			evy_target = 0.0
-#       			evz_target = 0.95
-#
-#       			use_sockets = False
-#
-#       			break
-#
-#       		#-------------------------------------------------------------------
-#       		# Parse the control message
-#       		#-------------------------------------------------------------------
-#       		evx_target, evy_target, evz_target = tlvstream.Parse(qcrc_data)
-#
-#       		#-------------------------------------------------------------------
-#       		# Cycle through each PID applying the appropriate new targets
-#       		#-------------------------------------------------------------------
-#       		if evx_target == 0 and evy_target == 0 and evz_target == 0:
-#       			logger.warning('Nothing parsed!')
-#       			silent_scan_count += 1
-#       			if silent_scan_count == RC_SILENCE_LIMIT:
-#       				#-----------------------------------------------------------
-#       				# We've not receive a message from RC for 10 scans, close the socket and
-#       				# enforce an automatic landing
-#       				#-----------------------------------------------------------
-#       				logger.error('No message from RC for 10 scans')
-#       				qcrc_sck.shutdown(socket.SHUT_RDWR)
-#       				qcrc_sck.close()
-#
-#      					evx_target = 0.0
-#       				evy_target = 0.0
-#       				evz_target = 0.95
-#
-#       				use_sockets = False
-#       				break
-#       		else:
-#       			silent_scan_count = 0
-#       else:
-#       	#-----------------------------------------------------------------------------------
-#       	# Now check whether we have received anything
-#       	#-----------------------------------------------------------------------------------
-#       	time.sleep(sleep_time)
-#
-#       	#-----------------------------------------------------------------------------------
-#       	# Simulate acclerometer targets for testing purposes - HOVER
-#       	#-----------------------------------------------------------------------------------
-#       	if silent_scan_count >= RC_SILENCE_LIMIT:
-#       		evx_target = 0.0
-#       		evy_target = 0.0
-#       		evz_target = 0.95
-
 
 	#===================================================================================
 	# Inputs: Read the data from the accelerometer and gyro
@@ -1733,7 +1430,7 @@ while keep_looping:
 	# filter is taken over by the accelerometer Euler low-pass filter.  The combination of
 	# tau plus the time increment (delta_time) then provides a fraction to mix the two angles sources.
 	#===================================================================================
-	tau = 0.1
+	tau = 0.05
 	tau_fraction = tau / (tau + delta_time)
 
 	c_pitch = tau_fraction * (prev_c_pitch + fgy * delta_time) + (1 - tau_fraction) * e_pitch
@@ -1873,6 +1570,18 @@ while keep_looping:
 			delta_spin += pf_out
 
 		#---------------------------------------------------------------------------
+		# START TESTCASE 3 CODE: Disable front-right and back-left blades; disable yaw PID
+		#---------------------------------------------------------------------------
+		if test_case == 3:
+			yf_out = 0
+			if (esc.motor_location == (MOTOR_LOCATION_FRONT | MOTOR_LOCATION_RIGHT) or esc.motor_location == (MOTOR_LOCATION_BACK | MOTOR_LOCATION_LEFT)):
+				delta_spin = 0
+
+		#---------------------------------------------------------------------------
+		# END TESTCASE 3 CODE: Disable front-left and back right blades
+		#---------------------------------------------------------------------------
+
+		#---------------------------------------------------------------------------
 		# An excess CW rotating of the front-right and back-left (FR & BL) blades
 		# results in an CW rotation of the quadcopter body. The z gyro produces
 		# a negative output as a result. This then leads to the PID error
@@ -1886,16 +1595,6 @@ while keep_looping:
 			delta_spin -= yf_out
 		else:
 			delta_spin += yf_out
-
-		#---------------------------------------------------------------------------
-		# START TESTCASE 3 CODE: Disable front-left and back right blades
-		#---------------------------------------------------------------------------
-		if test_case == 3 and (esc.motor_location == (MOTOR_LOCATION_FRONT | MOTOR_LOCATION_LEFT) or esc.motor_location == (MOTOR_LOCATION_BACK | MOTOR_LOCATION_RIGHT)):
-			delta_spin = 0
-
-		#---------------------------------------------------------------------------
-		# END TESTCASE 3 CODE: Disable front-left and back right blades
-		#---------------------------------------------------------------------------
 
 		#---------------------------------------------------------------------------
 		# Apply the blended outputs to the esc PWM signal
