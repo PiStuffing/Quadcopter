@@ -587,6 +587,7 @@ class ESC:
 		# Initialize the RPIO DMA PWM
 		#---------------------------------------------------------------------------
 		if not PWM.is_setup():
+			PWM.set_loglevel(PWM.LOG_LEVEL_ERRORS)
 			PWM.setup(1)    # 1us increment
 			PWM.init_channel(RPIO_DMA_CHANNEL, 3000) # 3ms carrier period
 		PWM.add_channel_pulse(RPIO_DMA_CHANNEL, self.bcm_pin, 0, self.current_pulse_width)
@@ -647,6 +648,7 @@ def CheckCLI(argv):
 	cli_ari_gain = 130
 	cli_ard_gain = 2.5
 	cli_test_case = 0
+	cli_tau = 0.05
 	hover_speed_defaulted = True
 	arp_set = False
 	ari_set = False
@@ -656,7 +658,7 @@ def CheckCLI(argv):
 	# Right, let's get on with reading the command line and checking consistency
 	#-----------------------------------------------------------------------------------
 	try:
-		opts, args = getopt.getopt(argv,'fgvah:', ['tc=', 'vvp=', 'vvi=', 'vvd=', 'hvp=', 'hvi=', 'hvd=', 'aap=', 'aai=', 'aad=', 'arp=', 'ari=', 'ard='])
+		opts, args = getopt.getopt(argv,'fgvah:', ['tc=', 'vvp=', 'vvi=', 'vvd=', 'hvp=', 'hvi=', 'hvd=', 'aap=', 'aai=', 'aad=', 'arp=', 'ari=', 'ard=', 'tau='])
 	except getopt.GetoptError:
 		logger.critical('qcpi.py [-f][-t hover_speed][-g][-v]')
 		sys.exit(2)
@@ -717,6 +719,9 @@ def CheckCLI(argv):
 		elif opt in '--tc':
 			cli_test_case = int(arg)
 
+		elif opt in '--tau':
+			cli_tau = float(arg)
+
 
 	if not cli_calibrate_gravity and not cli_fly and cli_test_case == 0:
 		logger.critical('Must specify one of -f or -g or --tc')
@@ -736,17 +741,9 @@ def CheckCLI(argv):
 		logger.critical('  --had set horizontal angle PID D gain')
 		sys.exit(2)
 
-	elif cli_fly and (cli_hover_speed < 0 or cli_hover_speed > 1000):
-		logger.critical('Test speed must lie in the following range')
+	elif not cli_calibrate_gravity and (cli_hover_speed < 0 or cli_hover_speed > 1000):
+		logger.critical('Hover speed must lie in the following range')
 		logger.critical('0 <= test speed <= 1000')
-		sys.exit(2)
-
-	elif cli_test_case != 0 and (cli_fly or cli_calibrate_gravity):
-		logger.critical('Choose specific test case (--tc) or fly (-f) or calibrate gravity (-g)')
-		sys.exit(2)
-
-	elif cli_test_case != 0 and cli_test_case != 3 and hover_speed_defaulted:
-		logger.critical('You are running testcase 1 or 2 (--tc) so you need to specify a hover speed (-h).')
 		sys.exit(2)
 
 	elif cli_test_case == 0 and cli_fly:
@@ -755,12 +752,20 @@ def CheckCLI(argv):
 	elif cli_test_case == 0 and cli_calibrate_gravity:
 		logger.critical('Calibrate gravity is it, sir!')
 
-	elif cli_test_case != 3 and hover_speed_defaulted:
-		logger.critical('You are running testcase 1 or 2 (--tc) so you need to specify a hover speed (-h).')
+	elif cli_test_case == 0:
+		logger.critical('You must specify flight (-f) or gravity calibration (-g)')
+		sys.exit(2)
+
+	elif cli_fly or cli_calibrate_gravity:
+		logger.critical('Choose a specific test case (--tc) or fly (-f) or calibrate gravity (-g)')
 		sys.exit(2)
 
 	elif cli_test_case < 1 or cli_test_case > 3:
-		logger.critical('Choose test case 1, 2 or 3')
+		logger.critical('Select test case 1, 2 or 3')
+		sys.exit(2)
+
+	elif cli_test_case != 3 and hover_speed_defaulted:
+		logger.critical('You are running test case 1 or 2 (--tc) so you need to specify a hover speed (-h).')
 		sys.exit(2)
 
 	elif cli_test_case == 3 and not arp_set and not ari_set and not ard_set:
@@ -780,11 +785,11 @@ def CheckCLI(argv):
 		cli_aad_gain = 0.0
 
 	elif cli_test_case == 3:
-		logger.critical('For testcase 3, you must set all of --arp, --ari and --ard parameters')
+		logger.critical('For test case 3, you must set all of --arp, --ari and --ard parameters')
 		sys.exit(2)
 
 
-	return cli_calibrate_gravity, cli_fly, cli_hover_speed, cli_video, cli_vvp_gain, cli_vvi_gain, cli_vvd_gain, cli_hvp_gain, cli_hvi_gain, cli_hvd_gain, cli_aap_gain, cli_aai_gain, cli_aad_gain, cli_arp_gain, cli_ari_gain, cli_ard_gain, cli_test_case
+	return cli_calibrate_gravity, cli_fly, cli_hover_speed, cli_video, cli_vvp_gain, cli_vvi_gain, cli_vvd_gain, cli_hvp_gain, cli_hvi_gain, cli_hvd_gain, cli_aap_gain, cli_aai_gain, cli_aad_gain, cli_arp_gain, cli_ari_gain, cli_ard_gain, cli_test_case, cli_tau
 
 ############################################################################################
 #
@@ -949,8 +954,8 @@ logger.addHandler(file_handler)
 #-------------------------------------------------------------------------------------------
 # Check the command line to see if we are calibrating or flying - if neither are set, CheckCLI sys.exit(0)s
 #-------------------------------------------------------------------------------------------
-calibrate_gravity, flying, hover_speed, shoot_video, vvp_gain, vvi_gain, vvd_gain, hvp_gain, hvi_gain, hvd_gain, aap_gain, aai_gain, aad_gain, arp_gain, ari_gain, ard_gain, test_case = CheckCLI(sys.argv[1:])
-logger.critical("calibrate_gravity = %s, fly = %s, hover_speed = %d, shoot_video = %s, vvp_gain = %f, vvi_gain = %f, vvd_gain= %f, hvp_gain = %f, hvi_gain = %f, hvd_gain = %f, aap_gain = %f, aai_gain = %f, aad_gain = %f, arp_gain = %f, ari_gain = %f, ard_gain = %f, test_case = %d", calibrate_gravity, flying, hover_speed, shoot_video, vvp_gain, vvi_gain, vvd_gain, hvp_gain, hvi_gain, hvd_gain, aap_gain, aai_gain, aad_gain, arp_gain, ari_gain, ard_gain, test_case)
+calibrate_gravity, flying, hover_speed, shoot_video, vvp_gain, vvi_gain, vvd_gain, hvp_gain, hvi_gain, hvd_gain, aap_gain, aai_gain, aad_gain, arp_gain, ari_gain, ard_gain, test_case, tau = CheckCLI(sys.argv[1:])
+logger.critical("calibrate_gravity = %s, fly = %s, hover_speed = %d, shoot_video = %s, vvp_gain = %f, vvi_gain = %f, vvd_gain= %f, hvp_gain = %f, hvi_gain = %f, hvd_gain = %f, aap_gain = %f, aai_gain = %f, aad_gain = %f, arp_gain = %f, ari_gain = %f, ard_gain = %f, test_case = %d, tau = %f", calibrate_gravity, flying, hover_speed, shoot_video, vvp_gain, vvi_gain, vvd_gain, hvp_gain, hvi_gain, hvd_gain, aap_gain, aai_gain, aad_gain, arp_gain, ari_gain, ard_gain, test_case, tau)
 
 #-------------------------------------------------------------------------------------------
 # Initialize the gyroscope / accelerometer I2C object
@@ -998,14 +1003,37 @@ for esc_index in range(0, 4):
 RpioSetup()
 
 #-------------------------------------------------------------------------------------------
-# Countdown: 5 beeps prior to gyro calibration
+# Countdown: 6 beeps prior to gyro calibration
 #-------------------------------------------------------------------------------------------
-CountdownBeep(5)
+CountdownBeep(6)
 
 #-------------------------------------------------------------------------------------------
 # Calibrate the gyros
 #-------------------------------------------------------------------------------------------
 mpu6050.calibrateGyros()
+
+#-------------------------------------------------------------------------------------------
+# Countdown: 5 beeps prior calculating take-off platform tilt
+#-------------------------------------------------------------------------------------------
+CountdownBeep(5)
+
+#-------------------------------------------------------------------------------------------
+# Prime the complementary angle filter with the take-off platform tilt
+#-------------------------------------------------------------------------------------------
+fax_average = 0
+fay_average = 0
+faz_average = 0
+for loop_count in range(0, 50, 1):
+	[fax, fay, faz, fgx, fgy, fgz] = mpu6050.readSensors()
+	fax_average += fax
+	fay_average += fay
+	faz_average += faz
+	time.sleep(0.05)
+fax = fax_average / 50
+fay = fay_average / 50
+faz = faz_average / 50
+
+prev_c_pitch, prev_c_roll, prev_c_tilt  = mpu6050.getEulerAngles(fax, fay, faz)
 
 #-------------------------------------------------------------------------------------------
 # Countdown: 4 beeps prior to waiting for RC connection
@@ -1061,9 +1089,6 @@ delta_time = 0.0
 i_pitch = 0.0
 i_roll = 0.0
 i_yaw = 0.0
-
-prev_c_pitch = 0.0
-prev_c_roll = 0.0
 
 evx = 0.0
 evy = 0.0
@@ -1179,15 +1204,15 @@ else:
 #
 # - Vertical speed feedback comes from the Z-axis accelerometer integrated over time, and compensated for any tilt (cos(theta)cos(phi))
 #
-# That's 2 PID for vertical Z axis speed control.
+# That's 1 PID for vertical Z axis speed control.
 #
 # - Yaw speed error is corrected proportionally by providing the corrective output to the motors' ESCs
 #
 # - Yaw speed feedback comes directly from the Z-axis gyro
 #
-# That's 2 PID for Z axis yaw control.
+# That's 1 PID for Z axis yaw control.
 #
-# So 9 PIDs in total
+# So 8 PIDs in total
 #===========================================================================================
 
 #-------------------------------------------------------------------------------------------
@@ -1212,21 +1237,21 @@ PID_EVZ_I_GAIN = vvi_gain
 PID_EVZ_D_GAIN = vvd_gain
 
 #-------------------------------------------------------------------------------------------
-# The PITCH ANGLE PID controls stable rotation speed about the Y-axis
+# The PITCH ANGLE PID maintains a stable tilt angle about the Y-axis
 #-------------------------------------------------------------------------------------------
 PID_PA_P_GAIN = aap_gain
 PID_PA_I_GAIN = aai_gain
 PID_PA_D_GAIN = aad_gain
 
 #-------------------------------------------------------------------------------------------
-# The ROLL ANGLE PID controls stable rotation speed about the X-axis
+# The ROLL ANGLE PID maintains a stable tilt angle about the X-axis
 #-------------------------------------------------------------------------------------------
 PID_RA_P_GAIN = aap_gain
 PID_RA_I_GAIN = aai_gain
 PID_RA_D_GAIN = aad_gain
 
 #-------------------------------------------------------------------------------------------
-# The YAW ANGLE PID controls stable rotation speed about the Z-axis
+# The YAW ANGLE PID maintains a stable tilt angle about the Z-axis
 #-------------------------------------------------------------------------------------------
 PID_YA_P_GAIN = 0.0 # 2.5
 PID_YA_I_GAIN = 0.0 # 5.0
@@ -1249,9 +1274,9 @@ PID_RR_D_GAIN = ard_gain
 #-------------------------------------------------------------------------------------------
 # The YAW RATE PID controls stable rotation speed about the Z-axis
 #-------------------------------------------------------------------------------------------
-PID_YR_P_GAIN = arp_gain / 5
-PID_YR_I_GAIN = ari_gain / 5
-PID_YR_D_GAIN = ard_gain / 5
+PID_YR_P_GAIN = arp_gain / 2.5
+PID_YR_I_GAIN = ari_gain / 2.5
+PID_YR_D_GAIN = ard_gain / 2.5
 
 #-------------------------------------------------------------------------------------------
 # Enable time dependent factors PIDs - everything beyond here and "while keep_looping:" is time
@@ -1325,10 +1350,10 @@ while keep_looping:
 		if elapsed_time >= 3.0:
 			fsm_input = INPUT_HOVER
 
-		if elapsed_time >= 8.0:
+		if elapsed_time >= 6.0:
 			fsm_input = INPUT_LAND
 
-		if elapsed_time >= 11.0:
+		if elapsed_time >= 9.0:
 			fsm_input = INPUT_STOP
 
 	if fsm_state == STATE_OFF and fsm_input == INPUT_TAKEOFF:
@@ -1426,11 +1451,13 @@ while keep_looping:
 
 	#===================================================================================
 	# Filter: Apply complementary filter to ensure long-term accuracy of pitch / roll angles
-	# tau is the handover period of 0.1s (1 / frequency) that the integrated gyro high pass
-	# filter is taken over by the accelerometer Euler low-pass filter.  The combination of
-	# tau plus the time increment (delta_time) then provides a fraction to mix the two angles sources.
+	# 1/tau is the handover frequency that the integrated gyro high pass filter is taken over
+	# by the accelerometer Euler low-pass filter providing fast reaction to change from the
+	# gyro yet with low noise accurate Euler angles from the acclerometer.
+	#
+	# The combination of tau plus the time increment (delta_time) provides a fraction to mix
+	# the two angles sources.
 	#===================================================================================
-	tau = 0.05
 	tau_fraction = tau / (tau + delta_time)
 
 	c_pitch = tau_fraction * (prev_c_pitch + fgy * delta_time) + (1 - tau_fraction) * e_pitch
@@ -1454,8 +1481,8 @@ while keep_looping:
 	prev_sample_time = sample_time
 
 	#===================================================================================
-	# Axes: Convert the accelerometers' g force to earth coordinates, then integrate to
-	# convert to speeds in earth's X and Y axes
+	# Axes: Convert the acceleration in g's to earth coordinates, then integrate to
+	# convert to speeds in earth's X and Y axes meters per second
 	#===================================================================================
 	eax = fax * math.cos(pa)
 	eay = fay * math.cos(ra)
