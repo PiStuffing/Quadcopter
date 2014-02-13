@@ -260,7 +260,7 @@ class MPU6050 :
 
 	__CALIBRATION_ITERATIONS = 100
 
-	def __init__(self, address=0x68):
+	def __init__(self, address=0x68, dlpf=6):
 		self.i2c = I2C(address)
 		self.address = address
 		self.grav_x_offset = 0.0
@@ -307,8 +307,8 @@ class MPU6050 :
 		# 0x05 =  10Hz
 		# 0x06 =   5Hz
 		#---------------------------------------------------------------------------
-		logger.debug('5Hz DLPF to filter out non-gravitational acceleration for Euler')
-		self.i2c.write8(self.__MPU6050_RA_CONFIG, 0x06)
+		logger.debug('configurable DLPF to filter out non-gravitational acceleration for Euler')
+		self.i2c.write8(self.__MPU6050_RA_CONFIG, dlpf)
 		time.sleep(0.1)
 	
 		#---------------------------------------------------------------------------
@@ -380,7 +380,7 @@ class MPU6050 :
 
 		fax = ax * 4.0 / 65536 - self.grav_x_offset
 		fay = ay * 4.0 / 65536 - self.grav_y_offset
-		faz = az * 4.0 / 65536 - self.grav_z_offset
+		faz = az * 4.0 / 65536 - self.grav_z_offset + 1.0
 
 		fgx = gx * 1000.0 * math.pi / (65536 * 180) - self.gyro_x_offset
 		fgy = gy * 1000.0 * math.pi / (65536 * 180) - self.gyro_y_offset
@@ -465,9 +465,9 @@ class MPU6050 :
 		# horizontal ground as a measure of speed in a given direction.  For Euler we
 		# need to re-add gravity of 1g so the sensors read 0, 0, 1 for a horizontal setting
 		#---------------------------------------------------------------------------
-		pitch = math.atan2(fax, math.pow(math.pow(faz + 1.0, 2) + math.pow(fay, 2), 0.5))
-		roll = math.atan2(fay,  math.pow(math.pow(faz + 1.0, 2) + math.pow(fax, 2), 0.5))
-		tilt = math.atan2(faz + 1.0, math.pow(math.pow(fax, 2) + math.pow(fay, 2), 0.5))
+		pitch = math.atan2(fax, math.pow(math.pow(faz, 2) + math.pow(fay, 2), 0.5))
+		roll = math.atan2(fay,  math.pow(math.pow(faz, 2) + math.pow(fax, 2), 0.5))
+		tilt = math.atan2(math.pow(math.pow(fax, 2) + math.pow(fay, 2), 0.5), faz)
 		return pitch, roll, tilt
 
 	def readTemp(self):
@@ -624,7 +624,6 @@ def RpioSetup():
 	logger.info('Setup MPU6050 interrupt input %s', RPIO_SENSOR_DATA_RDY)
 	RPIO.setup(RPIO_SENSOR_DATA_RDY, RPIO.IN, RPIO.PUD_DOWN)
 
-
 ############################################################################################
 #
 # Check CLI validity, set calibrate_sensors / fly or sys.exit(1)
@@ -634,21 +633,24 @@ def CheckCLI(argv):
 	cli_fly = False
 	cli_calibrate_gravity = False
 	cli_video = False
-	cli_hover_speed = 590   # derived through holding the quad in the air at various speed, feeling for hover
-	cli_vvp_gain = 150.0    # derived through testing - could be increased at risk of noise
-	cli_vvi_gain = 50.0     # derived through testing - by including integrate get slow, more stable height
+
+	cli_hover_speed = 600
+	cli_vvp_gain = 50.0
+	cli_vvi_gain = 25.0
 	cli_vvd_gain = 0.0
-	cli_hvp_gain = 0.2      # 1m/s target => 0.2g => atan2(0.2g/1.0g) = 0.2 radians = 11 degrees
+	cli_hvp_gain = 0.0
 	cli_hvi_gain = 0.0
 	cli_hvd_gain = 0.0
-	cli_aap_gain = 2.5      # 0.2 radians (11 degrees) => 0.5 rad / second
-	cli_aai_gain = 0.0
-	cli_aad_gain = 0.1
-	cli_arp_gain = 110      # 0.5 rad / second => +/- 16 PWM => seems plausible and safe
-	cli_ari_gain = 130
+	cli_aap_gain = 1.5
+	cli_aai_gain = 0.5
+	cli_aad_gain = 0.01
+	cli_arp_gain = 110
+	cli_ari_gain = 100
 	cli_ard_gain = 2.5
 	cli_test_case = 0
-	cli_tau = 0.05
+	cli_tau = 0.5
+	cli_dlpf = 4
+	cli_loop_delay = 0.014
 	hover_speed_defaulted = True
 	arp_set = False
 	ari_set = False
@@ -658,7 +660,7 @@ def CheckCLI(argv):
 	# Right, let's get on with reading the command line and checking consistency
 	#-----------------------------------------------------------------------------------
 	try:
-		opts, args = getopt.getopt(argv,'fgvah:', ['tc=', 'vvp=', 'vvi=', 'vvd=', 'hvp=', 'hvi=', 'hvd=', 'aap=', 'aai=', 'aad=', 'arp=', 'ari=', 'ard=', 'tau='])
+		opts, args = getopt.getopt(argv,'fgvah:d:', ['tc=', 'vvp=', 'vvi=', 'vvd=', 'hvp=', 'hvi=', 'hvd=', 'aap=', 'aai=', 'aad=', 'arp=', 'ari=', 'ard=', 'tau=', 'dlpf='])
 	except getopt.GetoptError:
 		logger.critical('qcpi.py [-f][-t hover_speed][-g][-v]')
 		sys.exit(2)
@@ -722,6 +724,11 @@ def CheckCLI(argv):
 		elif opt in '--tau':
 			cli_tau = float(arg)
 
+                elif opt in '-d':
+                        cli_loop_delay = float(arg)
+
+		elif opt in '--dlpf':
+			cli_dlpf = int(arg)
 
 	if not cli_calibrate_gravity and not cli_fly and cli_test_case == 0:
 		logger.critical('Must specify one of -f or -g or --tc')
@@ -730,15 +737,21 @@ def CheckCLI(argv):
 		logger.critical('  -h set the hover speed for manual testing')
 		logger.critical('  -g calibrate and save the gravity offsets')
 		logger.critical('  -v video the flight')
-		logger.critical('  --vvp set vertical speed PID P gain')
-		logger.critical('  --vvi set vertical speed PID P gain')
-		logger.critical('  --vvd set vertical speed PID P gain')
-		logger.critical('  --hvp set horizontal speed PID P gain')
-		logger.critical('  --hvi set horizontal speed PID I gain')
-		logger.critical('  --hvd set horizontal speed PID D gain')
-		logger.critical('  --hap set horizontal angle PID P gain')
-		logger.critical('  --hai set horizontal angle PID I gain')
-		logger.critical('  --had set horizontal angle PID D gain')
+		logger.critical('  --vvp  set vertical speed PID P gain')
+		logger.critical('  --vvi  set vertical speed PID P gain')
+		logger.critical('  --vvd  set vertical speed PID P gain')
+		logger.critical('  --hvp  set horizontal speed PID P gain')
+		logger.critical('  --hvi  set horizontal speed PID I gain')
+		logger.critical('  --hvd  set horizontal speed PID D gain')
+		logger.critical('  --aap  set absolute angle PID P gain')
+		logger.critical('  --aai  set absolute angle PID I gain')
+		logger.critical('  --aad  set absolute angle PID D gain')
+		logger.critical('  --arp  set angular PID P gain')
+		logger.critical('  --ari  set angular PID I gain')
+		logger.critical('  --ari  set angular PID D gain')
+		logger.critical('  --tc   select which testcase to run')
+		logger.critical('  --tau  set the complementary filter period')
+		logger.critical('  --dlpf set the digital low pass filter')
 		sys.exit(2)
 
 	elif not cli_calibrate_gravity and (cli_hover_speed < 0 or cli_hover_speed > 1000):
@@ -768,7 +781,7 @@ def CheckCLI(argv):
 		logger.critical('You are running test case 1 or 2 (--tc) so you need to specify a hover speed (-h).')
 		sys.exit(2)
 
-	elif cli_test_case == 3 and not arp_set and not ari_set and not ard_set:
+	elif cli_test_case == 3 and (not arp_set or not ari_set or not ard_set):
 		logger.critical('You must choose a starting point for the angular rate PID P, I and D gains')
 		logger.critical('Try sudo python ./qc.py --tc=3 -h 450 --arp=50 --ari=0.0 --ard=0.0 and work up from there')
 		sys.exit(2)
@@ -784,12 +797,8 @@ def CheckCLI(argv):
 		cli_aai_gain = 0.0
 		cli_aad_gain = 0.0
 
-	elif cli_test_case == 3:
-		logger.critical('For test case 3, you must set all of --arp, --ari and --ard parameters')
-		sys.exit(2)
 
-
-	return cli_calibrate_gravity, cli_fly, cli_hover_speed, cli_video, cli_vvp_gain, cli_vvi_gain, cli_vvd_gain, cli_hvp_gain, cli_hvi_gain, cli_hvd_gain, cli_aap_gain, cli_aai_gain, cli_aad_gain, cli_arp_gain, cli_ari_gain, cli_ard_gain, cli_test_case, cli_tau
+	return cli_calibrate_gravity, cli_fly, cli_hover_speed, cli_video, cli_vvp_gain, cli_vvi_gain, cli_vvd_gain, cli_hvp_gain, cli_hvi_gain, cli_hvd_gain, cli_aap_gain, cli_aai_gain, cli_aad_gain, cli_arp_gain, cli_ari_gain, cli_ard_gain, cli_test_case, cli_tau, cli_dlpf, cli_loop_delay
 
 ############################################################################################
 #
@@ -902,10 +911,10 @@ ESC_BCM_FL = 17
 ESC_BCM_FR = 18
 ESC_BCM_BR = 23
 
-MOTOR_LOCATION_FRONT = 0b00000000
-MOTOR_LOCATION_BACK = 0b00000010
-MOTOR_LOCATION_LEFT = 0b00000000
-MOTOR_LOCATION_RIGHT = 0b00000001
+MOTOR_LOCATION_FRONT = 0b00000001
+MOTOR_LOCATION_BACK =  0b00000010
+MOTOR_LOCATION_LEFT =  0b00000100
+MOTOR_LOCATION_RIGHT = 0b00001000
 
 MOTOR_ROTATION_CW = 1
 MOTOR_ROTATION_ACW = 2
@@ -954,13 +963,13 @@ logger.addHandler(file_handler)
 #-------------------------------------------------------------------------------------------
 # Check the command line to see if we are calibrating or flying - if neither are set, CheckCLI sys.exit(0)s
 #-------------------------------------------------------------------------------------------
-calibrate_gravity, flying, hover_speed, shoot_video, vvp_gain, vvi_gain, vvd_gain, hvp_gain, hvi_gain, hvd_gain, aap_gain, aai_gain, aad_gain, arp_gain, ari_gain, ard_gain, test_case, tau = CheckCLI(sys.argv[1:])
-logger.critical("calibrate_gravity = %s, fly = %s, hover_speed = %d, shoot_video = %s, vvp_gain = %f, vvi_gain = %f, vvd_gain= %f, hvp_gain = %f, hvi_gain = %f, hvd_gain = %f, aap_gain = %f, aai_gain = %f, aad_gain = %f, arp_gain = %f, ari_gain = %f, ard_gain = %f, test_case = %d, tau = %f", calibrate_gravity, flying, hover_speed, shoot_video, vvp_gain, vvi_gain, vvd_gain, hvp_gain, hvi_gain, hvd_gain, aap_gain, aai_gain, aad_gain, arp_gain, ari_gain, ard_gain, test_case, tau)
+calibrate_gravity, flying, hover_speed, shoot_video, vvp_gain, vvi_gain, vvd_gain, hvp_gain, hvi_gain, hvd_gain, aap_gain, aai_gain, aad_gain, arp_gain, ari_gain, ard_gain, test_case, tau, dlpf, loop_delay = CheckCLI(sys.argv[1:])
+logger.critical("calibrate_gravity = %s, fly = %s, hover_speed = %d, shoot_video = %s, vvp_gain = %f, vvi_gain = %f, vvd_gain= %f, hvp_gain = %f, hvi_gain = %f, hvd_gain = %f, aap_gain = %f, aai_gain = %f, aad_gain = %f, arp_gain = %f, ari_gain = %f, ard_gain = %f, test_case = %d, tau = %f, dlpf = %d, loop_delay = %f", calibrate_gravity, flying, hover_speed, shoot_video, vvp_gain, vvi_gain, vvd_gain, hvp_gain, hvi_gain, hvd_gain, aap_gain, aai_gain, aad_gain, arp_gain, ari_gain, ard_gain, test_case, tau, dlpf, loop_delay)
 
 #-------------------------------------------------------------------------------------------
 # Initialize the gyroscope / accelerometer I2C object
 #-------------------------------------------------------------------------------------------
-mpu6050 = MPU6050(0x68)
+mpu6050 = MPU6050(0x68, dlpf)
 
 #-------------------------------------------------------------------------------------------
 # Calibrate to accelometer for exact gravity
@@ -1020,20 +1029,21 @@ CountdownBeep(5)
 #-------------------------------------------------------------------------------------------
 # Prime the complementary angle filter with the take-off platform tilt
 #-------------------------------------------------------------------------------------------
-fax_average = 0
-fay_average = 0
-faz_average = 0
+fax_average = 0.0
+fay_average = 0.0
+faz_average = 0.0
 for loop_count in range(0, 50, 1):
 	[fax, fay, faz, fgx, fgy, fgz] = mpu6050.readSensors()
 	fax_average += fax
 	fay_average += fay
 	faz_average += faz
 	time.sleep(0.05)
-fax = fax_average / 50
-fay = fay_average / 50
-faz = faz_average / 50
+fax = fax_average / 50.0
+fay = fay_average / 50.0
+faz = faz_average / 50.0
 
 prev_c_pitch, prev_c_roll, prev_c_tilt  = mpu6050.getEulerAngles(fax, fay, faz)
+logger.critical("Platform tilt: pitch %f, roll %f", prev_c_pitch * 180 / math.pi, prev_c_roll * 180 / math.pi)
 
 #-------------------------------------------------------------------------------------------
 # Countdown: 4 beeps prior to waiting for RC connection
@@ -1122,14 +1132,12 @@ if test_case == 1:
 	for esc in esc_list:
 		for beep_count in range(0, hover_speed, 10):
 			#---------------------------------------------------------------------------
-			# Spin up to just under take-off / hover speeds#
+			# Spin up to user determined (-h) hover speeds ~200
 			#---------------------------------------------------------------------------
-			esc.update(beep_count);
+			esc.update(beep_count)
 			time.sleep(0.01)
 		time.sleep(10.0)
-		esc.update(0);
-
-	time.sleep(10.0)
+		esc.update(0)
 	CleanShutdown()
 #-------------------------------------------------------------------------------------------
 # END TESTCASE 1 CODE: spin up each blade individually for 10s each and check they all turn the right way
@@ -1143,9 +1151,9 @@ elif test_case == 2:
 	for beep_count in range(0, hover_speed, 10):
 		for esc in esc_list:
 			#---------------------------------------------------------------------------
-			# Spin up to just under take-off / hover speeds
+			# Spin up to user defined hover speed
 			#---------------------------------------------------------------------------
-			esc.update(beep_count);
+			esc.update(beep_count)
 		
 		RPIO.output(RPIO_STATUS_SOUNDER, not RPIO.input(RPIO_STATUS_SOUNDER))
 		time.sleep(0.01)
@@ -1158,7 +1166,7 @@ elif test_case == 2:
 
 
 #-------------------------------------------------------------------------------------------
-# Bring the ESCs up to just under takeoff speed
+# Bring the ESCs up to hover speed
 #-------------------------------------------------------------------------------------------
 else:
 	for beep_count in range(0, hover_speed, 10):
@@ -1307,7 +1315,7 @@ evz_pid = PID(PID_EVZ_P_GAIN, PID_EVZ_I_GAIN, PID_EVZ_D_GAIN)
 #-------------------------------------------------------------------------------------------
 # Diagnostic statistics log header
 #-------------------------------------------------------------------------------------------
-logger.warning(', Time, DT, Loop, fgx, fgy, fgz, fax, fay, faz, i pitch, i roll, e pitch, e roll, c pitch, c roll, i yaw, e tilt, evx, exp, exi, exd, pap, pai, pad, prp, pri, prd, pf_out, eay, eyp, eyi, eyd, rap, rai, rad, rrp, rri, rrd, rf_out, evz, ezp, ezi, ezd, efz_out, yap, yai, yap, yrp, yri, yrd, yf_out, FL spin, FR spin, BL spin, BR spin')
+logger.warning(', Time, DT, Loop, fgx, fgy, fgz, fax, fay, faz, i pitch, i roll, e pitch, e roll, c pitch, c roll, i yaw, e tilt, evx, exp, exi, exd, pap, pai, pad, prp, pri, prd, pf_out, evy, eyp, eyi, eyd, rap, rai, rad, rrp, rri, rrd, rf_out, evz, ezp, ezi, ezd, efz_out, yap, yai, yap, yrp, yri, yrd, yf_out, FL spin, FR spin, BL spin, BR spin')
 
 time_handling_fsm = 0.0
 time_handling_sensors = 0.0
@@ -1319,6 +1327,7 @@ time_handling_speed_pids = 0.0
 time_handling_angle_pids = 0.0
 time_handling_pid_outputs = 0.0
 time_handling_diagnostics = 0.0
+time_handling_loop_delay = 0.0
 
 elapsed_time = 0.0
 start_time = time.time()
@@ -1484,9 +1493,9 @@ while keep_looping:
 	# Axes: Convert the acceleration in g's to earth coordinates, then integrate to
 	# convert to speeds in earth's X and Y axes meters per second
 	#===================================================================================
-	eax = fax * math.cos(pa)
-	eay = fay * math.cos(ra)
-	eaz = faz * math.cos(pa) * math.cos(ra)
+	eax = faz * math.sin(pa)
+	eay = faz * math.sin(ra)
+	eaz = faz * math.cos(pa) * math.cos(ra) - 1.0
 
 	evx += eax * delta_time * G_FORCE
 	evy += eay * delta_time * G_FORCE
@@ -1524,7 +1533,7 @@ while keep_looping:
 
 	#-----------------------------------------------------------------------------------
 	# Convert the horizontal velocity PID output i.e. the horizontal acceleration target in g's
-	# into the pitch and roll angle PID targets in readians
+	# into the pitch and roll angle PID targets in radians
 	#-----------------------------------------------------------------------------------
 	pa_target = -math.atan2(evx_out, 1.0)
 	ra_target = -math.atan2(evy_out, 1.0)
@@ -1649,6 +1658,18 @@ while keep_looping:
 	time_handling_diagnostics += sample_time - prev_sample_time
 	prev_sample_time = sample_time
 
+	#-----------------------------------------------------------------------------------
+	# Slow down the scheduling loop to avoid making accelerometer noise
+	#-----------------------------------------------------------------------------------
+	time.sleep(loop_delay)
+
+        #-----------------------------------------------------------------------------------
+        # Track proportion of time logging diagnostics
+        #-----------------------------------------------------------------------------------
+        sample_time = time.time()
+        time_handling_loop_delay += sample_time - prev_sample_time
+        prev_sample_time = sample_time
+
 #-------------------------------------------------------------------------------------------
 # Dump the loops per second
 #-------------------------------------------------------------------------------------------
@@ -1667,7 +1688,7 @@ logger.critical("%% speed_pids:       %f", time_handling_speed_pids / elapsed_ti
 logger.critical("%% angle_pids:       %f", time_handling_angle_pids / elapsed_time * 100.0)
 logger.critical("%% pid_outputs:      %f", time_handling_pid_outputs / elapsed_time * 100.0)
 logger.critical("%% pid_diagnosticss: %f", time_handling_diagnostics / elapsed_time * 100.0)
-
+logger.critical("%% loop_delay:       %f", time_handling_loop_delay / elapsed_time * 100.0)
 
 #-------------------------------------------------------------------------------------------
 # Time for telly bye byes
