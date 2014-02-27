@@ -624,6 +624,7 @@ def RpioSetup():
 	logger.info('Setup MPU6050 interrupt input %s', RPIO_SENSOR_DATA_RDY)
 	RPIO.setup(RPIO_SENSOR_DATA_RDY, RPIO.IN, RPIO.PUD_DOWN)
 
+
 ############################################################################################
 #
 # Check CLI validity, set calibrate_sensors / fly or sys.exit(1)
@@ -634,13 +635,13 @@ def CheckCLI(argv):
 	cli_calibrate_gravity = False
 	cli_video = False
 
-	cli_hover_speed = 600
-	cli_vvp_gain = 50.0
-	cli_vvi_gain = 25.0
-	cli_vvd_gain = 0.0
-	cli_hvp_gain = 0.0
+	cli_hover_speed = 590
+	cli_vvp_gain = 150.0
+	cli_vvi_gain = 50.0
+	cli_vvd_gain = 1.5
+	cli_hvp_gain = 0.3
 	cli_hvi_gain = 0.0
-	cli_hvd_gain = 0.0
+	cli_hvd_gain = 0.001
 	cli_aap_gain = 1.5
 	cli_aai_gain = 0.5
 	cli_aad_gain = 0.01
@@ -650,7 +651,8 @@ def CheckCLI(argv):
 	cli_test_case = 0
 	cli_tau = 0.5
 	cli_dlpf = 4
-	cli_loop_delay = 0.014
+	cli_loop_frequency = 100
+	cli_matrix = 2
 	hover_speed_defaulted = True
 	arp_set = False
 	ari_set = False
@@ -660,9 +662,9 @@ def CheckCLI(argv):
 	# Right, let's get on with reading the command line and checking consistency
 	#-----------------------------------------------------------------------------------
 	try:
-		opts, args = getopt.getopt(argv,'fgvah:d:', ['tc=', 'vvp=', 'vvi=', 'vvd=', 'hvp=', 'hvi=', 'hvd=', 'aap=', 'aai=', 'aad=', 'arp=', 'ari=', 'ard=', 'tau=', 'dlpf='])
+		opts, args = getopt.getopt(argv,'fgvah:d:m:', ['tc=', 'vvp=', 'vvi=', 'vvd=', 'hvp=', 'hvi=', 'hvd=', 'aap=', 'aai=', 'aad=', 'arp=', 'ari=', 'ard=', 'tau=', 'dlpf='])
 	except getopt.GetoptError:
-		logger.critical('qcpi.py [-f][-t hover_speed][-g][-v]')
+		logger.critical('qcpi.py [-f][-h hover_speed][-g][-v][')
 		sys.exit(2)
 
 	for opt, arg in opts:
@@ -724,11 +726,14 @@ def CheckCLI(argv):
 		elif opt in '--tau':
 			cli_tau = float(arg)
 
-                elif opt in '-d':
-                        cli_loop_delay = float(arg)
+		elif opt in '-d':
+			cli_loop_frequency = int(arg)
 
 		elif opt in '--dlpf':
 			cli_dlpf = int(arg)
+
+		elif opt in '-m':
+			cli_matrix = int(arg)
 
 	if not cli_calibrate_gravity and not cli_fly and cli_test_case == 0:
 		logger.critical('Must specify one of -f or -g or --tc')
@@ -737,6 +742,8 @@ def CheckCLI(argv):
 		logger.critical('  -h set the hover speed for manual testing')
 		logger.critical('  -g calibrate and save the gravity offsets')
 		logger.critical('  -v video the flight')
+		logger.critical('  -d ??  set the processing loop frequency')
+		logger.critical('  -m ?   set which matrix to use')
 		logger.critical('  --vvp  set vertical speed PID P gain')
 		logger.critical('  --vvi  set vertical speed PID P gain')
 		logger.critical('  --vvd  set vertical speed PID P gain')
@@ -752,6 +759,10 @@ def CheckCLI(argv):
 		logger.critical('  --tc   select which testcase to run')
 		logger.critical('  --tau  set the complementary filter period')
 		logger.critical('  --dlpf set the digital low pass filter')
+		sys.exit(2)
+
+	elif cli_matrix < 1 or cli_matrix > 3:
+		logger.critical('Select angular matrix 1, 2 or 3')
 		sys.exit(2)
 
 	elif not cli_calibrate_gravity and (cli_hover_speed < 0 or cli_hover_speed > 1000):
@@ -798,7 +809,7 @@ def CheckCLI(argv):
 		cli_aad_gain = 0.0
 
 
-	return cli_calibrate_gravity, cli_fly, cli_hover_speed, cli_video, cli_vvp_gain, cli_vvi_gain, cli_vvd_gain, cli_hvp_gain, cli_hvi_gain, cli_hvd_gain, cli_aap_gain, cli_aai_gain, cli_aad_gain, cli_arp_gain, cli_ari_gain, cli_ard_gain, cli_test_case, cli_tau, cli_dlpf, cli_loop_delay
+	return cli_calibrate_gravity, cli_fly, cli_hover_speed, cli_video, cli_vvp_gain, cli_vvi_gain, cli_vvd_gain, cli_hvp_gain, cli_hvi_gain, cli_hvd_gain, cli_aap_gain, cli_aai_gain, cli_aad_gain, cli_arp_gain, cli_ari_gain, cli_ard_gain, cli_test_case, cli_tau, cli_dlpf, cli_loop_frequency, cli_matrix
 
 ############################################################################################
 #
@@ -906,6 +917,8 @@ G_FORCE = 9.80665
 
 RPIO_DMA_CHANNEL = 1
 
+use_sockets = False
+
 ESC_BCM_BL = 22
 ESC_BCM_FL = 17
 ESC_BCM_FR = 18
@@ -963,8 +976,8 @@ logger.addHandler(file_handler)
 #-------------------------------------------------------------------------------------------
 # Check the command line to see if we are calibrating or flying - if neither are set, CheckCLI sys.exit(0)s
 #-------------------------------------------------------------------------------------------
-calibrate_gravity, flying, hover_speed, shoot_video, vvp_gain, vvi_gain, vvd_gain, hvp_gain, hvi_gain, hvd_gain, aap_gain, aai_gain, aad_gain, arp_gain, ari_gain, ard_gain, test_case, tau, dlpf, loop_delay = CheckCLI(sys.argv[1:])
-logger.critical("calibrate_gravity = %s, fly = %s, hover_speed = %d, shoot_video = %s, vvp_gain = %f, vvi_gain = %f, vvd_gain= %f, hvp_gain = %f, hvi_gain = %f, hvd_gain = %f, aap_gain = %f, aai_gain = %f, aad_gain = %f, arp_gain = %f, ari_gain = %f, ard_gain = %f, test_case = %d, tau = %f, dlpf = %d, loop_delay = %f", calibrate_gravity, flying, hover_speed, shoot_video, vvp_gain, vvi_gain, vvd_gain, hvp_gain, hvi_gain, hvd_gain, aap_gain, aai_gain, aad_gain, arp_gain, ari_gain, ard_gain, test_case, tau, dlpf, loop_delay)
+calibrate_gravity, flying, hover_speed, shoot_video, vvp_gain, vvi_gain, vvd_gain, hvp_gain, hvi_gain, hvd_gain, aap_gain, aai_gain, aad_gain, arp_gain, ari_gain, ard_gain, test_case, tau, dlpf, loop_frequency, matrix = CheckCLI(sys.argv[1:])
+logger.critical("calibrate_gravity = %s, fly = %s, hover_speed = %d, shoot_video = %s, vvp_gain = %f, vvi_gain = %f, vvd_gain= %f, hvp_gain = %f, hvi_gain = %f, hvd_gain = %f, aap_gain = %f, aai_gain = %f, aad_gain = %f, arp_gain = %f, ari_gain = %f, ard_gain = %f, test_case = %d, tau = %f, dlpf = %d, loop_frequency = %d, matrix = %d", calibrate_gravity, flying, hover_speed, shoot_video, vvp_gain, vvi_gain, vvd_gain, hvp_gain, hvi_gain, hvd_gain, aap_gain, aai_gain, aad_gain, arp_gain, ari_gain, ard_gain, test_case, tau, dlpf, loop_frequency, matrix)
 
 #-------------------------------------------------------------------------------------------
 # Initialize the gyroscope / accelerometer I2C object
@@ -1049,12 +1062,6 @@ logger.critical("Platform tilt: pitch %f, roll %f", prev_c_pitch * 180 / math.pi
 # Countdown: 4 beeps prior to waiting for RC connection
 #-------------------------------------------------------------------------------------------
 CountdownBeep(4)
-
-#-------------------------------------------------------------------------------------------
-# Wait pending a sockets connection with the RC if required
-#-------------------------------------------------------------------------------------------
-inputs = []
-outputs = []
 
 #-------------------------------------------------------------------------------------------
 # Countdown: 3 beeps for successful RC connection
@@ -1315,7 +1322,7 @@ evz_pid = PID(PID_EVZ_P_GAIN, PID_EVZ_I_GAIN, PID_EVZ_D_GAIN)
 #-------------------------------------------------------------------------------------------
 # Diagnostic statistics log header
 #-------------------------------------------------------------------------------------------
-logger.warning(', Time, DT, Loop, fgx, fgy, fgz, fax, fay, faz, i pitch, i roll, e pitch, e roll, c pitch, c roll, i yaw, e tilt, evx, exp, exi, exd, pap, pai, pad, prp, pri, prd, pf_out, evy, eyp, eyi, eyd, rap, rai, rad, rrp, rri, rrd, rf_out, evz, ezp, ezi, ezd, efz_out, yap, yai, yap, yrp, yri, yrd, yf_out, FL spin, FR spin, BL spin, BR spin')
+logger.warning(', Time, DT, Loop, fgx, fgy, fgz, fax, fay, faz, eax, eay, eaz, evx, evy, evz, i pitch, i roll, e pitch, e roll, c pitch, c roll, i yaw, e tilt, exp, exi, exd, pap, pai, pad, prp, pri, prd, pf_out, eyp, eyi, eyd, rap, rai, rad, rrp, rri, rrd, rf_out, ezp, ezi, ezd, efz_out, yap, yai, yap, yrp, yri, yrd, yf_out, FL spin, FR spin, BL spin, BR spin')
 
 time_handling_fsm = 0.0
 time_handling_sensors = 0.0
@@ -1327,7 +1334,7 @@ time_handling_speed_pids = 0.0
 time_handling_angle_pids = 0.0
 time_handling_pid_outputs = 0.0
 time_handling_diagnostics = 0.0
-time_handling_loop_delay = 0.0
+time_handling_sleep = 0
 
 elapsed_time = 0.0
 start_time = time.time()
@@ -1359,10 +1366,10 @@ while keep_looping:
 		if elapsed_time >= 3.0:
 			fsm_input = INPUT_HOVER
 
-		if elapsed_time >= 6.0:
+		if elapsed_time >= 8.0:
 			fsm_input = INPUT_LAND
 
-		if elapsed_time >= 9.0:
+		if elapsed_time >= 11.0:
 			fsm_input = INPUT_STOP
 
 	if fsm_state == STATE_OFF and fsm_input == INPUT_TAKEOFF:
@@ -1491,11 +1498,42 @@ while keep_looping:
 
 	#===================================================================================
 	# Axes: Convert the acceleration in g's to earth coordinates, then integrate to
-	# convert to speeds in earth's X and Y axes meters per second
+	# convert to speeds in earth's X and Y axes meters per second.
+	#
+	# Matrix 1: Only uses Z axis accelerometer so cannot detect horizontal drift
+	# ---------
+	# |X'|   | 0, 0,           sin(pitch)| |X|
+	# |Y'| = | 0, 0,            sin(roll)| |Y|
+	# |Z'|   | 0, 0, cos(pitch).cos(roll)| |Z|
+	#
+	# Matrix 2: Uses X, Y, and Y accelerometers but omit yaw
+	# ---------
+	# |X'|   | cos(pitch), 0,                  -sin(pitch)| |X|
+	# |Y'| = | 0,          cos(roll),           -sin(roll)| |Y|
+	# |Z'|   | sin(pitch), sin(roll), cos(pitch).cos(roll)| |Z|
+	#
+	# Matrix 3: Uses X, Y, and Y each only in their own axis
+	# ---------
+	# |X'|   | cos(pitch), 0,                            0| |X|
+	# |Y'| = | 0,          cos(roll),                    0| |Y|
+	# |Z'|   | 0,          0,         cos(pitch).cos(roll)| |Z|
+	#
 	#===================================================================================
-	eax = faz * math.sin(pa)
-	eay = faz * math.sin(ra)
-	eaz = faz * math.cos(pa) * math.cos(ra) - 1.0
+	if matrix == 1:
+		eax = faz * math.sin(pa)
+		eay = faz * math.sin(ra)
+		eaz = faz * math.cos(pa) * math.cos(ra) - 1.0
+
+	elif matrix == 2:
+		eax = fax * math.cos(pa) - faz * math.sin(pa)
+		eay = fay * math.cos(ra) - faz * math.sin(ra)
+		eaz = (faz * math.cos(pa) * math.cos(ra) + fax * math.sin(pa) + fay * math.sin(ra)) - 1.0
+
+	else:
+		eax = fax * math.cos(pa)
+		eay = fay * math.cos(ra)
+		eaz = faz * math.cos(pa) * math.cos(ra) - 1.0
+
 
 	evx += eax * delta_time * G_FORCE
 	evy += eay * delta_time * G_FORCE
@@ -1647,9 +1685,7 @@ while keep_looping:
 	#-----------------------------------------------------------------------------------
 	# Diagnostic statistics log - every 0.1s
 	#-----------------------------------------------------------------------------------
-	if current_time - last_log_time > 0.1:
-		logger.warning(', %f, %f, %d, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %s, %s, %s, %f, %f, %s, %s, %s, %f, %f, %s, %f, %s, %s, %f, %d, %d, %d, %d', elapsed_time, delta_time, loop_count, fgx, fgy, fgz, fax, fay, faz, math.degrees(i_pitch), math.degrees(i_roll), math.degrees(e_pitch), math.degrees(e_roll), math.degrees(c_pitch), math.degrees(c_roll), math.degrees(i_yaw), math.degrees(e_tilt), evx, evx_diags, pa_diags, pr_diags, pf_out, evy, evy_diags, ra_diags, rr_diags, rf_out, evz, evz_diags, efz_out, ya_diags, yr_diags, yf_out, esc_list[0].current_pulse_width, esc_list[1].current_pulse_width, esc_list[2].current_pulse_width, esc_list[3].current_pulse_width)
-		last_log_time = current_time
+	logger.warning(', %f, %f, %d, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %s, %s, %s, %f, %s, %s, %s, %f, %s, %f, %s, %s, %f, %d, %d, %d, %d', elapsed_time, delta_time, loop_count, fgx, fgy, fgz, fax, fay, faz, eax, eay, eaz, evx, evy, evz, math.degrees(i_pitch), math.degrees(i_roll), math.degrees(e_pitch), math.degrees(e_roll), math.degrees(c_pitch), math.degrees(c_roll), math.degrees(i_yaw), math.degrees(e_tilt), evx_diags, pa_diags, pr_diags, pf_out, evy_diags, ra_diags, rr_diags, rf_out, evz_diags, efz_out, ya_diags, yr_diags, yf_out, esc_list[0].current_pulse_width, esc_list[1].current_pulse_width, esc_list[2].current_pulse_width, esc_list[3].current_pulse_width)
 
 	#-----------------------------------------------------------------------------------
 	# Track proportion of time logging diagnostics
@@ -1659,16 +1695,22 @@ while keep_looping:
 	prev_sample_time = sample_time
 
 	#-----------------------------------------------------------------------------------
-	# Slow down the scheduling loop to avoid making accelerometer noise
+	# Slow down the scheduling loop to avoid making accelerometer noise.  This sleep critically
+	# takes place between the update of the PWM and reading the sensors, so that any
+	# PWM changes can stabilize (i.e. spikes reacted to) prior to reading the sensors.
 	#-----------------------------------------------------------------------------------
-	time.sleep(loop_delay)
+	loop_time = time.time() - current_time
+	sleep_time = 1 / loop_frequency - loop_time
+	if sleep_time < 0.0:
+		sleep_time = 0.0
+	time.sleep(sleep_time)
 
-        #-----------------------------------------------------------------------------------
-        # Track proportion of time logging diagnostics
-        #-----------------------------------------------------------------------------------
-        sample_time = time.time()
-        time_handling_loop_delay += sample_time - prev_sample_time
-        prev_sample_time = sample_time
+	#-----------------------------------------------------------------------------------
+	# Track proportion of time logging diagnostics
+	#-----------------------------------------------------------------------------------
+	sample_time = time.time()
+	time_handling_sleep += sample_time - prev_sample_time
+	prev_sample_time = sample_time
 
 #-------------------------------------------------------------------------------------------
 # Dump the loops per second
@@ -1688,7 +1730,7 @@ logger.critical("%% speed_pids:       %f", time_handling_speed_pids / elapsed_ti
 logger.critical("%% angle_pids:       %f", time_handling_angle_pids / elapsed_time * 100.0)
 logger.critical("%% pid_outputs:      %f", time_handling_pid_outputs / elapsed_time * 100.0)
 logger.critical("%% pid_diagnosticss: %f", time_handling_diagnostics / elapsed_time * 100.0)
-logger.critical("%% loop_delay:       %f", time_handling_loop_delay / elapsed_time * 100.0)
+logger.critical("%% sleep:            %f", time_handling_sleep / elapsed_time * 100.0)
 
 #-------------------------------------------------------------------------------------------
 # Time for telly bye byes
