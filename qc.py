@@ -1514,7 +1514,7 @@ PID_YR_D_GAIN = 0 # ard_gain / 2.5
 # Diagnostic statistics log header
 #-------------------------------------------------------------------------------------------
 if statistics:
-	logger.warning(', Time, DT, Loop, evz_target, qgx, qgy, qgz, qax, qay, qaz, eax, eay, eaz, evx, evy, evz, i pitch, i roll, e pitch, e roll, c pitch, c roll, i yaw, e tilt, exp, exi, exd, pap, pai, pad, prp, pri, prd, pf_out, eyp, eyi, eyd, rap, rai, rad, rrp, rri, rrd, rf_out, ezp, ezi, ezd, efz_out, yap, yai, yap, yrp, yri, yrd, yf_out, FL spin, FR spin, BL spin, BR spin')
+	logger.warning('Time, DT, Loop, evz_target, qgx, qgy, qgz, qax, qay, qaz, eax, eay, eaz, evx, evy, evz, i pitch, i roll, e pitch, e roll, c pitch, c roll, i yaw, e tilt, exp, exi, exd, pap, pai, pad, prp, pri, prd, pf_out, eyp, eyi, eyd, rap, rai, rad, rrp, rri, rrd, rf_out, ezp, ezi, ezd, efz_out, yap, yai, yap, yrp, yri, yrd, yf_out, FL spin, FR spin, BL spin, BR spin')
 
 time_handling_fsm = 0.0
 time_handling_sensors = 0.0
@@ -1667,131 +1667,6 @@ while keep_looping:
 	sample_time = time.time()
 	time_handling_fsm += sample_time - prev_sample_time
 	prev_sample_time = sample_time
-
-#       #---------------------------------------------------------------------------
-#       # Make sure the TLV stream is empty from the last run before extracting more RC command data
-#       #---------------------------------------------------------------------------
-#       if use_sockets:
-#
-#       	#---------------------------------------------------------------------------
-#       	# Select on waiting for a command, or a hello
-#       	#---------------------------------------------------------------------------
-#       	readable, writeable, exceptional = select.select(inputs, outputs, inputs, sleep_time)
-#
-#       	#-----------------------------------------------------------------------------------
-#       	# HELLO timeout - check for receipt and send
-#       	#-----------------------------------------------------------------------------------
-#       	if not (readable or writeable or exceptional):
-#
-#       		#---------------------------------------------------------------------------
-#       		# The timer's popped, which means we've received nothing in the last KEEPALIVE_TIMER seconds.
-#       		# For safety's sake, commit suicide.
-#       		#---------------------------------------------------------------------------
-#       		silent_scan_count += 1
-#       		if silent_scan_count == RC_SILENCE_LIMIT:
-#       			#-----------------------------------------------------------
-#       			# We've not receive a message from RC for 10 scans, close the socket and
-#       			# enforce an automatic landing
-#       			#-----------------------------------------------------------
-#       			logger.error('No message from RC for 10 scans')
-#       			qcrc_sck.shutdown(socket.SHUT_RDWR)
-#       			qcrc_sck.close()
-#
-#       			evx_target = 0.0
-#       			evy_target = 0.0
-#       			evz_target = 0.95
-#
-#       			use_sockets = False
-#
-#       			break
-#
-#       	#-----------------------------------------------------------------------------------
-#       	# Now check whether we have errors on anything
-#       	#-----------------------------------------------------------------------------------
-#       	for qcrc_sck in exceptional:
-#
-#       		#---------------------------------------------------------------------------
-#       		# Don't care about the details, set auto-landing
-#       		#---------------------------------------------------------------------------
-#       		logger.error('Select socket error')
-#       		qcrc_sck.shutdown(socket.SHUT_RDWR)
-#       		qcrc_sck.close()
-#
-#       		evx_target = 0.0
-#       		evy_target = 0.0
-#       		evz_target = 0.95
-#
-#       		use_sockets = False
-#
-#       		break
-#
-#       	#-----------------------------------------------------------------------------------
-#       	# Now check whether we have received anything
-#       	#-----------------------------------------------------------------------------------
-#       	for qcrc_sck in readable:
-#
-#       		#---------------------------------------------------------------------------
-#       		# Check to see what we've received
-#       		#---------------------------------------------------------------------------
-#       		qcrc_data = qcrc_sck.recv(4096)
-#       		if not qcrc_data:
-#       			#-------------------------------------------------------------------
-#       			# Client shutdown processing
-#       			#-------------------------------------------------------------------
-#       			logger.error('0 data received')
-#       			qcrc_sck.shutdown(socket.SHUT_RDWR)
-#       			qcrc_sck.close()
-#
-#       			evx_target = 0.0
-#       			evy_target = 0.0
-#       			evz_target = 0.95
-#
-#       			use_sockets = False
-#
-#       			break
-#
-#       		#-------------------------------------------------------------------
-#       		# Parse the control message
-#       		#-------------------------------------------------------------------
-#       		evx_target, evy_target, evz_target = tlvstream.Parse(qcrc_data)
-#
-#       		#-------------------------------------------------------------------
-#       		# Cycle through each PID applying the appropriate new targets
-#       		#-------------------------------------------------------------------
-#       		if evx_target == 0 and evy_target == 0 and evz_target == 0:
-#       			logger.warning('Nothing parsed!')
-#       			silent_scan_count += 1
-#       			if silent_scan_count == RC_SILENCE_LIMIT:
-#       				#-----------------------------------------------------------
-#       				# We've not receive a message from RC for 10 scans, close the socket and
-#       				# enforce an automatic landing
-#       				#-----------------------------------------------------------
-#       				logger.error('No message from RC for 10 scans')
-#       				qcrc_sck.shutdown(socket.SHUT_RDWR)
-#       				qcrc_sck.close()
-#
-#      					evx_target = 0.0
-#       				evy_target = 0.0
-#       				evz_target = 0.95
-#
-#       				use_sockets = False
-#       				break
-#       		else:
-#       			silent_scan_count = 0
-#       else:
-#       	#-----------------------------------------------------------------------------------
-#       	# Now check whether we have received anything
-#       	#-----------------------------------------------------------------------------------
-#       	time.sleep(sleep_time)
-#
-#       	#-----------------------------------------------------------------------------------
-#       	# Simulate acclerometer targets for testing purposes - HOVER
-#       	#-----------------------------------------------------------------------------------
-#       	if silent_scan_count >= RC_SILENCE_LIMIT:
-#       		evx_target = 0.0
-#       		evy_target = 0.0
-#       		evz_target = 0.95
-
 
 	#===================================================================================
 	# Inputs: Read the data from the accelerometer and gyro
