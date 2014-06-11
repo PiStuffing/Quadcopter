@@ -337,12 +337,10 @@ class MPU6050 :
 		time.sleep(5.0)
 	
 		#---------------------------------------------------------------------------
-		# Sets sample rate to 1kHz/1+3 = 250Hz or 4ms
-		####### Code currently loops at 170Hz, so 250Hz guarantees fresh data ######
-		####### while allowing sufficient time to read it                     ######
+		# Sets sample rate to 1kHz/1+2 = 333Hz or 3ms
 		#---------------------------------------------------------------------------
-		logger.debug('Sample rate 250Hz')
-		self.i2c.write8(self.__MPU6050_RA_SMPLRT_DIV, 0x01)
+		logger.debug('Sample rate 333Hz')
+		self.i2c.write8(self.__MPU6050_RA_SMPLRT_DIV, 0x02)
 		time.sleep(0.1)
 	
 		#---------------------------------------------------------------------------
@@ -543,8 +541,8 @@ class MPU6050 :
 
 		temp = (float(temp_raw) / 340) + 36.53
 
-		pitch, roll, tilt = self.getEulerAngles(grav_x_offset, grav_y_offset, grav_z_offset)
-		eax, eay, eaz = ConvertAxes(grav_x_offset, grav_y_offset, grav_z_offset, pitch, roll, 2)
+		pitch, roll, tilt = self.getEulerAngles(grav_x_offset, grav_y_offset, grav_z_offset, yaw_control)
+		eax, eay, eaz = ConvertAxes(grav_x_offset, grav_y_offset, grav_z_offset, pitch, roll, yaw_control)
 
 		#---------------------------------------------------------------------------
 		# Open the offset config file
@@ -574,18 +572,18 @@ class MPU6050 :
 		return cfg_rc
 
 
-	def getEulerAngles(self, qax, qay, qaz):
+	def getEulerAngles(self, qax, qay, qaz, yaw_control):
 		#---------------------------------------------------------------------------
 		# What's the angle in the x and y plane from horizontal in radians?
-		# Note qax, qay, qaz are all the calibrated outputs reading 0, 0, 0 on
-		# horizontal ground as a measure of speed in a given direction.  For Euler we
-		# need to re-add gravity of 1g so the sensors read 0, 0, 1 for a horizontal setting
 		#---------------------------------------------------------------------------
-#		pitch = math.atan2(qax, math.pow(math.pow(qay, 2) + math.pow(qaz, 2), 0.5))
-#		roll = math.atan2(qay, math.pow(math.pow(qax, 2) + math.pow(qaz, 2), 0.5))
-		pitch = math.atan2(qax, qaz)
-		roll = math.atan2(qay, qaz)
-		tilt = math.atan2(math.pow(math.pow(qax, 2) + math.pow(qay, 2), 0.5), qaz)
+		if not yaw_control:
+			pitch = math.atan2(qax, qaz)
+			roll = math.atan2(qay, qaz)
+			tilt = math.atan2(math.pow(math.pow(qax, 2) + math.pow(qay, 2), 0.5), qaz)
+		else:
+			pitch = math.atan2(qax, math.pow(math.pow(qay, 2) + math.pow(qaz, 2), 0.5))
+			roll = math.atan2(qay, math.pow(math.pow(qax, 2) + math.pow(qaz, 2), 0.5))
+			tilt = math.atan2(math.pow(math.pow(qax, 2) + math.pow(qay, 2), 0.5), qaz)
 		return pitch, roll, tilt
 
 	def readTemp(self):
@@ -749,7 +747,6 @@ def RpioSetup():
 	logger.info('Setup MPU6050 interrupt input %s', RPIO_DATA_READY_INTERRUPT)
 	RPIO.setup(RPIO_DATA_READY_INTERRUPT, RPIO.IN) # , RPIO.PUD_DOWN)
 
-
 ############################################################################################
 #
 # Check CLI validity, set calibrate_sensors / fly or sys.exit(1)
@@ -762,33 +759,52 @@ def CheckCLI(argv):
 
 	cli_hover_target = 680
 
+	#-----------------------------------------------------------------------------------
+	# Defaults for vertical velocity PIDs
+	#-----------------------------------------------------------------------------------
 	cli_vvp_gain = 300.0
 	cli_vvi_gain = 150.0
-	cli_vvd_gain = 1.5
+	cli_vvd_gain = 0.0
 
-	cli_hvp_gain = 0.75
-	cli_hvi_gain = 0.5
+	#-----------------------------------------------------------------------------------
+	# Defaults for horizontal velocity PIDs
+	#-----------------------------------------------------------------------------------
+	cli_hvp_gain = 0.6
+	cli_hvi_gain = 0.1
 	cli_hvd_gain = 0.0
 
-
+	#-----------------------------------------------------------------------------------
+	# Defaults for absolute angle PIDs
+	#-----------------------------------------------------------------------------------
 	cli_aap_gain = 2.5
 	cli_aai_gain = 0.0
 	cli_aad_gain = 0.0
-	cli_arp_gain = 150
-	cli_ari_gain = 0.0
-	cli_ard_gain = 0.0
 
+	#-----------------------------------------------------------------------------------
+	# Defaults for rotation rate PIDs
+	#-----------------------------------------------------------------------------------
+	cli_rrp_gain = 150
+	cli_rri_gain = 0.0
+	cli_rrd_gain = 0.0
+
+	#-----------------------------------------------------------------------------------
+	# Other configuration defaults
+	#-----------------------------------------------------------------------------------
 	cli_test_case = 0
-	cli_tau = 1.0        # 0.25 * 100 = 25 samples averaged for -3dB merge
+	cli_tau = 2.0        # 0.25 * 100 = 25 samples averaged for -3dB merge
 	cli_dlpf = 5
 	cli_loop_frequency = 500 # 100
 	cli_matrix = 2
 	cli_statistics = False
+	cli_yaw_control = False
+	cli_motion_frequency = 40
+	cli_attitude_frequency = 40
+
 	hover_target_defaulted = True
 	no_drift_control = False
-	arp_set = False
-	ari_set = False
-	ard_set = False
+	rrp_set = False
+	rri_set = False
+	rrd_set = False
 	aap_set = False
 	aai_set = False
 	aad_set = False
@@ -797,7 +813,7 @@ def CheckCLI(argv):
 	# Right, let's get on with reading the command line and checking consistency
 	#-----------------------------------------------------------------------------------
 	try:
-		opts, args = getopt.getopt(argv,'fcvh:l:m:ns', ['tc=', 'vvp=', 'vvi=', 'vvd=', 'hvp=', 'hvi=', 'hvd=', 'aap=', 'aai=', 'aad=', 'arp=', 'ari=', 'ard=', 'tau=', 'dlpf='])
+		opts, args = getopt.getopt(argv,'a:fcvh:l:m:nsy', ['tc=', 'vvp=', 'vvi=', 'vvd=', 'hvp=', 'hvi=', 'hvd=', 'aap=', 'aai=', 'aad=', 'arp=', 'ari=', 'ard=', 'tau=', 'dlpf='])
 	except getopt.GetoptError:
 		logger.critical('qcpi.py [-f][-h hover_target][-v][')
 		sys.exit(2)
@@ -813,6 +829,9 @@ def CheckCLI(argv):
 		elif opt in '-v':
 			cli_video = True
 
+		elif opt in '-a':
+			cli_attitude_frequency = int(arg)
+
 		elif opt in '-c':
 			cli_calibrate_sensors = True
 
@@ -820,13 +839,16 @@ def CheckCLI(argv):
 			cli_loop_frequency = int(arg)
 
 		elif opt in '-m':
-			cli_matrix = int(arg)
+			cli_motion_frequency = int(arg)
 
 		elif opt in '-n':
 			no_drift_control = True
 
 		elif opt in '-s':
 			cli_statistics = True
+
+		elif opt in '-y':
+			cli_yaw_control = True
 
 		elif opt in '--vvp':
 			cli_vvp_gain = float(arg)
@@ -859,16 +881,16 @@ def CheckCLI(argv):
 			aad_set = True
 
 		elif opt in '--arp':
-			cli_arp_gain = float(arg)
-			arp_set = True
+			cli_rrp_gain = float(arg)
+			rrp_set = True
 
 		elif opt in '--ari':
-			cli_ari_gain = float(arg)
-			ari_set = True
+			cli_rri_gain = float(arg)
+			rri_set = True
 
 		elif opt in '--ard':
-			cli_ard_gain = float(arg)
-			ard_set = True
+			cli_rrd_gain = float(arg)
+			rrd_set = True
 
 		elif opt in '--tc':
 			cli_test_case = int(arg)
@@ -887,9 +909,11 @@ def CheckCLI(argv):
 		logger.critical('  -c calibrate sensors against temperature and save')
 		logger.critical('  -s enable diagnostic statistics')
 		logger.critical('  -n disable drift control')
+		logger.critical('  -y enable yaw control (unsupported')
 		logger.critical('  -v video the flight')
 		logger.critical('  -l ??  set the processing loop frequency')
-		logger.critical('  -m ?   set which matrix to use')
+		logger.critical('  -a ??  set attitude PID update frequency')
+		logger.critical('  -m ??  set motion PID update frequency')
 		logger.critical('  --vvp  set vertical speed PID P gain')
 		logger.critical('  --vvi  set vertical speed PID P gain')
 		logger.critical('  --vvd  set vertical speed PID P gain')
@@ -907,13 +931,13 @@ def CheckCLI(argv):
 		logger.critical('  --dlpf set the digital low pass filter')
 		sys.exit(2)
 
-	elif cli_matrix < 1 or cli_matrix > 3:
-		logger.critical('Select angular matrix 1, 2 or 3')
-		sys.exit(2)
-
 	elif not cli_calibrate_sensors and (cli_hover_target < 0 or cli_hover_target > 1000):
 		logger.critical('Hover speed must lie in the following range')
 		logger.critical('0 <= test speed <= 1000')
+		sys.exit(2)
+
+	elif cli_yaw_control:
+		logger.critical('YAW control is not supported yet')
 		sys.exit(2)
 
 	elif cli_test_case == 0 and cli_fly:
@@ -925,9 +949,9 @@ def CheckCLI(argv):
 			cli_aap_gain = 1.5
 			cli_aai_gain = 0.5
 			cli_aad_gain = 0.01
-			cli_arp_gain = 110
-			cli_ari_gain = 100
-			cli_ard_gain = 2.5
+			cli_rrp_gain = 110
+			cli_rri_gain = 100
+			cli_rrd_gain = 2.5
 
 	elif cli_test_case == 0 and cli_calibrate_sensors:
 		logger.critical('Calibrate sensors is it, sir!')
@@ -955,7 +979,7 @@ def CheckCLI(argv):
 		logger.critical('You must choose a specific hover speed (-h) for all test cases.')
 		sys.exit(2)
 
-	elif cli_test_case == 2 and (not arp_set or not ari_set or not ard_set):
+	elif cli_test_case == 2 and (not rrp_set or not rri_set or not rrd_set):
 		logger.critical('You must choose a starting point for the angular rate PID P, I and D gains')
 		logger.critical('Try sudo python ./qc.py --tc 2 -h 450 --arp 50 --ari 0.0 --ard 0.0 and work up from there')
 		sys.exit(2)
@@ -984,7 +1008,7 @@ def CheckCLI(argv):
 		cli_hvi_gain = 0.0
 		cli_hvd_gain = 0.0
 
-	return cli_calibrate_sensors, cli_fly, cli_hover_target, cli_video, cli_vvp_gain, cli_vvi_gain, cli_vvd_gain, cli_hvp_gain, cli_hvi_gain, cli_hvd_gain, cli_aap_gain, cli_aai_gain, cli_aad_gain, cli_arp_gain, cli_ari_gain, cli_ard_gain, cli_test_case, cli_tau, cli_dlpf, cli_loop_frequency, cli_matrix, cli_statistics
+	return cli_calibrate_sensors, cli_fly, cli_hover_target, cli_video, cli_vvp_gain, cli_vvi_gain, cli_vvd_gain, cli_hvp_gain, cli_hvi_gain, cli_hvd_gain, cli_aap_gain, cli_aai_gain, cli_aad_gain, cli_rrp_gain, cli_rri_gain, cli_rrd_gain, cli_test_case, cli_tau, cli_dlpf, cli_loop_frequency, cli_motion_frequency, cli_attitude_frequency, cli_statistics, cli_yaw_control
 
 ############################################################################################
 #
@@ -1074,45 +1098,34 @@ def SignalHandler(signal, frame):
 # Conversion from quadcopter axes accelerometer values to earth axes equivalent
 #
 ############################################################################################
-def ConvertAxes(qax, qay, qaz, pa, ra, matrix):
+def ConvertAxes(qax, qay, qaz, pa, ra, yaw_control):
 
 	#===================================================================================
 	# Axes: Convert the acceleration in g's to earth coordinates, then integrate to
 	# convert to speeds in earth's X and Y axes meters per second.
 	#
-	# Matrix 1: Only uses Z axis accelerometer so cannot detect horizontal drift
-	# ---------
-	# |eax|   | 0,          0,                  -sin(pitch)| |qax|
-	# |eay| = | 0,          0,                   -sin(roll)| |qay|
-	# |eaz|   | 0,          0,         cos(pitch).cos(roll)| |qaz|
-	#
-	# Matrix 2: Uses X, Y, and Y accelerometers but omit yaw
+	# Matrix 1: Uses X, Y, and Y accelerometers but omit yaw
 	# ---------
 	# |eax|   | cos(pitch),         0,          -sin(pitch)| |qax|
 	# |eay| = | 0,          cos(roll),           -sin(roll)| |qay|
 	# |eaz|   | sin(pitch), sin(roll), cos(pitch).cos(roll)| |qaz|
 	#
-	# Matrix 3: Uses X, Y, and Y each only in their own axis
+	# Matrix 2: Uses X, Y, and Y accelerometers and include yaw (unsupported)
 	# ---------
-	# |eax|   | cos(pitch), 0,                            0| |qax|
-	# |eay| = | 0,          cos(roll),                    0| |qay|
-	# |eaz|   | 0,          0,         cos(pitch).cos(roll)| |qaz|
+	# |eax|   | cos(pitch), sin(roll),          -sin(pitch)| |qax|
+	# |eay| = | sin(pitch), cos(roll),           -sin(roll)| |qay|
+	# |eaz|   | sin(pitch), sin(roll), cos(pitch).cos(roll)| |qaz|
 	#
 	#===================================================================================
-	if matrix == 1:
-		eax = -qaz * math.sin(pa)
-		eay = -qaz * math.sin(ra)
-		eaz =  qaz * math.cos(pa) * math.cos(ra) - 1.0
-
-	elif matrix == 2:
+	if not yaw_control:
 		eax = qax * math.cos(pa) - qaz * math.sin(pa)
 		eay = qay * math.cos(ra) - qaz * math.sin(ra)
 		eaz = qaz * math.cos(pa) * math.cos(ra) + qax * math.sin(pa) + qay * math.sin(ra) - 1.0
 
 	else:
-		eax = qax * math.cos(pa)
-		eay = qay * math.cos(ra)
-		eaz = qaz * math.cos(pa) * math.cos(ra) - 1.0
+		eax = qax * math.cos(pa) + qay * math.sin(ra) - qaz * math.sin(pa)
+		eay = qay * math.cos(ra) * qax * math.sin(pa) - qaz * math.sin(ra)
+		eaz = qaz * math.cos(pa) * math.cos(ra) + qax * math.sin(pa) + qay * math.sin(ra) - 1.0
 
 	return eax, eay, eaz
 
@@ -1207,8 +1220,8 @@ logger.addHandler(file_handler)
 #-------------------------------------------------------------------------------------------
 # Check the command line to see if we are calibrating or flying - if neither are set, CheckCLI sys.exit(0)s
 #-------------------------------------------------------------------------------------------
-calibrate_sensors, flying, hover_target, shoot_video, vvp_gain, vvi_gain, vvd_gain, hvp_gain, hvi_gain, hvd_gain, aap_gain, aai_gain, aad_gain, arp_gain, ari_gain, ard_gain, test_case, tau, dlpf, loop_frequency, matrix, statistics = CheckCLI(sys.argv[1:])
-logger.critical("calibrate_sensors = %s, fly = %s, hover_target = %d, shoot_video = %s, vvp_gain = %f, vvi_gain = %f, vvd_gain= %f, hvp_gain = %f, hvi_gain = %f, hvd_gain = %f, aap_gain = %f, aai_gain = %f, aad_gain = %f, arp_gain = %f, ari_gain = %f, ard_gain = %f, test_case = %d, tau = %f, dlpf = %d, loop_frequency = %d, matrix = %d, statistics = %s", calibrate_sensors, flying, hover_target, shoot_video, vvp_gain, vvi_gain, vvd_gain, hvp_gain, hvi_gain, hvd_gain, aap_gain, aai_gain, aad_gain, arp_gain, ari_gain, ard_gain, test_case, tau, dlpf, loop_frequency, matrix, statistics)
+calibrate_sensors, flying, hover_target, shoot_video, vvp_gain, vvi_gain, vvd_gain, hvp_gain, hvi_gain, hvd_gain, aap_gain, aai_gain, aad_gain, rrp_gain, rri_gain, rrd_gain, test_case, tau, dlpf, loop_frequency, motion_frequency, attitude_frequency, statistics, yaw_control = CheckCLI(sys.argv[1:])
+logger.critical("calibrate_sensors = %s, fly = %s, hover_target = %d, shoot_video = %s, vvp_gain = %f, vvi_gain = %f, vvd_gain= %f, hvp_gain = %f, hvi_gain = %f, hvd_gain = %f, aap_gain = %f, aai_gain = %f, aad_gain = %f, rrp_gain = %f, rri_gain = %f, rrd_gain = %f, test_case = %d, tau = %f, dlpf = %d, loop_frequency = %d, motion_frequency = %d, attitude_frequency = %d, statistics = %s, yaw_control = %d", calibrate_sensors, flying, hover_target, shoot_video, vvp_gain, vvi_gain, vvd_gain, hvp_gain, hvi_gain, hvd_gain, aap_gain, aai_gain, aad_gain, rrp_gain, rri_gain, rrd_gain, test_case, tau, dlpf, loop_frequency, motion_frequency, attitude_frequency, statistics, yaw_control)
 
 #-------------------------------------------------------------------------------------------
 # Initialize the gyroscope / accelerometer I2C object
@@ -1277,13 +1290,13 @@ qax = qax_average / 50.0
 qay = qay_average / 50.0
 qaz = qaz_average / 50.0
 
-prev_c_pitch, prev_c_roll, prev_c_tilt  = mpu6050.getEulerAngles(qax, qay, qaz)
+prev_c_pitch, prev_c_roll, prev_c_tilt  = mpu6050.getEulerAngles(qax, qay, qaz, yaw_control)
 logger.critical("Platform tilt: pitch %f, roll %f", prev_c_pitch * 180 / math.pi, prev_c_roll * 180 / math.pi)
 
 #-------------------------------------------------------------------------------------------
 # Prime the earth axis accelerometer values for accurate earth axis speed integration
 #-------------------------------------------------------------------------------------------
-eax, eay, eaz = ConvertAxes(qax, qay, qaz, prev_c_pitch, prev_c_roll, matrix)
+eax, eay, eaz = ConvertAxes(qax, qay, qaz, prev_c_pitch, prev_c_roll, yaw_control)
 eax_offset = eax
 eay_offset = eay
 eaz_offset = eaz
@@ -1343,6 +1356,10 @@ CountdownBeep(1)
 keep_looping = True
 delta_time = 0.0
 
+eax_average = 0.0
+eay_average = 0.0
+eaz_average = 0.0
+
 evx = 0.0
 evy = 0.0
 evz = 0.0
@@ -1351,9 +1368,25 @@ evx_target = 0.0
 evy_target = 0.0
 evz_target = 0.0
 
+evz_out = 0.0
+
 pa_target = 0.0
 ra_target = 0.0
 ya_target = 0.0
+
+pr_out = 0.0
+rr_out = 0.0
+yr_out = 0.0
+
+evx_diags = "0.0, 0.0, 0.0"
+evy_diags = "0.0, 0.0, 0.0"
+evz_diags = "0.0, 0.0, 0.0"
+pa_diags = "0.0, 0.0, 0.0"
+ra_diags = "0.0, 0.0, 0.0"
+ya_diags = "0.0, 0.0, 0.0"
+pr_diags = "0.0, 0.0, 0.0"
+rr_diags = "0.0, 0.0, 0.0"
+yr_diags = "0.0, 0.0, 0.0"
 
 #-------------------------------------------------------------------------------------------
 # Set up the flight plan FSM.
@@ -1394,9 +1427,9 @@ fp_total_time = 0.0
 if test_case == 1:
 	for esc in esc_list:
 		for count in range(0, hover_target, 10):
-			#---------------------------------------------------------------------------
+			#-------------------------------------------------------------------
 			# Spin up to user determined (-h) hover speeds ~200
-			#---------------------------------------------------------------------------
+			#-------------------------------------------------------------------
 			esc.update(count)
 			time.sleep(0.01)
 		time.sleep(10.0)
@@ -1406,7 +1439,7 @@ if test_case == 1:
 # END TESTCASE 1 CODE: spin up each blade individually for 10s each and check they all turn the right way
 #-------------------------------------------------------------------------------------------
 
-#===========================================================================================not
+#===========================================================================================
 # Tuning: Set up the PID gains - some are hard coded mathematical approximations, some come
 # from the CLI parameters to allow for tuning
 #===========================================================================================
@@ -1490,31 +1523,31 @@ PID_YA_I_GAIN = 0.0 # 5.0
 PID_YA_D_GAIN = 0.0
 
 #-------------------------------------------------------------------------------------------
-# The PITCH RATE PID controls stable rotation speed around the Y-axis
+# The PITCH RATE PID controls stable rotation rate around the Y-axis
 #-------------------------------------------------------------------------------------------
-PID_PR_P_GAIN = arp_gain
-PID_PR_I_GAIN = ari_gain
-PID_PR_D_GAIN = ard_gain
+PID_PR_P_GAIN = rrp_gain
+PID_PR_I_GAIN = rri_gain
+PID_PR_D_GAIN = rrd_gain
 
 #-------------------------------------------------------------------------------------------
-# The ROLL RATE PID controls stable rotation speed around the X-axis
+# The ROLL RATE PID controls stable rotation rate around the X-axis
 #-------------------------------------------------------------------------------------------
-PID_RR_P_GAIN = arp_gain
-PID_RR_I_GAIN = ari_gain
-PID_RR_D_GAIN = ard_gain
+PID_RR_P_GAIN = rrp_gain
+PID_RR_I_GAIN = rri_gain
+PID_RR_D_GAIN = rrd_gain
 
 #-------------------------------------------------------------------------------------------
 # The YAW RATE PID controls stable rotation speed around the Z-axis
 #-------------------------------------------------------------------------------------------
-PID_YR_P_GAIN = 0 # arp_gain / 2.5
-PID_YR_I_GAIN = 0 # ari_gain / 2.5
-PID_YR_D_GAIN = 0 # ard_gain / 2.5
+PID_YR_P_GAIN = 0 # rrp_gain / 2.5
+PID_YR_I_GAIN = 0 # rri_gain / 2.5
+PID_YR_D_GAIN = 0 # rrd_gain / 2.5
 
 #-------------------------------------------------------------------------------------------
 # Diagnostic statistics log header
 #-------------------------------------------------------------------------------------------
 if statistics:
-	logger.warning('Time, DT, Loop, evz_target, qgx, qgy, qgz, qax, qay, qaz, eax, eay, eaz, evx, evy, evz, i pitch, i roll, e pitch, e roll, c pitch, c roll, i yaw, e tilt, exp, exi, exd, pap, pai, pad, prp, pri, prd, pf_out, eyp, eyi, eyd, rap, rai, rad, rrp, rri, rrd, rf_out, ezp, ezi, ezd, efz_out, yap, yai, yap, yrp, yri, yrd, yf_out, FL spin, FR spin, BL spin, BR spin')
+	logger.warning('Time, DT, Loop, evz_target, qgx, qgy, qgz, qax, qay, qaz, eax, eay, eaz, evx, evy, evz, i pitch, i roll, e pitch, e roll, c pitch, c roll, i yaw, e tilt, exp, exi, exd, pa_target, pap, pai, pad, prp, pri, prd, pr_out, eyp, eyi, eyd, ra_target, rap, rai, rad, rrp, rri, rrd, rr_out, ezp, ezi, ezd, evz_out, yap, yai, yap, yrp, yri, yrd, yr_out, FL spin, FR spin, BL spin, BR spin')
 
 time_handling_fsm = 0.0
 time_handling_sensors = 0.0
@@ -1522,8 +1555,8 @@ time_handling_eangles = 0.0
 time_handling_iangles = 0.0
 time_handling_angles_filter = 0.0
 time_handling_axes_shift = 0.0
-time_handling_speed_pids = 0.0
-time_handling_angle_pids = 0.0
+time_handling_motion_pids = 0.0
+time_handling_attitude_pids = 0.0
 time_handling_pid_outputs = 0.0
 time_handling_diagnostics = 0.0
 time_handling_sleep = 0.0
@@ -1564,6 +1597,7 @@ prev_sample_time = current_time
 last_motion_update = current_time
 last_attitude_update = current_time
 update_PWM = False
+ea_averaging_start = current_time
 
 while keep_looping:
 	#-----------------------------------------------------------------------------------
@@ -1683,7 +1717,7 @@ while keep_looping:
 	#===================================================================================
 	# Angles: Get the Euler angles in radians
 	#===================================================================================
-	e_pitch, e_roll, e_tilt  = mpu6050.getEulerAngles(qax, qay, qaz)
+	e_pitch, e_roll, e_tilt  = mpu6050.getEulerAngles(qax, qay, qaz, yaw_control)
 
 	#-----------------------------------------------------------------------------------
 	# Track proportion of time handling euler angles
@@ -1741,7 +1775,7 @@ while keep_looping:
 	#-----------------------------------------------------------------------------------
 	# Convert quad orientated axes accelerometer reading to earth orientated axes
 	#-----------------------------------------------------------------------------------
-	eax, eay, eaz = ConvertAxes(qax, qay, qaz, c_pitch, c_roll, matrix)
+	eax, eay, eaz = ConvertAxes(qax, qay, qaz, c_pitch, c_roll, yaw_control)
 
 	#-----------------------------------------------------------------------------------
 	# Integrate to earth axes' velocities
@@ -1751,102 +1785,120 @@ while keep_looping:
 	evz += (eaz - eaz_offset) * delta_time * G_FORCE
 
 	#-----------------------------------------------------------------------------------
+	# Integrate out the accelerometer noise across the time between motion PID updates
+	#-----------------------------------------------------------------------------------
+	eax_average += (eax - eax_offset) * delta_time
+	eay_average += (eay - eay_offset) * delta_time
+	eaz_average += (eaz - eaz_offset) * delta_time
+
+	#-----------------------------------------------------------------------------------
 	# Track proportion of time handling sensor angles
 	#-----------------------------------------------------------------------------------
 	sample_time = time.time()
 	time_handling_axes_shift += sample_time - prev_sample_time
 	prev_sample_time = sample_time
 
-	#===================================================================================
-	# PIDs: Run the horizontal speed PIDs each rotation axis to determine targets for angle PID
-	# and the verical speed PID to control height.
-	#===================================================================================
-	[p_out, i_out, d_out] = evx_pid.Compute(evx, evx_target)
-	evx_diags = "%f, %f, %f" % (p_out, i_out, d_out)
-	evx_out = p_out + i_out + d_out
-
-	[p_out, i_out, d_out] = evy_pid.Compute(evy, evy_target)
-	evy_diags = "%f, %f, %f" % (p_out, i_out, d_out)
-	evy_out =  p_out + i_out + d_out
-
-	[p_out, i_out, d_out] = evz_pid.Compute(evz, evz_target)
-	evz_diags = "%f, %f, %f" % (p_out, i_out, d_out)
-	efz_out = p_out + i_out + d_out
-
 	#-----------------------------------------------------------------------------------
-	# Track proportion of time handling speed PIDs
+	# The attitude PID targets are updated with new motion PID outputs at 31Hz.
+	# The attitude PID outputs are updated every 100Hz.
 	#-----------------------------------------------------------------------------------
-	sample_time = time.time()
-	time_handling_speed_pids += sample_time - prev_sample_time
-	prev_sample_time = sample_time
-
-	#-----------------------------------------------------------------------------------
-	# The attitude PID targets are updated with new motion PID outputs at 25Hz.  The attitude
-	# PID outputs are updated every 76Hz.
-	#-----------------------------------------------------------------------------------
-	if current_time - last_motion_update >= 1/25:
+	if current_time - last_motion_update >= 1/motion_frequency:
 		last_motion_update -= current_time
+
+		#===========================================================================
+		# Motion PIDs: Run the horizontal speed PIDs each rotation axis to determine
+		# targets for absolute angle PIDs and the verical speed PID to control height.
+		#===========================================================================
+		[p_out, i_out, d_out] = evx_pid.Compute(evx, evx_target)
+		evx_diags = "%f, %f, %f" % (p_out, i_out, d_out)
+		evx_out = p_out + i_out + d_out
+
+		[p_out, i_out, d_out] = evy_pid.Compute(evy, evy_target)
+		evy_diags = "%f, %f, %f" % (p_out, i_out, d_out)
+		evy_out =  p_out + i_out + d_out
+
+		[p_out, i_out, d_out] = evz_pid.Compute(evz, evz_target)
+		evz_diags = "%f, %f, %f" % (p_out, i_out, d_out)
+		evz_out = p_out + i_out + d_out
+
+		#---------------------------------------------------------------------------
+		# Work out the earth axis acceleration averages
+		#---------------------------------------------------------------------------
+		eax_average /= (current_time - ea_averaging_start)
+		eay_average /= (current_time - ea_averaging_start)
+		eaz_average /= (current_time - ea_averaging_start)
 
 		#---------------------------------------------------------------------------
 		# Convert the horizontal velocity PID output i.e. the horizontal acceleration
 		# target in q's into the pitch and roll angle PID targets in radians
 		#---------------------------------------------------------------------------
-		pa_target = -math.atan2(evx_out, 1.0 + eaz - eaz_offset)
-		ra_target = -math.atan2(evy_out, 1.0 + eaz - eaz_offset)
+		if not yaw_control:
+			pa_target = -math.atan2(evx_out, 1.0 + eaz_average)
+			ra_target = -math.atan2(evy_out, 1.0 + eaz_average)
+		else:
+			pa_target = -math.atan2(evx_out, math.pow(math.pow(eay_average, 2) + math.pow(1.0 + eaz_average, 2), 0.5))
+			ra_target = -math.atan2(evy_out, math.pow(math.pow(eax_average, 2) + math.pow(1.0 + eaz_average, 2), 0.5))
 
 		#---------------------------------------------------------------------------
-		# Convert the vertical velocity PID output direct to PWM BW.
+		# Restart integrating out accelerometer noise
 		#---------------------------------------------------------------------------
-		vert_out = hover_speed + int(round(efz_out))
+		ea_averaging_start = current_time
+		eax_average = 0.0
+		eay_average = 0.0
+		eaz_average = 0.0
 
-	#-----------------------------------------------------------------------------------
-	# Run the absolute angle PIDs each rotation axis.
-	#-----------------------------------------------------------------------------------
-	[p_out, i_out, d_out] = pa_pid.Compute(pa, pa_target)
-	pa_diags = "%f, %f, %f" % (p_out, i_out, d_out)
-	pr_target = p_out + i_out + d_out
-	[p_out, i_out, d_out] = ra_pid.Compute(ra, ra_target)
-	ra_diags = "%f, %f, %f" % (p_out, i_out, d_out)
-	rr_target = p_out + i_out + d_out
-	[p_out, i_out, d_out] = ya_pid.Compute(ya, ya_target)
-	ya_diags = "%f, %f, %f" % (p_out, i_out, d_out)
-	yr_target = p_out + i_out + d_out
+		#---------------------------------------------------------------------------
+		# Convert the vertical velocity PID output direct to PWM pulse width.
+		#---------------------------------------------------------------------------
+		vert_out = hover_speed + int(round(evz_out))
 
-	#-----------------------------------------------------------------------------------
-	# Run the angular rate PIDs each rotation axis.
-	#-----------------------------------------------------------------------------------
-	[p_out, i_out, d_out] = pr_pid.Compute(qgy, pr_target)
-	pr_diags = "%f, %f, %f" % (p_out, i_out, d_out)
-	pf_out = p_out + i_out + d_out
-	[p_out, i_out, d_out] = rr_pid.Compute(qgx, rr_target)
-	rr_diags = "%f, %f, %f" % (p_out, i_out, d_out)
-	rf_out = p_out + i_out + d_out
-	[p_out, i_out, d_out] = yr_pid.Compute(qgz, yr_target)
-	yr_diags = "%f, %f, %f" % (p_out, i_out, d_out)
-	yf_out = p_out + i_out + d_out
+		#---------------------------------------------------------------------------
+		# Track proportion of time handling speed PIDs
+		#---------------------------------------------------------------------------
+		sample_time = time.time()
+		time_handling_motion_pids += sample_time - prev_sample_time
+		prev_sample_time = sample_time
 
-	#-----------------------------------------------------------------------------------
-	# Track proportion of time handling angle PIDs
-	#-----------------------------------------------------------------------------------
-	sample_time = time.time()
-	time_handling_angle_pids += sample_time - prev_sample_time
-	prev_sample_time = sample_time
 
-	#===================================================================================
-	# Mixer: Walk through the ESCs, and depending on their location, apply the output accordingly
-	#===================================================================================
-	if current_time - last_attitude_update >= 1/76:
+	if current_time - last_attitude_update >= 1/attitude_frequency:
 		last_attitude_update -= current_time
 
-		pf_out = int(round(pf_out / 2))
-		rf_out = int(round(rf_out / 2))
-		yf_out = int(round(yf_out / 2))
+		#===========================================================================
+		# Attitude PIDs: Run the absolute and and rotoation rate PIDs each rotation
+		# axis to determine overall PWM output.
+		#===========================================================================
+		[p_out, i_out, d_out] = pa_pid.Compute(pa, pa_target)
+		pa_diags = "%f, %f, %f" % (p_out, i_out, d_out)
+		pr_target = p_out + i_out + d_out
+		[p_out, i_out, d_out] = ra_pid.Compute(ra, ra_target)
+		ra_diags = "%f, %f, %f" % (p_out, i_out, d_out)
+		rr_target = p_out + i_out + d_out
+		[p_out, i_out, d_out] = ya_pid.Compute(ya, ya_target)
+		ya_diags = "%f, %f, %f" % (p_out, i_out, d_out)
+		yr_target = p_out + i_out + d_out
+
+		[p_out, i_out, d_out] = pr_pid.Compute(qgy, pr_target)
+		pr_diags = "%f, %f, %f" % (p_out, i_out, d_out)
+		pr_out = p_out + i_out + d_out
+		[p_out, i_out, d_out] = rr_pid.Compute(qgx, rr_target)
+		rr_diags = "%f, %f, %f" % (p_out, i_out, d_out)
+		rr_out = p_out + i_out + d_out
+		[p_out, i_out, d_out] = yr_pid.Compute(qgz, yr_target)
+		yr_diags = "%f, %f, %f" % (p_out, i_out, d_out)
+		yr_out = p_out + i_out + d_out
+
+		#---------------------------------------------------------------------------
+		# Convert the rotation rate PID outputs direct to PWM pulse width
+		#---------------------------------------------------------------------------
+		pr_out = int(round(pr_out / 2))
+		rr_out = int(round(rr_out / 2))
+		yr_out = int(round(yr_out / 2))
 
 		#---------------------------------------------------------------------------
 		# START TESTCASE 3 CODE: Disable yaw
 		#---------------------------------------------------------------------------
 		if test_case == 3:
-			yf_out = 0
+			yr_out = 0
 		#---------------------------------------------------------------------------
 		# END TESTCASE 3 CODE: Disable front-left and back right blades
 		#---------------------------------------------------------------------------
@@ -1856,38 +1908,51 @@ while keep_looping:
 		#---------------------------------------------------------------------------
 		update_PWM = True
 
+		#---------------------------------------------------------------------------
+		# Track proportion of time handling angle PIDs
+		#---------------------------------------------------------------------------
+		sample_time = time.time()
+		time_handling_attitude_pids += sample_time - prev_sample_time
+		prev_sample_time = sample_time
+
+
 	#-----------------------------------------------------------------------------------
 	# Only update the PWM if there's something worth updating.
 	#-----------------------------------------------------------------------------------
 	if update_PWM:
 		update_PWM = False
+
+
+		#===========================================================================
+		# Mixer: Walk through the ESCs, and depending on their location, apply the output accordingly
+		#===========================================================================
 		for esc in esc_list:
-			#---------------------------------------------------------------------------
+			#-------------------------------------------------------------------
 			# Update all blades' power in accordance with the z error
-			#---------------------------------------------------------------------------
+			#-------------------------------------------------------------------
 			delta_spin = vert_out
 
-			#---------------------------------------------------------------------------
+			#-------------------------------------------------------------------
 			# For a left downwards roll, the x gyro goes negative, so the PID error is positive,
 			# meaning PID output is positive, meaning this needs to be added to the left blades
 			# and subtracted from the right.
-			#---------------------------------------------------------------------------
+			#-------------------------------------------------------------------
 			if esc.motor_location & MOTOR_LOCATION_RIGHT:
-				delta_spin -= rf_out
+				delta_spin -= rr_out
 			else:
-				delta_spin += rf_out
+				delta_spin += rr_out
 
-			#---------------------------------------------------------------------------
+			#-------------------------------------------------------------------
 			# For a forward downwards pitch, the y gyro goes negative, so the PID error is
 			# postive, meaning PID output is positive, meaning this needs to be added to the
 			# front blades and subreacted from the back.
-			#---------------------------------------------------------------------------
+			#-------------------------------------------------------------------
 			if esc.motor_location & MOTOR_LOCATION_BACK:
-				delta_spin -= pf_out
+				delta_spin -= pr_out
 			else:
-				delta_spin += pf_out
+				delta_spin += pr_out
 
-			#---------------------------------------------------------------------------
+			#-------------------------------------------------------------------
 			# An excess CW rotating of the front-right and back-left (FR & BL) blades
 			# results in an CW rotation of the quadcopter body. The z gyro produces
 			# a negative output as a result. This then leads to the PID error
@@ -1896,29 +1961,29 @@ while keep_looping:
 			# output needs to be subtracted from those blades (thus slowing their rotation)
 			# and added to the ACW FL & BR blades (thus speeding them up) to
 			# compensate for the yaw.
-			#---------------------------------------------------------------------------
+			#-------------------------------------------------------------------
 			if esc.motor_rotation == MOTOR_ROTATION_ACW:
-				delta_spin -= yf_out
+				delta_spin -= yr_out
 			else:
-				delta_spin += yf_out
+				delta_spin += yr_out
 
-			#---------------------------------------------------------------------------
+			#-------------------------------------------------------------------
 			# Apply the blended outputs to the esc PWM signal
-			#---------------------------------------------------------------------------
+			#-------------------------------------------------------------------
 			esc.update(delta_spin)
 
-	#-----------------------------------------------------------------------------------
-	# Track proportion of time applying PID outputs
-	#-----------------------------------------------------------------------------------
-	sample_time = time.time()
-	time_handling_pid_outputs += sample_time - prev_sample_time
-	prev_sample_time = sample_time
+			#-------------------------------------------------------------------
+			# Track proportion of time applying PWM outputs
+			#-------------------------------------------------------------------
+			sample_time = time.time()
+			time_handling_pid_outputs += sample_time - prev_sample_time
+			prev_sample_time = sample_time
 
 	#-----------------------------------------------------------------------------------
 	# Diagnostic statistics log - every 0.1s
 	#-----------------------------------------------------------------------------------
 	if statistics:
-		logger.warning('%f, %f, %d, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %s, %s, %s, %f, %s, %s, %s, %f, %s, %f, %s, %s, %f, %d, %d, %d, %d', elapsed_time, delta_time, loop_count, evz_target,qgx, qgy, qgz, qax, qay, qaz, eax, eay, eaz, evx, evy, evz, math.degrees(i_pitch), math.degrees(i_roll), math.degrees(e_pitch), math.degrees(e_roll), math.degrees(c_pitch), math.degrees(c_roll), math.degrees(i_yaw), math.degrees(e_tilt), evx_diags, pa_diags, pr_diags, pf_out, evy_diags, ra_diags, rr_diags, rf_out, evz_diags, efz_out, ya_diags, yr_diags, yf_out, esc_list[0].current_pulse_width, esc_list[1].current_pulse_width, esc_list[2].current_pulse_width, esc_list[3].current_pulse_width)
+		logger.warning('%f, %f, %d, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %s, %f, %s, %s, %f, %s, %f, %s, %s, %f, %s, %f, %s, %s, %f, %d, %d, %d, %d', elapsed_time, delta_time, loop_count, evz_target,qgx, qgy, qgz, qax, qay, qaz, eax, eay, eaz, evx, evy, evz, math.degrees(i_pitch), math.degrees(i_roll), math.degrees(e_pitch), math.degrees(e_roll), math.degrees(c_pitch), math.degrees(c_roll), math.degrees(i_yaw), math.degrees(e_tilt), evx_diags, pa_target, pa_diags, pr_diags, pr_out, evy_diags, ra_target, ra_diags, rr_diags, rr_out, evz_diags, evz_out, ya_diags, yr_diags, yr_out, esc_list[0].current_pulse_width, esc_list[1].current_pulse_width, esc_list[2].current_pulse_width, esc_list[3].current_pulse_width)
 
 	#-----------------------------------------------------------------------------------
 	# Track proportion of time logging diagnostics
@@ -1939,7 +2004,7 @@ while keep_looping:
 	time.sleep(sleep_time)
 
 	#-----------------------------------------------------------------------------------
-	# Track proportion of time logging diagnostics
+	# Track proportion of time sleeping
 	#-----------------------------------------------------------------------------------
 	sample_time = time.time()
 	time_handling_sleep += sample_time - prev_sample_time
@@ -1959,8 +2024,8 @@ logger.critical("%% eangles:          %f", time_handling_eangles / elapsed_time 
 logger.critical("%% iangles:          %f", time_handling_iangles / elapsed_time * 100.0)
 logger.critical("%% angles_filter:    %f", time_handling_angles_filter / elapsed_time * 100.0)
 logger.critical("%% axes_shift:       %f", time_handling_axes_shift / elapsed_time * 100.0)
-logger.critical("%% speed_pids:       %f", time_handling_speed_pids / elapsed_time * 100.0)
-logger.critical("%% angle_pids:       %f", time_handling_angle_pids / elapsed_time * 100.0)
+logger.critical("%% motion_pids:      %f", time_handling_motion_pids / elapsed_time * 100.0)
+logger.critical("%% attitude_pids:    %f", time_handling_attitude_pids / elapsed_time * 100.0)
 logger.critical("%% pid_outputs:      %f", time_handling_pid_outputs / elapsed_time * 100.0)
 logger.critical("%% pid_diagnosticss: %f", time_handling_diagnostics / elapsed_time * 100.0)
 logger.critical("%% sleep:            %f", time_handling_sleep / elapsed_time * 100.0)
