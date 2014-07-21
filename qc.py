@@ -40,6 +40,7 @@ from datetime import datetime
 import shutil
 import ctypes
 from ctypes.util import find_library
+import random
 
 ############################################################################################
 #
@@ -337,10 +338,10 @@ class MPU6050 :
 		time.sleep(5.0)
 	
 		#---------------------------------------------------------------------------
-		# Sets sample rate to 1kHz/1+2 = 333Hz or 3ms
+		# Sets sample rate to 1kHz/1+0 = 1kHz or 1ms
 		#---------------------------------------------------------------------------
-		logger.debug('Sample rate 333Hz')
-		self.i2c.write8(self.__MPU6050_RA_SMPLRT_DIV, 0x02)
+		logger.debug('Sample rate 1kHz')
+		self.i2c.write8(self.__MPU6050_RA_SMPLRT_DIV, 0x0)
 		time.sleep(0.1)
 	
 		#---------------------------------------------------------------------------
@@ -409,6 +410,8 @@ class MPU6050 :
 			CleanShutdown()
 
 	def readSensorsRaw(self):
+                global time_now
+
 		#---------------------------------------------------------------------------
 		# Clear the data ready interrupt, optionally make sure it clears, then hard loop
 		# on the data ready interrupt until it gets set high again
@@ -446,6 +449,12 @@ class MPU6050 :
 		# individually where the sensor data registers could be updated between reads.
 		#---------------------------------------------------------------------------
 		sensor_data = self.i2c.readList(self.__MPU6050_RA_ACCEL_XOUT_H, 14)
+
+		#---------------------------------------------------------------------------
+                # Note the time stamp for this batch of sensor data
+		#---------------------------------------------------------------------------
+                time_now = time.time()
+
 
 		for index in range(0, 14, 2):
 			if (sensor_data[index] > 127):
@@ -923,11 +932,13 @@ def CheckCLI(argv):
 	#-----------------------------------------------------------------------------------
 	cli_test_case = 0
 	cli_tau = 0.5
-	cli_dlpf = 5
-	cli_loop_frequency = 500 # 100
+	cli_dlpf = 4
+	cli_sampling_rate = 500
+	cli_sampling_jitter = 0
 	cli_statistics = False
-	cli_motion_frequency = 31
-	cli_attitude_frequency = 31
+	cli_motion_frequency = 41
+	cli_attitude_frequency = 41
+	cli_use_tilt = False
 
 	hover_target_defaulted = True
 	no_drift_control = False
@@ -939,9 +950,35 @@ def CheckCLI(argv):
 	# Right, let's get on with reading the command line and checking consistency
 	#-----------------------------------------------------------------------------------
 	try:
-		opts, args = getopt.getopt(argv,'a:fcvh:l:m:s', ['tc=', 'vvp=', 'vvi=', 'vvd=', 'hvp=', 'hvi=', 'hvd=', 'rrp=', 'rri=', 'rrd=', 'tau=', 'dlpf='])
+		opts, args = getopt.getopt(argv,'a:fcvh:m:st', ['tc=', 'vvp=', 'vvi=', 'vvd=', 'hvp=', 'hvi=', 'hvd=', 'rrp=', 'rri=', 'rrd=', 'tau=', 'dlpf=', 'sr=', 'sj='])
 	except getopt.GetoptError:
-		logger.critical('qcpi.py [-f][-h hover_target][-v][')
+		logger.critical('Must specify one of -f or -c or --tc')
+		logger.critical('  qcpi.py [-f] [-t speed] [-c] [-v]')
+		logger.critical('  -f set whether to fly')
+		logger.critical('  -h set the hover speed for manual testing')
+		logger.critical('  -c calibrate sensors against temperature and save')
+		logger.critical('  -s enable diagnostic statistics')
+		logger.critical('  -n disable drift control')
+		logger.critical('  -y enable yaw control (unsupported')
+		logger.critical('  -v video the flight')
+		logger.critical('  -t use tilt for vertical velocity frame conversion')
+		logger.critical('  -l ??  set the processing loop frequency')
+		logger.critical('  -a ??  set attitude PID update frequency')
+		logger.critical('  -m ??  set motion PID update frequency')
+		logger.critical('  --vvp  set vertical speed PID P gain')
+		logger.critical('  --vvi  set vertical speed PID P gain')
+		logger.critical('  --vvd  set vertical speed PID P gain')
+		logger.critical('  --hvp  set horizontal speed PID P gain')
+		logger.critical('  --hvi  set horizontal speed PID I gain')
+		logger.critical('  --hvd  set horizontal speed PID D gain')
+		logger.critical('  --rrp  set angular PID P gain')
+		logger.critical('  --rri  set angular PID I gain')
+		logger.critical('  --rri  set angular PID D gain')
+		logger.critical('  --tc   select which testcase to run')
+		logger.critical('  --tau  set the complementary filter period')
+		logger.critical('  --dlpf set the digital low pass filter')
+		logger.critical('  -sr    set the sensor read frequency')
+		logger.critical('  -sj    set the send read feequency jitter percentage')
 		sys.exit(2)
 
 	for opt, arg in opts:
@@ -961,14 +998,14 @@ def CheckCLI(argv):
 		elif opt in '-c':
 			cli_calibrate_sensors = True
 
-		elif opt in '-l':
-			cli_loop_frequency = int(arg)
-
 		elif opt in '-m':
 			cli_motion_frequency = int(arg)
 
 		elif opt in '-s':
 			cli_statistics = True
+
+		elif opt in '-t':
+			cli_use_tilt = True	
 
 		elif opt in '--vvp':
 			cli_vvp_gain = float(arg)
@@ -1000,6 +1037,12 @@ def CheckCLI(argv):
 			cli_rrd_gain = float(arg)
 			rrd_set = True
 
+		elif opt in '--sr':
+			cli_sampling_rate = int(arg)
+
+		elif opt in '--sj':
+			cli_sampling_jitter = int(arg)
+
 		elif opt in '--tc':
 			cli_test_case = int(arg)
 
@@ -1010,30 +1053,7 @@ def CheckCLI(argv):
 			cli_dlpf = int(arg)
 
 	if not cli_calibrate_sensors and not cli_fly and cli_test_case == 0:
-		logger.critical('Must specify one of -f or -c or --tc')
-		logger.critical('  qcpi.py [-f] [-t speed] [-c] [-v]')
-		logger.critical('  -f set whether to fly')
-		logger.critical('  -h set the hover speed for manual testing')
-		logger.critical('  -c calibrate sensors against temperature and save')
-		logger.critical('  -s enable diagnostic statistics')
-		logger.critical('  -n disable drift control')
-		logger.critical('  -y enable yaw control (unsupported')
-		logger.critical('  -v video the flight')
-		logger.critical('  -l ??  set the processing loop frequency')
-		logger.critical('  -a ??  set attitude PID update frequency')
-		logger.critical('  -m ??  set motion PID update frequency')
-		logger.critical('  --vvp  set vertical speed PID P gain')
-		logger.critical('  --vvi  set vertical speed PID P gain')
-		logger.critical('  --vvd  set vertical speed PID P gain')
-		logger.critical('  --hvp  set horizontal speed PID P gain')
-		logger.critical('  --hvi  set horizontal speed PID I gain')
-		logger.critical('  --hvd  set horizontal speed PID D gain')
-		logger.critical('  --rrp  set angular PID P gain')
-		logger.critical('  --rri  set angular PID I gain')
-		logger.critical('  --rri  set angular PID D gain')
-		logger.critical('  --tc   select which testcase to run')
-		logger.critical('  --tau  set the complementary filter period')
-		logger.critical('  --dlpf set the digital low pass filter')
+		logger.critical('Must specify one of -f, -c or --tc')
 		sys.exit(2)
 
 	elif not cli_calibrate_sensors and (cli_hover_target < 0 or cli_hover_target > 1000):
@@ -1096,7 +1116,7 @@ def CheckCLI(argv):
 		cli_hvi_gain = 0.0
 		cli_hvd_gain = 0.0
 
-	return cli_calibrate_sensors, cli_fly, cli_hover_target, cli_video, cli_vvp_gain, cli_vvi_gain, cli_vvd_gain, cli_hvp_gain, cli_hvi_gain, cli_hvd_gain, cli_rrp_gain, cli_rri_gain, cli_rrd_gain, cli_test_case, cli_tau, cli_dlpf, cli_loop_frequency, 1 / cli_motion_frequency, 1 / cli_attitude_frequency, cli_statistics
+	return cli_calibrate_sensors, cli_fly, cli_hover_target, cli_video, cli_vvp_gain, cli_vvi_gain, cli_vvd_gain, cli_hvp_gain, cli_hvi_gain, cli_hvd_gain, cli_rrp_gain, cli_rri_gain, cli_rrd_gain, cli_test_case, cli_tau, cli_dlpf, cli_sampling_rate, cli_sampling_jitter, 1 / cli_motion_frequency, 1 / cli_attitude_frequency, cli_statistics, cli_use_tilt
 
 ############################################################################################
 #
@@ -1200,7 +1220,8 @@ def GetEulerAngles(ax, ay, az):
 # Convert a vector to quadcopter-frame coordinates from earth-frame coordinates
 #
 ############################################################################################
-def QuadFrame(evx, evy, evz, pa, ra, ya):
+def QuadFrame(evx, evy, evz, pa, ra, ya, ta):
+	global use_tilt
 
 	#===================================================================================
 	# Axes: Convert a vector from earth- to quadcopter frame
@@ -1218,10 +1239,15 @@ def QuadFrame(evx, evy, evz, pa, ra, ya):
 	s_ra = math.sin(ra)
 	c_ya = math.cos(ya)
 	s_ya = math.sin(ya)
+	c_ta = math.cos(ta)
+	s_ta = math.sin(ta)
 
 	qvx = evx * c_pa * c_ya                        + evy * c_pa * s_ya                        - evz * s_pa
 	qvy = evx * (s_ra * s_pa * c_ya - c_ra * s_ya) + evy * (s_ra * s_pa * s_ya + c_ra * c_ya) + evz * s_ra * c_pa
-	qvz = evx * (c_ra * s_pa * c_ya + s_ra * s_ya) + evy * (c_ra * s_pa * s_ya - s_ra * c_ya) + evz * c_pa * c_ra
+	if use_tilt:
+		qvz = evz / c_ta
+	else:
+		qvz = evx * (c_ra * s_pa * c_ya + s_ra * s_ya) + evy * (c_ra * s_pa * s_ya - s_ra * c_ya) + evz * c_pa * c_ra
 
 	return qvx, qvy, qvz
 
@@ -1318,8 +1344,8 @@ logger.addHandler(file_handler)
 #-------------------------------------------------------------------------------------------
 # Check the command line to see if we are calibrating or flying - if neither are set, CheckCLI sys.exit(0)s
 #-------------------------------------------------------------------------------------------
-calibrate_sensors, flying, hover_target, shoot_video, vvp_gain, vvi_gain, vvd_gain, hvp_gain, hvi_gain, hvd_gain, rrp_gain, rri_gain, rrd_gain, test_case, tau, dlpf, loop_frequency, motion_period, attitude_period, statistics = CheckCLI(sys.argv[1:])
-logger.critical("calibrate_sensors = %s, fly = %s, hover_target = %d, shoot_video = %s, vvp_gain = %f, vvi_gain = %f, vvd_gain= %f, hvp_gain = %f, hvi_gain = %f, hvd_gain = %f, rrp_gain = %f, rri_gain = %f, rrd_gain = %f, test_case = %d, tau = %f, dlpf = %d, loop_frequency = %d, motion_period = %f, attitude_period = %f, statistics = %s", calibrate_sensors, flying, hover_target, shoot_video, vvp_gain, vvi_gain, vvd_gain, hvp_gain, hvi_gain, hvd_gain, rrp_gain, rri_gain, rrd_gain, test_case, tau, dlpf, loop_frequency, motion_period, attitude_period, statistics)
+calibrate_sensors, flying, hover_target, shoot_video, vvp_gain, vvi_gain, vvd_gain, hvp_gain, hvi_gain, hvd_gain, rrp_gain, rri_gain, rrd_gain, test_case, tau, dlpf, sampling_rate, sampling_jitter, motion_period, attitude_period, statistics, use_tilt = CheckCLI(sys.argv[1:])
+logger.critical("calibrate_sensors = %s, fly = %s, hover_target = %d, shoot_video = %s, vvp_gain = %f, vvi_gain = %f, vvd_gain= %f, hvp_gain = %f, hvi_gain = %f, hvd_gain = %f, rrp_gain = %f, rri_gain = %f, rrd_gain = %f, test_case = %d, tau = %f, dlpf = %d, sampling_rate = %d, sampling_jitter = %d, motion_period = %f, attitude_period = %f, statistics = %s, use_tilt = %s", calibrate_sensors, flying, hover_target, shoot_video, vvp_gain, vvi_gain, vvd_gain, hvp_gain, hvi_gain, hvd_gain, rrp_gain, rri_gain, rrd_gain, test_case, tau, dlpf, sampling_rate, sampling_jitter, motion_period, attitude_period, statistics, use_tilt)
 
 #-------------------------------------------------------------------------------------------
 # Initialize the gyroscope / accelerometer I2C object
@@ -1499,6 +1525,8 @@ qvx_target = 0.0
 qvy_target = 0.0
 qvz_target = 0.0
 
+e_qvz_target = 0.0
+
 qvx_input = 0.0
 qvy_input = 0.0
 qvz_input = 0.0
@@ -1671,7 +1699,7 @@ PID_YR_D_GAIN = rrd_gain / 2.0
 # Diagnostic statistics log header
 #-------------------------------------------------------------------------------------------
 if statistics:
-	logger.warning('time, dt, loop, qgx, qgy, qgz, qax, qay, qaz, gez, gqx, gqy, gqz, qvx, qvy, qvz, i pitch, i roll, e pitch, e roll, c pitch, c roll, i yaw, e tilt, evx_target, qvx_target, qxp, qxi, qxd, pr_target, prp, pri, prd, pr_out, evy_yarget, qvy_target, qyp, qyi, qyd, rr_target, rrp, rri, rrd, rr_out, evz_target, qvz_target, qzp, qzi, qzd, qvz_out, yr_target, yrp, yri, yrd, yr_out, FL spin, FR spin, BL spin, BR spin')
+	logger.warning('time, dt, loop, qgx, qgy, qgz, qax, qay, qaz, gez, gqx, gqy, gqz, qvx, qvy, qvz, i pitch, i roll, e pitch, e roll, c pitch, c roll, i yaw, e tilt, evx_target, qvx_target, qxp, qxi, qxd, pr_target, prp, pri, prd, pr_out, evy_yarget, qvy_target, qyp, qyi, qyd, rr_target, rrp, rri, rrd, rr_out, evz_target, qvz_target, e_qvz_target, qzp, qzi, qzd, qvz_out, yr_target, yrp, yri, yrd, yr_out, FL spin, FR spin, BL spin, BR spin')
 
 time_handling_inputs = 0.0
 time_handling_targets = 0.0
@@ -1724,10 +1752,10 @@ last_attitude_update = time_now
 
 while keep_looping:
 	####################################################################################
-	# TIME CRITICAL: Take a snapshot of the sensor values.nd update time when done.
+	# TIME CRITICAL: Take a snapshot of the sensor values.  This also updates the global
+        # time_now which stamps as accurtely as possible the time the data was read
 	####################################################################################
 	qax, qay, qaz, qgx, qgy, qgz = mpu6050.readSensors()
-	time_now = time.time()
 	####################################################################################
 	# !TIME CRITICAL:
 	####################################################################################
@@ -1874,6 +1902,10 @@ while keep_looping:
 		time_handling_targets += sample_time - prev_sample_time
 		prev_sample_time = sample_time
 
+	#===================================================================================
+	# Averaging: Sensor data is summed over time, and later averaged
+	#===================================================================================
+
 	#-----------------------------------------------------------------------------------
 	# Integrate the gyros rotation rate to determine absolute angles.
 	#-----------------------------------------------------------------------------------
@@ -1896,14 +1928,14 @@ while keep_looping:
 		time_handling_integration += sample_time - prev_sample_time
 		prev_sample_time = sample_time
 
-	#-----------------------------------------------------------------------------------
-	# The attitude PID targets are updated with new motion PID outputs at 31Hz.
-	#-----------------------------------------------------------------------------------
+	#===================================================================================
+	# Motion Processing:  Use the recorded data to produce motion data and feed in the motion PIDs
+	#===================================================================================
 	if time_now - last_motion_update >= motion_period:
 		last_motion_update += motion_period
 
 		#----------------------------------------------------------------------------------
-		# Work out the average acceleration
+		# Work out the average acceleration and rotation rate
 		#----------------------------------------------------------------------------------
 		averaging_period = time_now - averaging_start
 		averaging_start = time_now
@@ -1973,12 +2005,13 @@ while keep_looping:
 		#-----------------------------------------------------------------------------------
 		# Find the distribution of gravity in the quadcopter frame
 		#-----------------------------------------------------------------------------------
-		gqx, gqy, gqz = QuadFrame(0, 0, gez, pa, ra, ya)
+		gqx, gqy, gqz = QuadFrame(0, 0, gez, pa, ra, ya, ta)
 
 		#-----------------------------------------------------------------------------------
 		# Convert earth-frame velocity targets to quadcopter frame
 		#-----------------------------------------------------------------------------------
-		qvx_target, qvy_target, qvz_target = QuadFrame(evx_target, evy_target, evz_target, pa, ra, ya)
+		qvx_target, qvy_target, qvz_target = QuadFrame(evx_target, evy_target, evz_target, pa, ra, ya, ta)
+		e_qvz_target = evz_target / math.cos(ta)
 
 		#-----------------------------------------------------------------------------------
 		# Track proportion of time handling frame conversions
@@ -2032,9 +2065,9 @@ while keep_looping:
 			prev_sample_time = sample_time
 
 
-	#-----------------------------------------------------------------------------------
-	# The attitude PID outputs are updated every 100Hz.
-	#-----------------------------------------------------------------------------------
+	#===================================================================================
+	# Attitude PIDs: controlling the rotation rate of Phoebe around her X, Y and Z axes.
+	#===================================================================================
 	if time_now - last_attitude_update >= attitude_period:
 		last_attitude_update += attitude_period
 
@@ -2093,7 +2126,8 @@ while keep_looping:
 
 
 		#===========================================================================
-		# Mixer: Walk through the ESCs, and depending on their location, apply the output accordingly
+		# ESCs: Walk through the ESCs, and depending on their location, apply the
+		# rotation PID output accordingly
 		#===========================================================================
 		for esc in esc_list:
 			#-------------------------------------------------------------------
@@ -2151,7 +2185,7 @@ while keep_looping:
 	# Diagnostic statistics log - every 0.1s
 	#-----------------------------------------------------------------------------------
 	if statistics:
-		logger.warning('%f, %f, %d, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %s, %f, %s, %d, %f, %f, %s, %f, %s, %d, %f, %f, %s, %d, %f, %s, %d, %d, %d, %d, %d', elapsed_time, delta_time, loop_count, qgx, qgy, qgz, qax, qay, qaz, gez, gqx, gqy, gqz, qvx_input, qvy_input, qvz_input, math.degrees(i_pitch), math.degrees(i_roll), math.degrees(e_pitch), math.degrees(e_roll), math.degrees(c_pitch), math.degrees(c_roll), math.degrees(i_yaw), math.degrees(e_tilt), evx_target, qvx_target, qvx_diags, math.degrees(pr_target), pr_diags, pr_out, evy_target, qvy_target, qvy_diags, math.degrees(rr_target), rr_diags, rr_out, evz_target, qvz_target, qvz_diags, qvz_out, yr_target, yr_diags, yr_out, esc_list[0].current_pulse_width, esc_list[1].current_pulse_width, esc_list[2].current_pulse_width, esc_list[3].current_pulse_width)
+		logger.warning('%f, %f, %d, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %s, %f, %s, %d, %f, %f, %s, %f, %s, %d, %f, %f, %f, %s, %d, %f, %s, %d, %d, %d, %d, %d', elapsed_time, delta_time, loop_count, qgx, qgy, qgz, qax, qay, qaz, gez, gqx, gqy, gqz, qvx_input, qvy_input, qvz_input, math.degrees(i_pitch), math.degrees(i_roll), math.degrees(e_pitch), math.degrees(e_roll), math.degrees(c_pitch), math.degrees(c_roll), math.degrees(i_yaw), math.degrees(e_tilt), evx_target, qvx_target, qvx_diags, math.degrees(pr_target), pr_diags, pr_out, evy_target, qvy_target, qvy_diags, math.degrees(rr_target), rr_diags, rr_out, evz_target, qvz_target, e_qvz_target, qvz_diags, qvz_out, yr_target, yr_diags, yr_out, esc_list[0].current_pulse_width, esc_list[1].current_pulse_width, esc_list[2].current_pulse_width, esc_list[3].current_pulse_width)
 
 	#-----------------------------------------------------------------------------------
 	# Track proportion of time logging diagnostics
@@ -2166,12 +2200,13 @@ while keep_looping:
 	# takes place between the update of the PWM and reading the sensors, so that any
 	# PWM changes can stabilize (i.e. spikes reacted to) prior to reading the sensors.
 	#-----------------------------------------------------------------------------------
-	loop_time = time.time() - time_now
-	sleep_time = 1 / loop_frequency - loop_time
-	if sleep_time < 0.0:
-		sleep_time = 0.0
-	else:
-		time.sleep(sleep_time)
+#	loop_time = time.time() - time_now
+#	jitter = random.uniform(-sampling_jitter, sampling_jitter) / 100
+#	sleep_time = 1 / ((1 + jitter) * sampling_rate) - loop_time
+#	if sleep_time < 0.0:
+#		sleep_time = 0.0
+#	else:
+#		time.sleep(sleep_time)
 
 	#-----------------------------------------------------------------------------------
 	# Track proportion of time sleeping
