@@ -32,8 +32,8 @@ import logging
 # Only required when using GPIO.wait_for_event() to block for hardware interrupts
 #-------------------------------------------------------------------------------------------
 # import RPi.GPIO as RPIO
-
 import RPIO
+
 from RPIO import PWM
 import subprocess
 from datetime import datetime
@@ -295,34 +295,11 @@ class MPU6050 :
 		self.address = address
 		self.sensor_data = array('B', [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0])
 		self.result_array = array('h', [0, 0, 0, 0, 0, 0, 0])
+		self.misses = 0
+
 		self.gx_offset = 0.0
 		self.gy_offset = 0.0
 		self.gz_offset = 0.0
-
-		self.ax_offset = 0.0092
-		self.ay_offset = 0.0100
-		self.az_offset = 0.04
-		self.ax_gain =   1.055
-		self.ay_gain =   1.055
-		self.az_gain =   0.99
-		self.misses = 0
-
-		#----------------------------------------------------------------------------
-		# For source of these data, see accel_temp_trend_XYZ.xls
-		#----------------------------------------------------------------------------
-		self.ax_off_m = -0.000000798368
-		self.ax_off_c = 0.004813165
-		self.ay_off_m = 0.000000237956
-		self.ay_off_c = 0.011484296
-		self.az_off_m = 0.00000158997
-		self.az_off_c = 0.050362279
-		self.ax_gain_m = 0.0000000584379
-		self.ax_gain_c = 0.986033738
-		self.ay_gain_m = 0.00000019359
-		self.ay_gain_c = 0.990519997
-		self.az_gain_m = 0.0000000906632
-		self.az_gain_c = 0.986080023
-
 
 		logger.info('Reseting MPU-6050')
 		#---------------------------------------------------------------------------
@@ -341,7 +318,7 @@ class MPU6050 :
 		# Sets sample rate to 1kHz/1+0 = 1kHz or 1ms
 		#---------------------------------------------------------------------------
 		logger.debug('Sample rate 1kHz')
-		self.i2c.write8(self.__MPU6050_RA_SMPLRT_DIV, 0x0)
+		self.i2c.write8(self.__MPU6050_RA_SMPLRT_DIV, 0x1)
 		time.sleep(0.1)
 	
 		#---------------------------------------------------------------------------
@@ -410,7 +387,7 @@ class MPU6050 :
 			CleanShutdown()
 
 	def readSensorsRaw(self):
-                global time_now
+		global time_now
 
 		#---------------------------------------------------------------------------
 		# Clear the data ready interrupt, optionally make sure it clears, then hard loop
@@ -441,7 +418,7 @@ class MPU6050 :
 #-------------------------------------------------------------------------------------------
 # Working but slower approach to use the hardware interrupt directly to detect data ready
 #-------------------------------------------------------------------------------------------
-#		RPIO.wait_for_edge(RPIO_DATA_READY_INTERRUPT, RPIO.RISING)
+#		RPIO.wait_for_event(RPIO_DATA_READY_INTERRUPT, RPIO.RISING)
 
 		#---------------------------------------------------------------------------
 		# For speed of reading, read all the sensors and parse to SHORTs after.  This
@@ -451,10 +428,10 @@ class MPU6050 :
 		sensor_data = self.i2c.readList(self.__MPU6050_RA_ACCEL_XOUT_H, 14)
 
 		#---------------------------------------------------------------------------
-                # Note the time stamp for this batch of sensor data
+		# Time stamp the data for the best integration possible in the main
+		# processing loop
 		#---------------------------------------------------------------------------
-                time_now = time.time()
-
+		time_now = time.time()
 
 		for index in range(0, 14, 2):
 			if (sensor_data[index] > 127):
@@ -463,52 +440,6 @@ class MPU6050 :
 
 		return self.result_array
 
-
-	def readSensors(self):
-		#---------------------------------------------------------------------------
-		# +/- 2g 2 * 16 bit range for the accelerometer
-		# +/- 250 degrees per second * 16 bit range for the gyroscope - converted to radians
-		#---------------------------------------------------------------------------
-		[ax, ay, az, temp, gx, gy, gz] = self.readSensorsRaw()
-
-		#---------------------------------------------------------------------------
-		# Accelerometer output offsets vary dependent on temperature.  By measuring the offsets on
-		# a horizontal platform across a broad temperature range, it's possible to use a trend-line to
-		# estimate the offset at any given temperature thus compensating for sensor temperature changes
-		# both ambient and due to power consumption.
-		#---------------------------------------------------------------------------
-		# ax_offset = -0.000000632003 * temp - 0.005138789
-		# ay_offset = +0.000000889247 * temp + 0.011975151
-		# az_offset = +0.000001085730 * temp + 0.060706560
-	
-		#---------------------------------------------------------------------------
-		# Likewise gyro output offsets vary dependent on temperature.  By measuring the offsets on
-		# a stable platform across a broad temperature range, it's possible to use a trend-line to
-		# estimate the offset at any given temperature thus compensating for sensor temperature changes
-		# both ambient and due to power consumption.
-		#---------------------------------------------------------------------------
-		# gx_offset = -0.000003530530 * temp - 0.070313982
-		# gy_offset = -0.000001192520 * temp + 0.022300123
-		# gz_offset = +0.000001136000 * temp - 0.002231554
-
-
-		ax_offset = self.ax_off_m * temp + self.ax_off_c
-		ay_offset = self.ay_off_m * temp + self.ay_off_c
-		az_offset = self.az_off_m * temp + self.az_off_c
-		ax_gain = self.ax_gain_m * temp + self.ax_gain_c
-		ay_gain = self.ay_gain_m * temp + self.ay_gain_c
-		az_gain = self.az_gain_m * temp + self.az_gain_c
-
-		qax = (ax * 4.0 / 65536 - ax_offset) * ax_gain
-		qay = (ay * 4.0 / 65536 - ay_offset) * ay_gain
-		qaz = (az * 4.0 / 65536 - az_offset) * az_gain
-
-		qgx = gx * 500.0 * math.pi / (65536 * 180) - self.gx_offset
-		qgy = gy * 500.0 * math.pi / (65536 * 180) - self.gy_offset
-		qgz = gz * 500.0 * math.pi / (65536 * 180) - self.gz_offset
-
-		return qax, qay, qaz, qgx, -qgy, qgz
-	
 	def calibrateGyros(self):
 		self.gx_offset = 0.0
 		self.gy_offset = 0.0
@@ -519,66 +450,29 @@ class MPU6050 :
 			self.gx_offset += gx
 			self.gy_offset += gy
 			self.gz_offset += gz
-			time.sleep(0.05)
 
 		self.gx_offset *= 500.0 * math.pi / (65536 * 180 * self.__CALIBRATION_ITERATIONS)
 		self.gy_offset *= 500.0 * math.pi / (65536 * 180 * self.__CALIBRATION_ITERATIONS)
 		self.gz_offset *= 500.0 * math.pi / (65536 * 180 * self.__CALIBRATION_ITERATIONS)
 
-	def calibrateSensors(self, file_name):
-		grav_x_offset = 0.0
-		grav_y_offset = 0.0
-		grav_z_offset = 0.0
-		gyro_x_offset = 0.0
-		gyro_y_offset = 0.0
-		gyro_z_offset = 0.0
-		temp_raw = 0
 
-
-		for loop_count in range(0, self.__CALIBRATION_ITERATIONS):
-			[ax, ay, az, temp_raw, gx, gy, gz] = self.readSensorsRaw()
-			grav_x_offset += ax
-			grav_y_offset += ay
-			grav_z_offset += az
-
-			gyro_x_offset += gx
-			gyro_y_offset += gy
-			gyro_z_offset += gz
-
-			time.sleep(0.05)
-
-		grav_x_offset *= (4.0 / (65536 * self.__CALIBRATION_ITERATIONS))
-		grav_y_offset *= (4.0 / (65536 * self.__CALIBRATION_ITERATIONS))
-		grav_z_offset *= (4.0 / (65536 * self.__CALIBRATION_ITERATIONS))
-
-		gyro_x_offset *= (500.0 * math.pi / (65536 * 180 * self.__CALIBRATION_ITERATIONS))
-		gyro_y_offset *= (500.0 * math.pi / (65536 * 180 * self.__CALIBRATION_ITERATIONS))
-		gyro_z_offset *= (500.0 * math.pi / (65536 * 180 * self.__CALIBRATION_ITERATIONS))
-
-		temp = (float(temp_raw) / 340) + 36.53
-
+	def readSensors(self):
 		#---------------------------------------------------------------------------
-		# Open the offset config file
+		# +/- 2g 2 * 16 bit range for the accelerometer
+		# +/- 250 degrees per second * 16 bit range for the gyroscope - converted to radians
 		#---------------------------------------------------------------------------
-		cfg_rc = True
-		try:
-			with open(file_name, 'a') as cfg_file:
-				cfg_file.write('%d, ' % temp_raw)
-				cfg_file.write('%f, ' % temp)
-				cfg_file.write('%f, ' % grav_x_offset)
-				cfg_file.write('%f, ' % grav_y_offset)
-				cfg_file.write('%f, ' % grav_z_offset)
-				cfg_file.write('%f, ' % gyro_x_offset)
-				cfg_file.write('%f, ' % gyro_y_offset)
-				cfg_file.write('%f\n' % gyro_z_offset)
-				cfg_file.flush()
+		[ax, ay, az, temp, gx, gy, gz] = self.readSensorsRaw()
 
-		except IOError, err:
-			logger.critical('Could not open offset config file: %s for writing', file_name)
-			cfg_rc = False
+		qax = ax * 4.0 / 65536
+		qay = ay * 4.0 / 65536
+		qaz = az * 4.0 / 65536
 
-		return cfg_rc
+		qgx = gx * 500.0 * math.pi / (65536 * 180) - self.gx_offset
+		qgy = gy * 500.0 * math.pi / (65536 * 180) - self.gy_offset
+		qgz = gz * 500.0 * math.pi / (65536 * 180) - self.gz_offset
 
+		return qax, qay, qaz, qgx, -qgy, qgz
+	
 
 	def readTemp(self):
 		temp = self.i2c.readS16(self.__MPU6050_RA_TEMP_OUT_H)
@@ -720,158 +614,148 @@ class ESC:
 		
 ############################################################################################
 #
-# Parse the received commmand to convert it to the equivalent directional / operational command
-# The message format is a basic TLV with header and footer:
-# Type: 1 byte
-# Len: 1 byte - currently always 4 - includes this header
-# Data: 2 bytes
+# Convert a vector to quadcopter-frame coordinates from earth-frame coordinates
 #
 ############################################################################################
-class TlvStream():
+def GetEulerAngles(ax, ay, az):
+	#---------------------------------------------------------------------------
+	# What's the angle in the x and y plane from horizontal in radians?
+	#---------------------------------------------------------------------------
+	pitch = math.atan2(ax, math.pow(math.pow(ay, 2) + math.pow(az, 2), 0.5))
+	roll = math.atan2(ay, math.pow(math.pow(ax, 2) + math.pow( az, 2), 0.5))
+	tilt = math.atan2(math.pow(math.pow(ax, 2) + math.pow(ay, 2), 0.5), az)
+	return pitch, roll, tilt
 
-	__CTRL_CMD_ABORT =      0
-	__CTRL_CMD_TAKEOFF =    1
-	__CTRL_CMD_LANDING =    2
-	__CTRL_CMD_HOVER =      3
-	__CTRL_CMD_UP_DOWN =    4
-	__CTRL_CMD_FWD_RVS =    5
-	__CTRL_CMD_LEFT_RIGHT = 6
-	__CTRL_CMD_KEEPALIVE =  7
-	__CTRL_CMD_DATA_ACK =   8
+############################################################################################
+#
+# Convert a vector to quadcopter-frame coordinates from earth-frame coordinates
+#
+############################################################################################
+def E2QFrame(evx, evy, evz, pa, ra, ya, ta):
+	global use_tilt
 
-	def __init__(self):
-		self.cache = ""
+	#===================================================================================
+	# Axes: Convert a vector from earth- to quadcopter frame
+	#
+	# Matrix
+	# ---------
+	# |qvx|   | cos(pa) * cos(ya),                                 cos(pa) * sin(ya),                               -sin(pa)          | |evx|
+	# |qvy| = | sin(ra) * sin(pa) * cos(ya) - cos(ra) * sin(ya),   sin(ra) * sin(pa) * sin(ya) + cos(ra) * cos(ya),  sin(ra) * cos(pa)| |evy|
+	# |qvz|   | cos(ra) * sin(pa) * cos(ya) + sin(ra) * sin(ya),   cos(ra) * sin(pa) * sin(ya) - sin(ra) * cos(ya),  cos(pa) * cos(ra)| |evz|
+	#
+	#===================================================================================
+	c_pa = math.cos(pa)
+	s_pa = -math.sin(pa)
+	c_ra = math.cos(ra)
+	s_ra = math.sin(ra)
+	c_ya = math.cos(ya)
+	s_ya = math.sin(ya)
+	c_ta = math.cos(ta)
+	s_ta = math.sin(ta)
 
-	def Parser(recv_buff):
-		self.cache += resv_buff
-		send_buff = ""
+	qvx = evx * c_pa * c_ya                        + evy * c_pa * s_ya                        - evz * s_pa
+	qvy = evx * (s_ra * s_pa * c_ya - c_ra * s_ya) + evy * (s_ra * s_pa * s_ya + c_ra * c_ya) + evz * s_ra * c_pa
+	qvz = evx * (c_ra * s_pa * c_ya + s_ra * s_ya) + evy * (c_ra * s_pa * s_ya - s_ra * c_ya) + evz * c_pa * c_ra
 
-		evx_target = 0.0
-		evy_target = 0.0
-		evz_target = 0.0
-
-		#---------------------------------------------------------------------------
-		# Parse the message TLVs - assume no exception
-		#---------------------------------------------------------------------------
-		if len(self.cache) >= 4:
-			type, length, msg_id = struct.unpack_from('!BBH', self.cache, 0)
-
-			#-----------------------------------------------------------
-			# If we have a complete TLV, parse it
-			#-----------------------------------------------------------
-			if len(self.cache) >= 4 + length:
-
-				#---------------------------------------------------------------------------
-				# If we've received a valid message type, then respond with an ACK
-				#---------------------------------------------------------------------------
-				send_buff = struct.pack('!BBH', __CTRL_CMD_DATA_ACK, 4, msg_id)
-				qcrc_sck.send(send_buff)
-				send_buff = ""
-
-				#---------------------------------------------------------------------------
-				# If the message content length > 0, unpack that too
-				#---------------------------------------------------------------------------
-				if length > 0:
-					value = struct.unpack_from('!I', self.cache, 4)
-					logger.info('type %d, length 0, msg_id %d', type, length, msg_id)
-				else:
-					logger.info('type %d, length %d, msg_id %d, value %d', type, length, msg_id, value)
+	return qvx, qvy, qvz
 
 
-				#---------------------------------------------------------------------------
-				# Enact the command - decide the targets for the PID algorithm
-				#---------------------------------------------------------------------------
-				if type == __CTRL_CMD_ABORT:
-					#----------------------------------------------------------------------------
-					# Hard shutdown
-					#----------------------------------------------------------------------------
-					logger.warning('ABORT')
-					os.kill(os.getpid(), signal.SIGINT)
+############################################################################################
+#
+# Convert a vector to earth-frame coordingates from quadcopter-frame coordinates.
+#
+############################################################################################
+def Q2EFrame(qvx, qvy, qvz, pa, ra, ya, ta):
+	global use_tilt
 
-				elif type == __CTRL_CMD_TAKEOFF:
-					#----------------------------------------------------------------------------
-					# Spin each blade up to the calibrated 0g point and then increment slight for a while beofre setting back to 0g
-					#----------------------------------------------------------------------------
-					logger.info('TAKEOFF')
-					evx_target = 0.0
-					evy_target = 0.0
+	#==================================================================================
+	# We need an inverse of the Earth- to quadcopter-frame matrix above.  It is only
+	# needed for accurate gravity calculation at take-off.  For that reason, yaw can be
+	# omitted making it simpler. However the method used could equally well be used in
+	# a context requiring yaw to be included.
+	#
+	# Earth to quadcopter rotation matrix
+	# -----------------------------------
+	# | c_pa * c_ya,                                 c_pa * s_ya,                -s_pa    |
+	# | s_ra * s_pa * c_ya - c_ra * s_ya,   s_ra * s_pa * s_ya + c_ra * c_ya,  s_ra * c_pa|
+	# | c_ra * s_pa * c_ya + s_ra * s_ya,   c_ra * s_pa * s_ya - s_ra * c_ya,  c_pa * c_ra|
+	#
+	# Remove yaw
+	# ----------
+	# | c_pa,            0,     -s_pa    |
+	# | s_ra * s_pa,   c_ra,  s_ra * c_pa|
+	# | c_ra * s_pa,  -s_ra,  c_pa * c_ra|
+	#
+	# Transpose
+	# ---------
+	# |  c_pa, s_ra * s_pa,  c_ra * s_pa |
+	# |   0,       c_ra,        -s_ra    |
+	# | -s_pa, s_ra * c_pa,  c_pa * c_ra |
+	#
+	# Check by multiplying
+	# --------------------
+	# | c_pa,            0,     -s_pa    ||  c_pa, s_ra * s_pa,  c_ra * s_pa |
+	# | s_ra * s_pa,   c_ra,  s_ra * c_pa||   0,       c_ra,        -s_ra    |
+	# | c_ra * s_pa,  -s_ra,  c_pa * c_ra|| -s_pa, s_ra * c_pa,  c_pa * c_ra |
+	#
+	# Row 1, Column 1
+	# ---------------
+	# c_pa * c_pa + s_pa * s_pa = 1
+	#
+	# Row 1, Column 2
+	# ---------------
+	# c_pa * s_pa * s_ra -s_pa * s_ra * c_pa  = 0
+	#
+	# Row 1, Column 3
+	# ---------------
+	# c_pa * c_ra * s_pa - s_pa * c_pa * c_ra = 0
+	#
+	# Row 2, Column 1
+	# ---------------
+	# s_ra * s_pa * c_pa - s_ra * c_pa * s_pa = 0
+	#
+	# Row 2, Column 2
+	# ---------------
+	# s_ra * s_pa * s_ra * s_pa + c_ra * c_ra + s_ra * c_pa * s_ra * c_pa =
+	# s_ra^2 * s_pa^2 + c_ra^2 + s_ra^2 * c_pa^2 =
+	# s_ra^2 * (s_pa^2 + c_pa^2) + c_ra^2 =
+	# s_ra^2 + c_ra^2 = 1
+	#
+	# Row 2, Column 3
+	# ---------------
+	# s_ra * s_pa * c_ra * s_pa - c_ra * s_ra + s_ra * c_pa * c_pa * c_ra =
+	# (s_ra * c_ra * (s_pa^2 - 1 + c_pa^2) = 0
+	#
+	# Row 3, Column 1
+	# ---------------
+	# c_ra * s_pa * c_pa - c_pa * c_ra * s_pa = 0
+	#
+	# Row 3, Column 2
+	# ---------------
+	# c_ra * s_pa * s_ra * s_pa -s_ra * c_ra + c_pa * c_ra * s_ra * c_pa =
+	# (c_ra * s_ra) * (s_pa^2 - 1 + c_pa^2) = 0
+	#
+	# Row 3, Column 3
+	# ---------------
+	# c_ra * s_pa * c_ra * s_pa + s_ra * s_ra + c_pa * c_ra * c_pa * c_ra =
+	# c_ra^2 * s_pa^2 + s_ra^2 + c_pa^2 * c_ra^2 =
+	# c_ra^2 * (s_pa^2 + c_pa^2) + s_ra^2 =
+	# c_ra^2 + s_ra^2 = 1
+	#===================================================================================
+	c_pa = math.cos(pa)
+	s_pa = -math.sin(pa)
+	c_ra = math.cos(ra)
+	s_ra = math.sin(ra)
+	c_ya = math.cos(ya)
+	s_ya = math.sin(ya)
+	c_ta = math.cos(ta)
+	s_ta = math.sin(ta)
 
-					#AB: I think this shoud be a manual incremental increase in blade speeds to achieve takeoff before handover to hover
-					qaz_target = 1.01
+	evx = qvx * c_pa * c_ya + qvy * (s_ra * s_pa * c_ya - c_ra * s_ya) + qvz * (c_ra * s_pa * c_ya + s_ra * s_ya)
+	evy = qvx * c_pa * s_ya + qvy * (s_ra * s_pa * s_ya + c_ra * c_ya) + qvz * (c_ra * s_pa * s_ya - s_ra * c_ya)
+	evz = -qvx * s_pa       + qvy *  s_ra * c_pa                       + qvz * c_pa * c_ra
 
-				elif type == __CTRL_CMD_LANDING:
-					#----------------------------------------------------------------------------
-					# Spin each blade down to the calibrated 0g point and them decrement slightly for a controlled landing
-					#----------------------------------------------------------------------------
-					logger.info('LANDING')
-					evx_target = 0.0
-					evy_target = 0.0
-					#AB: Less sure about this one though
-					evz_target = 0.99
-
-				elif type == __CTRL_CMD_HOVER:
-					#----------------------------------------------------------------------------
-					# Spin each blade down to the calibrated 0g point
-					#----------------------------------------------------------------------------
-					logger.info('HOVER')
-					evx_target = 0.0
-					evy_target = 0.0
-					evz_target = 1.0
-
-				elif type == __CTRL_CMD_UP_DOWN:
-					#----------------------------------------------------------------------------
-					# Increment the speed of all blades proportially to the command data
-					#----------------------------------------------------------------------------
-					logger.info('UP/DOWN %d', int(value))
-					evx_target = 0.0
-					evy_target = 0.0
-					evz_target = 1.0 + (float(value * 0.05) / 128)
-
-				elif type == __CTRL_CMD_FWD_RVS:
-					#----------------------------------------------------------------------------
-					# ????????????????
-					#----------------------------------------------------------------------------
-					logger.info('FWD/RVS %d', int(value))
-
-				elif type == __CTRL_CMD_LEFT_RIGHT:
-					#----------------------------------------------------------------------------
-					# ????????????????
-					#----------------------------------------------------------------------------
-					logger.info('LEFT/RIGHT %d', int(value))
-
-				elif type == __CTRL_CMD_KEEPALIVE:
-					#----------------------------------------------------------------------------
-					# No change to blade power, keep stable at the current setting
-					#----------------------------------------------------------------------------
-					logger.debug('KEEPALIVE')
-				else:
-					#----------------------------------------------------------------------------
-					# Unrecognised command - treat as an abort
-					#----------------------------------------------------------------------------
-					logger.warning('UNRECOGNISED COMMAND: ABORT')
-					os.kill(os.getpid(), signal.SIGINT)
-
-				#---------------------------------------------------------------------------
-				# TLV is wholly parsed, decrease the cache size
-				#----------------------------------------------------------------------------
-				self.cache = self.cache[4 + length : len(self.cache)]
-			else:
-				#---------------------------------------------------------------------------
-				# Insufficient data to form a whole TLV, get out
-				#---------------------------------------------------------------------------
-				parsed_tlv = False
-
-
-		else:
-			#---------------------------------------------------------------------------
-			# Insufficient data to parse, leave target unchanged !!!!!!!!!!!!!!!!!!!!!!!!
-			#---------------------------------------------------------------------------
-			parsed_tlv = False
-
-		#---------------------------------------------------------------------------
-		# No more complete TLVs to part, get out, returning how much data we have dealt with
-		#---------------------------------------------------------------------------
-		return evx_target, evy_target, evz_target
+	return evx, evy, evz
 
 
 ############################################################################################
@@ -918,12 +802,19 @@ def CheckCLI(argv):
 	#-----------------------------------------------------------------------------------
 	cli_hvp_gain = 0.5
 	cli_hvi_gain = 0.25
-	cli_hvd_gain = 0.05
+	cli_hvd_gain = 0.1
 
 	#-----------------------------------------------------------------------------------
-	# Defaults for rotation rate PIDs
+	# Defaults for pitch rate PIDs
 	#-----------------------------------------------------------------------------------
-	cli_rrp_gain = 120
+	cli_prp_gain = 120.0
+	cli_pri_gain = 0.0
+	cli_prd_gain = 0.0
+
+	#-----------------------------------------------------------------------------------
+	# Defaults for roll rate PIDs
+	#-----------------------------------------------------------------------------------
+	cli_rrp_gain = 120.0
 	cli_rri_gain = 0.0
 	cli_rrd_gain = 0.0
 
@@ -932,16 +823,17 @@ def CheckCLI(argv):
 	#-----------------------------------------------------------------------------------
 	cli_test_case = 0
 	cli_tau = 0.5
-	cli_dlpf = 4
-	cli_sampling_rate = 500
-	cli_sampling_jitter = 0
-	cli_statistics = False
+	cli_dlpf = 5
+	cli_jitter = 0
+	cli_diagnostics = False
 	cli_motion_frequency = 41
-	cli_attitude_frequency = 41
-	cli_use_tilt = False
+	cli_rtf_period = 2.0
 
 	hover_target_defaulted = True
 	no_drift_control = False
+	prp_set = False
+	pri_set = False
+	prd_set = False
 	rrp_set = False
 	rri_set = False
 	rrd_set = False
@@ -950,35 +842,33 @@ def CheckCLI(argv):
 	# Right, let's get on with reading the command line and checking consistency
 	#-----------------------------------------------------------------------------------
 	try:
-		opts, args = getopt.getopt(argv,'a:fcvh:m:st', ['tc=', 'vvp=', 'vvi=', 'vvd=', 'hvp=', 'hvi=', 'hvd=', 'rrp=', 'rri=', 'rrd=', 'tau=', 'dlpf=', 'sr=', 'sj='])
+		opts, args = getopt.getopt(argv,'dfcvh:j:m:r:', ['tc=', 'vvp=', 'vvi=', 'vvd=', 'hvp=', 'hvi=', 'hvd=', 'prp=', 'pri=', 'prd=', 'rrp=', 'rri=', 'rrd=', 'tau=', 'dlpf='])
 	except getopt.GetoptError:
 		logger.critical('Must specify one of -f or -c or --tc')
 		logger.critical('  qcpi.py [-f] [-t speed] [-c] [-v]')
 		logger.critical('  -f set whether to fly')
 		logger.critical('  -h set the hover speed for manual testing')
 		logger.critical('  -c calibrate sensors against temperature and save')
-		logger.critical('  -s enable diagnostic statistics')
-		logger.critical('  -n disable drift control')
-		logger.critical('  -y enable yaw control (unsupported')
+		logger.critical('  -d enable diagnostics')
 		logger.critical('  -v video the flight')
-		logger.critical('  -t use tilt for vertical velocity frame conversion')
-		logger.critical('  -l ??  set the processing loop frequency')
-		logger.critical('  -a ??  set attitude PID update frequency')
-		logger.critical('  -m ??  set motion PID update frequency')
+		logger.critical('  -m ??  set motion processing update frequency')
+		logger.critical('  -j ??  set motion processing frequency jitter')
+		logger.critical('  -r ??  set the ready-to-fly period')
 		logger.critical('  --vvp  set vertical speed PID P gain')
 		logger.critical('  --vvi  set vertical speed PID P gain')
 		logger.critical('  --vvd  set vertical speed PID P gain')
 		logger.critical('  --hvp  set horizontal speed PID P gain')
 		logger.critical('  --hvi  set horizontal speed PID I gain')
 		logger.critical('  --hvd  set horizontal speed PID D gain')
-		logger.critical('  --rrp  set angular PID P gain')
-		logger.critical('  --rri  set angular PID I gain')
-		logger.critical('  --rri  set angular PID D gain')
+		logger.critical('  --prp  set pitch rotation PID P gain')
+		logger.critical('  --pri  set pitch rotation PID I gain')
+		logger.critical('  --prd  set pitch rotation PID D gain')
+		logger.critical('  --rrp  set roll rotation PID P gain')
+		logger.critical('  --rri  set roll rotation PID I gain')
+		logger.critical('  --rrd  set roll rotation PID D gain')
 		logger.critical('  --tc   select which testcase to run')
 		logger.critical('  --tau  set the complementary filter period')
 		logger.critical('  --dlpf set the digital low pass filter')
-		logger.critical('  -sr    set the sensor read frequency')
-		logger.critical('  -sj    set the send read feequency jitter percentage')
 		sys.exit(2)
 
 	for opt, arg in opts:
@@ -992,21 +882,21 @@ def CheckCLI(argv):
 		elif opt in '-v':
 			cli_video = True
 
-		elif opt in '-a':
-			cli_attitude_frequency = int(arg)
-
 		elif opt in '-c':
 			cli_calibrate_sensors = True
 
+		elif opt in '-j':
+			cli_jitter = int(arg)
+
 		elif opt in '-m':
 			cli_motion_frequency = int(arg)
+	
+		elif opt in '-d':
+			cli_diagnostics = True
 
-		elif opt in '-s':
-			cli_statistics = True
-
-		elif opt in '-t':
-			cli_use_tilt = True	
-
+		elif opt in '-r':
+			cli_rtf_period = float(arg)
+	
 		elif opt in '--vvp':
 			cli_vvp_gain = float(arg)
 
@@ -1025,6 +915,18 @@ def CheckCLI(argv):
 		elif opt in '--hvd':
 			cli_hvd_gain = float(arg)
 
+		elif opt in '--prp':
+			cli_rrp_gain = float(arg)
+			prp_set = True
+
+		elif opt in '--pri':
+			cli_rri_gain = float(arg)
+			pri_set = True
+
+		elif opt in '--prd':
+			cli_rrd_gain = float(arg)
+			prd_set = True
+
 		elif opt in '--rrp':
 			cli_rrp_gain = float(arg)
 			rrp_set = True
@@ -1036,12 +938,6 @@ def CheckCLI(argv):
 		elif opt in '--rrd':
 			cli_rrd_gain = float(arg)
 			rrd_set = True
-
-		elif opt in '--sr':
-			cli_sampling_rate = int(arg)
-
-		elif opt in '--sj':
-			cli_sampling_jitter = int(arg)
 
 		elif opt in '--tc':
 			cli_test_case = int(arg)
@@ -1090,14 +986,9 @@ def CheckCLI(argv):
 		logger.critical('You must choose a specific hover speed (-h) for all test cases.')
 		sys.exit(2)
 
-	elif cli_test_case == 2 and (not rrp_set or not rri_set or not rrd_set):
+	elif cli_test_case == 2 and (not prp_set or not pri_set or not prd_set or not rrp_set or not rri_set or not rrd_set):
 		logger.critical('You must choose a starting point for the angular rate PID P, I and D gains')
-		logger.critical('Try sudo python ./qc.py --tc 2 -h 450 --arp 50 --ari 0.0 --ard 0.0 and work up from there')
-		sys.exit(2)
-
-	elif cli_test_case == 3 and (not aap_set or not aai_set or not aad_set):
-		logger.critical('You must choose a starting point for the absolute angle PID P, I and D gains')
-		logger.critical('Try sudo python ./qc.py --tc 3 -h 450 --aap 1.5 --aai 0.5 --aad 0.001 and work up from there')
+		logger.critical('Try sudo python ./qc.py --tc 2 -h 450 --prp 50 --pri 0.0 --prd 0.0 --rrp 50 --rri 0.0 --rrd 0.0 and work up from there')
 		sys.exit(2)
 
 	elif cli_test_case == 2:
@@ -1116,7 +1007,7 @@ def CheckCLI(argv):
 		cli_hvi_gain = 0.0
 		cli_hvd_gain = 0.0
 
-	return cli_calibrate_sensors, cli_fly, cli_hover_target, cli_video, cli_vvp_gain, cli_vvi_gain, cli_vvd_gain, cli_hvp_gain, cli_hvi_gain, cli_hvd_gain, cli_rrp_gain, cli_rri_gain, cli_rrd_gain, cli_test_case, cli_tau, cli_dlpf, cli_sampling_rate, cli_sampling_jitter, 1 / cli_motion_frequency, 1 / cli_attitude_frequency, cli_statistics, cli_use_tilt
+	return cli_calibrate_sensors, cli_fly, cli_hover_target, cli_video, cli_vvp_gain, cli_vvi_gain, cli_vvd_gain, cli_hvp_gain, cli_hvi_gain, cli_hvd_gain, cli_prp_gain, cli_pri_gain, cli_prd_gain, cli_rrp_gain, cli_rri_gain, cli_rrd_gain, cli_test_case, cli_tau, cli_dlpf, cli_jitter, cli_motion_frequency, cli_rtf_period, cli_diagnostics
 
 ############################################################################################
 #
@@ -1124,6 +1015,7 @@ def CheckCLI(argv):
 #
 ############################################################################################
 def CountdownBeep(num_beeps):
+	logger.critical('%d...', num_beeps)
 	for beep in range(0, num_beeps):
 		RPIO.output(RPIO_STATUS_SOUNDER, RPIO.HIGH)
 		time.sleep(0.25)
@@ -1192,65 +1084,164 @@ def CleanShutdown():
 #
 ############################################################################################
 def SignalHandler(signal, frame):
-	global loop_count
-	global fsm_input
-	global FSM_INPUT_STOP
+	global keep_looping
 
 	if loop_count > 0:
-		fsm_input = FSM_INPUT_STOP
+		keep_looping = False
 	else:
 		CleanShutdown()
 
 ############################################################################################
 #
-# Convert a vector to quadcopter-frame coordinates from earth-frame coordinates
+# Flight plan management
 #
 ############################################################################################
-def GetEulerAngles(ax, ay, az):
-	#---------------------------------------------------------------------------
-	# What's the angle in the x and y plane from horizontal in radians?
-	#---------------------------------------------------------------------------
-	pitch = math.atan2(ax, math.pow(math.pow(ay, 2) + math.pow(az, 2), 0.5))
-	roll = math.atan2(ay, math.pow(math.pow(ax, 2) + math.pow( az, 2), 0.5))
-	tilt = math.atan2(math.pow(math.pow(ax, 2) + math.pow(ay, 2), 0.5), az)
-	return pitch, roll, tilt
+class FlightPlan:
 
-############################################################################################
-#
-# Convert a vector to quadcopter-frame coordinates from earth-frame coordinates
-#
-############################################################################################
-def QuadFrame(evx, evy, evz, pa, ra, ya, ta):
-	global use_tilt
+	#-----------------------------------------------------------------------------------
+	# The flight plan - move to file at some point
+	#-----------------------------------------------------------------------------------
+	fp_evx_target  = [0.0,       0.0,       0.0,       0.0,       0.0]
+	fp_evy_target  = [0.0,       0.0,       0.0,       0.0,       0.0]
+	fp_evz_target  = [0.0,       0.3,       0.0,      -0.3,       0.0]
+	fp_time        = [0.0,       3.0,       5.0,       3.0,       0.0]
+	fp_name        = ["RTF",  "ASCENT",   "HOVER", "DESCENT",    "STOP"]
+	_FP_STEPS = 4
 
-	#===================================================================================
-	# Axes: Convert a vector from earth- to quadcopter frame
-	#
-	# Matrix
-	# ---------
-	# |qvx|   | cos(pa) * cos(ya),                                 cos(pa) * sin(ya),                               -sin(pa)          | |evx|
-	# |qvy| = | sin(ra) * sin(pa) * cos(ya) - cos(ra) * sin(ya),   sin(ra) * sin(pa) * sin(ya) + cos(ra) * cos(ya),  sin(ra) * cos(pa)| |evy|
-	# |qvz|   | cos(ra) * sin(pa) * cos(ya) + sin(ra) * sin(ya),   cos(ra) * sin(pa) * sin(ya) - sin(ra) * cos(ya),  cos(pa) * cos(ra)| |evz|
-	#
-	#===================================================================================
-	c_pa = math.cos(pa)
-	s_pa = -math.sin(pa)
-	c_ra = math.cos(ra)
-	s_ra = math.sin(ra)
-	c_ya = math.cos(ya)
-	s_ya = math.sin(ya)
-	c_ta = math.cos(ta)
-	s_ta = math.sin(ta)
+	#-----------------------------------------------------------------------------------
+	# Flight plan step transition FSM constants
+	#-----------------------------------------------------------------------------------
+	_FSM_INPUT_NONE = 0
+	_FSM_INPUT_UPDATE = 1
+	_FSM_INPUT_STOP = 2
 
-	qvx = evx * c_pa * c_ya                        + evy * c_pa * s_ya                        - evz * s_pa
-	qvy = evx * (s_ra * s_pa * c_ya - c_ra * s_ya) + evy * (s_ra * s_pa * s_ya + c_ra * c_ya) + evz * s_ra * c_pa
-	if use_tilt:
-		qvz = evz / c_ta
-	else:
-		qvz = evx * (c_ra * s_pa * c_ya + s_ra * s_ya) + evy * (c_ra * s_pa * s_ya - s_ra * c_ya) + evz * c_pa * c_ra
+	_FSM_STATE_OFF = 0
+	_FSM_STATE_UPDATING = 1
+	_FSM_STATE_STABLE = 2
 
-	return qvx, qvy, qvz
+	def __init__(self, time_now):
 
+		self.fsm_input = self._FSM_INPUT_UPDATE
+		self.fsm_state = self._FSM_STATE_STABLE
+
+		self.update_start = 0.0
+
+		self.fp_total_time = 0.0
+		self.update_start = 0.0
+		self.update_total_time = 0.0
+
+		self.prev_evx_target = 0.0
+		self.prev_evy_target = 0.0
+		self.prev_evz_target = 0.0
+		self.evx_target = 0.0
+		self.evy_target = 0.0
+		self.evz_target = 0.0
+		self.next_evx_target = 0.0
+		self.next_evy_target = 0.0
+		self.next_evz_target = 0.0
+
+		self.fp_index = 0
+		self.fp_total_time = 0.0
+		self.start_time = time_now
+
+
+	def getTargets(self, time_now):
+		global keep_looping
+
+		elapsed_time = time_now - self.start_time
+
+		#---------------------------------------------------------------------------
+		# Work out the next input to the FSM - this mostly just depends on time
+		#---------------------------------------------------------------------------
+		if self.fsm_state == self._FSM_STATE_STABLE and (elapsed_time >= self.fp_total_time + self.update_total_time):
+				self.fp_index += 1
+
+				logger.critical('-> %s', self.fp_name[self.fp_index])
+				self.fsm_input = self._FSM_INPUT_UPDATE
+				self.next_evx_target = self.fp_evx_target[self.fp_index]
+				self.next_evy_target = self.fp_evy_target[self.fp_index]
+				self.next_evz_target = self.fp_evz_target[self.fp_index]
+
+				self.prev_evx_target = self.fp_evx_target[self.fp_index - 1]
+				self.prev_evy_target = self.fp_evy_target[self.fp_index - 1]
+				self.prev_evz_target = self.fp_evz_target[self.fp_index - 1]
+
+				self.fp_total_time += self.fp_time[self.fp_index]
+
+				if self.fp_index == self._FP_STEPS:
+					self.fsm_input = self._FSM_INPUT_STOP
+
+		#---------------------------------------------------------------------------
+		# Now we've decided the next input, apply it
+		#---------------------------------------------------------------------------
+
+		if self.fsm_state == self._FSM_STATE_STABLE and self.fsm_input == self._FSM_INPUT_UPDATE:
+			self.fsm_state = self._FSM_STATE_UPDATING
+			self.next_fsm_state = self._FSM_STATE_STABLE
+			self.fsm_input = self._FSM_INPUT_NONE
+
+
+		if self.fsm_state == self._FSM_STATE_UPDATING and self.fsm_input == self._FSM_INPUT_NONE:
+			if self.update_start == 0.0:
+				self.update_start = time_now
+				self.fsm_update_period = 2.0 * math.copysign(self.next_evz_target - self.prev_evz_target, 1.0) + 0.2
+
+			update_fraction = (time_now - self.update_start) / self.fsm_update_period
+
+#        		#-----------------------AUTONOMOUS BINARY TRANSITION------------------------
+#        		self.evx_target =  self.next_evx_target
+#        		self.evy_target =  self.next_evy_target
+#        		self.evz_target =  self.next_evz_target
+#        		#-----------------------AUTONOMOUS BINARY TRANSITION------------------------
+
+
+#        		#-----------------------AUTONOMOUS LINEAR TRANSITION------------------------
+#        		self.evx_target = self.prev_evx_target + update_fraction * (self.next_evx_target - self.prev_evx_target)
+#        		self.evy_target = self.prev_evy_target + update_fraction * (self.next_evy_target - self.prev_evy_target)
+#        		self.evz_target = self.prev_evz_target + update_fraction * (self.next_evz_target - self.prev_evz_target)
+#        		#-----------------------AUTONOMOUS LINEAR TRANSITION------------------------
+
+			#-----------------------AUTONOMOUS SINUSOIDAL TRANSITION--------------------
+			signed_one = math.copysign(1.0, self.next_evx_target - self.prev_evx_target)
+			self.evx_target =  self.prev_evx_target + signed_one * 0.5 * (self.next_evx_target - self.prev_evx_target) * (signed_one + math.sin(signed_one * (2 * update_fraction - 1) * math.pi / 2))
+			signed_one = math.copysign(1.0, self.next_evy_target - self.prev_evy_target)
+			self.evy_target =  self.prev_evy_target + signed_one * 0.5 * (self.next_evy_target - self.prev_evy_target) * (signed_one + math.sin(signed_one * (2 * update_fraction - 1) * math.pi / 2))
+			signed_one = math.copysign(1.0, self.next_evz_target - self.prev_evz_target)
+			self.evz_target =  self.prev_evz_target + signed_one * 0.5 * (self.next_evz_target - self.prev_evz_target) * (signed_one + math.sin(signed_one * (2 * update_fraction - 1) * math.pi / 2))
+			#-----------------------AUTONOMOUS SINUSOIDAL TRANSITION--------------------
+
+			if update_fraction >= 1.00:
+				#---------------------AUTONOMOUS VERTICAL TAKE-OFF SPEED--------------------
+				self.evx_target = self.next_evx_target
+				self.evy_target = self.next_evy_target
+				self.evz_target = self.next_evz_target
+				#---------------------AUTONOMOUS VERTICAL TAKE-OFF SPEED--------------------
+
+				logger.critical('@ %s', self.fp_name[self.fp_index])
+				self.fsm_state = self._FSM_STATE_STABLE
+				self.fsm_input = self._FSM_INPUT_NONE
+				self.update_total_time += time_now - self.update_start
+				self.update_start = 0.0
+
+		if self.fsm_state == self._FSM_STATE_UPDATING and self.fsm_input == self._FSM_INPUT_UPDATE:
+
+			#---------------------AUTONOMOUS VERTICAL TAKE-OFF SPEED--------------------
+			self.evx_target = self.next_evx_target
+			self.evy_target = self.next_evy_target
+			self.evz_target = self.next_evz_target
+			#---------------------AUTONOMOUS VERTICAL TAKE-OFF SPEED--------------------
+
+			logger.critical('@ %s', self.fp_name[fp_index])
+			self.fsm_state = self._FSM_STATE_STABLE
+			self.fsm_input = self._FSM_INPUT_NONE
+			self.update_total_time += time_now - self.update_start
+			self.update_start = 0.0
+
+		if self.fsm_input == self._FSM_INPUT_STOP:
+			keep_looping = False
+
+
+		return self.evx_target, self.evy_target, self.evz_target
 
 ############################################################################################
 #
@@ -1344,8 +1335,16 @@ logger.addHandler(file_handler)
 #-------------------------------------------------------------------------------------------
 # Check the command line to see if we are calibrating or flying - if neither are set, CheckCLI sys.exit(0)s
 #-------------------------------------------------------------------------------------------
-calibrate_sensors, flying, hover_target, shoot_video, vvp_gain, vvi_gain, vvd_gain, hvp_gain, hvi_gain, hvd_gain, rrp_gain, rri_gain, rrd_gain, test_case, tau, dlpf, sampling_rate, sampling_jitter, motion_period, attitude_period, statistics, use_tilt = CheckCLI(sys.argv[1:])
-logger.critical("calibrate_sensors = %s, fly = %s, hover_target = %d, shoot_video = %s, vvp_gain = %f, vvi_gain = %f, vvd_gain= %f, hvp_gain = %f, hvi_gain = %f, hvd_gain = %f, rrp_gain = %f, rri_gain = %f, rrd_gain = %f, test_case = %d, tau = %f, dlpf = %d, sampling_rate = %d, sampling_jitter = %d, motion_period = %f, attitude_period = %f, statistics = %s, use_tilt = %s", calibrate_sensors, flying, hover_target, shoot_video, vvp_gain, vvi_gain, vvd_gain, hvp_gain, hvi_gain, hvd_gain, rrp_gain, rri_gain, rrd_gain, test_case, tau, dlpf, sampling_rate, sampling_jitter, motion_period, attitude_period, statistics, use_tilt)
+calibrate_sensors, flying, hover_target, shoot_video, vvp_gain, vvi_gain, vvd_gain, hvp_gain, hvi_gain, hvd_gain, prp_gain, pri_gain, prd_gain, rrp_gain, rri_gain, rrd_gain, test_case, tau, dlpf, jitter, motion_frequency, rtf_period, diagnostics = CheckCLI(sys.argv[1:])
+logger.critical("calibrate_sensors = %s, fly = %s, hover_target = %d, shoot_video = %s, vvp_gain = %f, vvi_gain = %f, vvd_gain= %f, hvp_gain = %f, hvi_gain = %f, hvd_gain = %f, prp_gain = %f, pri_gain = %f, prd_gain = %f, rrp_gain = %f, rri_gain = %f, rrd_gain = %f, test_case = %d, tau = %f, dlpf = %d, jitter = %d, motion_frequency = %f, rtf_period = %f, diagnostics = %s", calibrate_sensors, flying, hover_target, shoot_video, vvp_gain, vvi_gain, vvd_gain, hvp_gain, hvi_gain, hvd_gain, prp_gain, pri_gain, prd_gain, rrp_gain, rri_gain, rrd_gain, test_case, tau, dlpf, jitter, motion_frequency, rtf_period, diagnostics)
+
+#-------------------------------------------------------------------------------------------
+# Initialize the motion processing period and jitter
+#-------------------------------------------------------------------------------------------
+motion_period = 1 / motion_frequency
+if jitter != 0:
+	motion_period *= (1 + random.uniform(-jitter, +jitter) / 100)
+
 
 #-------------------------------------------------------------------------------------------
 # Initialize the gyroscope / accelerometer I2C object
@@ -1364,7 +1363,7 @@ rotation_list = [MOTOR_ROTATION_ACW, MOTOR_ROTATION_CW, MOTOR_ROTATION_CW, MOTOR
 name_list = ['front left', 'front right', 'back left', 'back right']
 
 #-------------------------------------------------------------------------------------------
-# Prime the ESCs with the default 0 spin rotors
+# Prime the ESCs with the default 0 spin rotors to shut them up.
 #-------------------------------------------------------------------------------------------
 esc_list = []
 for esc_index in range(0, 4):
@@ -1389,7 +1388,7 @@ if calibrate_sensors:
 	sys.exit(0)
 
 #-------------------------------------------------------------------------------------------
-# Calibrate the gyros
+# Calibrate gyros - this is a one-off
 #-------------------------------------------------------------------------------------------
 mpu6050.calibrateGyros()
 
@@ -1399,81 +1398,99 @@ mpu6050.calibrateGyros()
 CountdownBeep(4)
 
 #-------------------------------------------------------------------------------------------
-# Prime the complementary angle filter with the take-off platform angles
+# Calibrate the accelerometer offsets
 #-------------------------------------------------------------------------------------------
 qaz_misses = 0
 prev_qaz = 1.0
 
-qax_average = 0.0
-qay_average = 0.0
-qaz_average = 0.0
+qax_integrated = 0.0
+qay_integrated = 0.0
+qaz_integrated = 0.0
 
-for loop_count in range(0, 50, 1):
+logger.warning("elapsed_time, qfrgv_x, qfrgv_y, qfrgv_z, qfrgv_pitch, qfrgv_roll, qfrgv_tilt, efrgv_x, efrgv_y, efrgv_z, qfrev_x, qfrev_y, qfrev_z")
+time_now = time.time()
+start_time = time_now
+integration_start = time_now
+elapsed_time = 0.0
+loop_count = 0
+while loop_count <= 1000:
 	qax, qay, qaz, qgx, qgy, qgz = mpu6050.readSensors()
-	qax_average += qax
-	qay_average += qay
+
+	delta_time = time_now - start_time - elapsed_time
+	elapsed_time = time_now - start_time
+	loop_count += 1
+
+	qax_integrated += qax * delta_time
+	qay_integrated += qay * delta_time
+	qaz_integrated += qaz * delta_time
 
 	#-----------------------------------------------------------------------------------
-	# Dirty hack to overcome bizarre accelerometer spikes
+	# Dirty hack to replace random spikes from the vertical acceleration
 	#-----------------------------------------------------------------------------------
-	if qaz < 0.6 or qaz > 1.4:
-		qaz = prev_qaz
-		qaz_misses += 1
-	else:
-		prev_qaz = qaz
-
-	qaz_average += qaz
-	time.sleep(0.05)
-
-qax_average /= 50.0
-qay_average /= 50.0
-qaz_average /= 50.0
+#	if qaz < 0.6 or qaz > 1.4:
+#		qaz_integrated -= (qaz - prev_qaz)
+#		qaz_misses += 1
+#	else:
+#		prev_qaz = qaz
 
 #-------------------------------------------------------------------------------------------
-# Calculate Euler angles while stable on the ground to prime angles for non-horizontal takeoff
+# Work out the average acceleration due to gravity
 #-------------------------------------------------------------------------------------------
-e_pitch, e_roll, e_tilt  = GetEulerAngles(qax_average, qay_average, qaz_average)
-logger.critical("Platform angles: pitch %f, roll %f", e_pitch * 180 / math.pi, e_roll * 180 / math.pi)
+integration_period = time_now - integration_start
+integration_start = time_now
 
 #-------------------------------------------------------------------------------------------
-# Calculate gravity in the earth frame so we can remove it from velocity integration
+# Save off the quad-frame raw gravity vector
 #-------------------------------------------------------------------------------------------
-gez = math.pow(math.pow(qax_average, 2) + math.pow(qay_average, 2) + math.pow(qaz_average, 2), 0.5)
-logger.critical("Platform motion: qax %f, qay %f, qaz %f, g %f", qax_average, qay_average, qaz_average, gez)
-
-qax_average = 0.0
-qay_average = 0.0
-qaz_average = 0.0
-
-qgx_average = 0.0
-qgy_average = 0.0
-qgz_average = 0.0
+qfrgv_x = qax_integrated / integration_period
+qfrgv_y = qay_integrated / integration_period
+qfrgv_z = qaz_integrated / integration_period
 
 #-------------------------------------------------------------------------------------------
-# Preset the integrated gyro to match the take-off angle
+# Get the take-off platform slope
 #-------------------------------------------------------------------------------------------
-c_pitch = 0.0
-c_roll = 0.0
+qfrgv_pitch, qfrgv_roll, qfrgv_tilt = GetEulerAngles(qfrgv_x, qfrgv_y, qfrgv_z)
 
-i_pitch = e_pitch
-i_roll = e_roll
+#-------------------------------------------------------------------------------------------
+# Find raw gravity values in the earth frame and accelerometer error vectors.
+#-------------------------------------------------------------------------------------------
+efrgv_x, efrgv_y, efrgv_z = Q2EFrame(qfrgv_x, qfrgv_y, qfrgv_z, qfrgv_pitch, qfrgv_roll, 0.0, qfrgv_tilt)
+efev_x = efrgv_x - 0.0
+efev_y = efrgv_y - 0.0
+efev_z = 0.0
+qfrev_x, qfrev_y, qfrev_z = E2QFrame(efev_x, efev_y, efev_z, qfrgv_pitch, qfrgv_roll, 0.0, qfrgv_tilt)
+logger.warning("%f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f", elapsed_time, qfrgv_x, qfrgv_y, qfrgv_z, qfrgv_pitch, qfrgv_roll, qfrgv_tilt, efrgv_x, efrgv_y, efrgv_z, qfrev_x, qfrev_y, qfrev_z)
+
+# CleanShutdown()
+
+#-------------------------------------------------------------------------------------------
+# Initialize complementary filter angles
+#-------------------------------------------------------------------------------------------
+prev_c_pitch = qfrgv_pitch
+prev_c_roll = qfrgv_roll
+i_pitch = qfrgv_pitch
+i_roll = qfrgv_roll
 i_yaw = 0.0
 
-prev_c_pitch = e_pitch
-prev_c_roll = e_roll
+#-------------------------------------------------------------------------------------------
+# Cleanup integration variables
+#-------------------------------------------------------------------------------------------
+qax_integrated = 0.0
+qay_integrated = 0.0
+qaz_integrated = 0.0
 
-qvx = 0.0
-qvy = 0.0
-qvz = 0.0
+qgx_integrated = 0.0
+qgy_integrated = 0.0
+qgz_integrated = 0.0
 
 #-------------------------------------------------------------------------------------------
 # Countdown: 3 beeps prior to setting up the interrupt handler
 #-------------------------------------------------------------------------------------------
 CountdownBeep(3)
 
-#---------------------------------------------------------------------------
-# Set the signal handler here so the spin can be cancelled when loop_count = 0
-# or moved on when > 0. Prior to this point Ctrl-C does what you'd expect
+#-------------------------------------------------------------------------------------------
+# Set the signal handler here so the core processing loop can be stopped (or not started) by
+# Ctrl-C.
 #---------------------------------------------------------------------------
 loop_count = 0
 signal.signal(signal.SIGINT, SignalHandler)
@@ -1505,43 +1522,19 @@ CountdownBeep(1)
 #-------------------------------------------------------------------------------------------
 keep_looping = True
 
-qax_average = 0.0
-qay_average = 0.0
-qaz_average = 0.0
-
-gqx = 0.0
-gqy = 0.0
-gqz = 0.0
-
-qax_average = 0.0
-qay_average = 0.0
-qaz_average = 0.0
-
 evx_target = 0.0
 evy_target = 0.0
 evz_target = 0.0
 
-qvx_target = 0.0
-qvy_target = 0.0
-qvz_target = 0.0
-
-e_qvz_target = 0.0
-
 qvx_input = 0.0
 qvy_input = 0.0
 qvz_input = 0.0
-
-qvz_out = 0.0
 
 pr_target = 0.0
 rr_target = 0.0
 yr_target = 0.0
 
 ya_target = 0.0
-
-pr_out = 0.0
-rr_out = 0.0
-yr_out = 0.0
 
 qvx_diags = "0.0, 0.0, 0.0"
 qvy_diags = "0.0, 0.0, 0.0"
@@ -1550,42 +1543,8 @@ pr_diags = "0.0, 0.0, 0.0"
 rr_diags = "0.0, 0.0, 0.0"
 yr_diags = "0.0, 0.0, 0.0"
 
-#-------------------------------------------------------------------------------------------
-# Set up the flight plan state transition FSM.
-#-------------------------------------------------------------------------------------------
-FSM_INPUT_NONE = 0
-FSM_INPUT_START = 1
-FSM_INPUT_STOP = 2
-FSM_INPUT_UPDATE = 3
-fsm_input = FSM_INPUT_START
-
-FSM_STATE_OFF = 0
-FSM_STATE_UPDATING = 1
-FSM_STATE_STABLE = 2
-fsm_state = FSM_STATE_OFF
-
-FSM_UPDATE_PERIOD = 1.0
-update_start = 0.0
-update_total_time = 0.0
-
-ready_to_fly = False
 hover_speed = 0
-vert_out = 0
-
-############################################################################################
-#
-# Set up the steps of the flight plan.
-#
-############################################################################################
-fp_evx_target  = [       0.0,       0.0,       0.0,       0.0]
-fp_evy_target  = [       0.0,       0.0,       0.0,       0.0]
-fp_evz_target  = [       0.3,       0.0,      -0.3,       0.0]
-fp_time        = [       0.0,       3.0,       5.0,       4.5]
-fp_name        = [  "ASCENT",   "HOVER", "DESCENT",     "OFF"]
-FP_STEPS = 4
-
-fp_index = 0
-fp_total_time = 0.0
+ready_to_fly = False
 
 #-------------------------------------------------------------------------------------------
 # START TESTCASE 1 CODE: spin up each blade individually for 10s each and check they all turn the right way
@@ -1619,17 +1578,14 @@ if test_case == 1:
 #
 # In a quadcopter, the external targets (those a user control for flight) are horizontal and vertical speed plus tilt.
 #
-# - Horizontal speed error is corrected proportionally by providing the corrective output as the horizontal acceleration target
-# - Horizontal acceleration can be converted directly to an angle of tilt using trigonometry, so the horizontal acceleration target is
-#   converted to the pitch / roll angle target.
-# - Tilt angle error is corrected proportionally by providing the corrective output to the angular speed PID target
-# - Angular speed error is corrected proportionally by providing the corrective output to the motors' ESCs
+# - Horizontal speed error is corrected by providing the as the horizontal acceleration target
+# - The horizontal acceleration target is converted to a required rotation rate
+# - Rotation rate error is corrected proportionally by providing the corrective output to the motors' ESCs
 #
 # - Horizontal speed feedback is provided by integrated accelerometer (or GPS in future)
-# - Angular feedback comes from accelerometer Euler and integrated gyro sensors passed through a complementary filter to track theta
 # - Angular speed feedback comes directly from the gyros
 #
-# That's 3 PIDs each for horizontal X & Y axes movement - 6 in total so far.
+# That's 2 PIDs each for horizontal X & Y axes movement - 4 in total so far.
 #
 # - Vertical speed error is corrected proportionally by providing the corrective output to the motors' ESCs (cf. angular speed above)
 #
@@ -1641,9 +1597,9 @@ if test_case == 1:
 #
 # - Yaw speed feedback comes directly from the Z-axis gyro
 #
-# That's 1 PID for Z axis yaw control.
+# That's 2 PID for Z axis yaw control.
 #
-# So 8 PIDs in total
+# So 7 PIDs in total
 #===========================================================================================
 
 #-------------------------------------------------------------------------------------------
@@ -1677,9 +1633,9 @@ PID_YA_D_GAIN = 1.0
 #-------------------------------------------------------------------------------------------
 # The PITCH RATE PID controls stable rotation rate around the Y-axis
 #-------------------------------------------------------------------------------------------
-PID_PR_P_GAIN = rrp_gain
-PID_PR_I_GAIN = rri_gain
-PID_PR_D_GAIN = rrd_gain
+PID_PR_P_GAIN = prp_gain
+PID_PR_I_GAIN = pri_gain
+PID_PR_D_GAIN = prd_gain
 
 #-------------------------------------------------------------------------------------------
 # The ROLL RATE PID controls stable rotation rate around the X-axis
@@ -1695,11 +1651,13 @@ PID_YR_P_GAIN = rrp_gain / 2.0
 PID_YR_I_GAIN = rri_gain / 2.0
 PID_YR_D_GAIN = rrd_gain / 2.0
 
+logger.critical('Thunderbirds are go!')
+
 #-------------------------------------------------------------------------------------------
-# Diagnostic statistics log header
+# Diagnostic log header
 #-------------------------------------------------------------------------------------------
-if statistics:
-	logger.warning('time, dt, loop, qgx, qgy, qgz, qax, qay, qaz, gez, gqx, gqy, gqz, qvx, qvy, qvz, i pitch, i roll, e pitch, e roll, c pitch, c roll, i yaw, e tilt, evx_target, qvx_target, qxp, qxi, qxd, pr_target, prp, pri, prd, pr_out, evy_yarget, qvy_target, qyp, qyi, qyd, rr_target, rrp, rri, rrd, rr_out, evz_target, qvz_target, e_qvz_target, qzp, qzi, qzd, qvz_out, yr_target, yrp, yri, yrd, yr_out, FL spin, FR spin, BL spin, BR spin')
+if diagnostics:
+	logger.warning('time, dt, loop, qgx, qgy, qgz, efrgv_x, efrgv_y, efrgv_z, qfrev_x, qfrev_y, qfrev_z, qax, qay, qaz, qfrgv_x, qfrgv_y, qfrgv_z, qvx_input, qvy_input, qvz_input, i pitch, i roll, e pitch, e roll, c pitch, c roll, i yaw, e tilt, evx_target, qvx_target, qxp, qxi, qxd, pr_target, prp, pri, prd, pr_out, evy_yarget, qvy_target, qyp, qyi, qyd, rr_target, rrp, rri, rrd, rr_out, evz_target, qvz_target, qzp, qzi, qzd, qvz_out, yr_target, yrp, yri, yrd, yr_out, FL spin, FR spin, BL spin, BR spin')
 
 time_handling_inputs = 0.0
 time_handling_targets = 0.0
@@ -1712,17 +1670,10 @@ time_handling_pid_outputs = 0.0
 time_handling_diagnostics = 0.0
 time_handling_sleep = 0.0
 
-rtf_time = 0.0
-elapsed_time = 0.0
-update_PWM = False
-
-############################################################################################
-# TIME CRITICAL: Read the starting time
-############################################################################################
+#==========================================================================================
+# Initialize critical timing immediately before starting the PIDs
+#==========================================================================================
 time_now = time.time()
-############################################################################################
-# !TIME CRITICAL:
-############################################################################################
 
 #-------------------------------------------------------------------------------------------
 # Start the yaw absolute angle PID
@@ -1746,28 +1697,25 @@ qvz_pid = PID(PID_QVZ_P_GAIN, PID_QVZ_I_GAIN, PID_QVZ_D_GAIN, time_now)
 start_time = time_now
 last_log_time = time_now
 prev_sample_time = time_now
-averaging_start = time_now
+integration_start = time_now
 last_motion_update = time_now
-last_attitude_update = time_now
+elapsed_time = 0.0
 
 while keep_looping:
-	####################################################################################
-	# TIME CRITICAL: Take a snapshot of the sensor values.  This also updates the global
-        # time_now which stamps as accurtely as possible the time the data was read
-	####################################################################################
+	#==================================================================================
+	# Sensors: Read the sensor values; note that this also sets the time_now to be as
+	# accurate a time stamp for the sensor data as possible.
+	#==================================================================================
 	qax, qay, qaz, qgx, qgy, qgz = mpu6050.readSensors()
-	####################################################################################
-	# !TIME CRITICAL:
-	####################################################################################
 
-	#-----------------------------------------------------------------------------------
-	# Dirty hack to overcome bizarre accelerometer spikes
-	#-----------------------------------------------------------------------------------
-	if qaz < 0.6 or qaz > 1.4:
-		qaz = prev_qaz
-		qaz_misses += 1
-	else:
-		prev_qaz = qaz
+#	#-----------------------------------------------------------------------------------
+#	# Dirty hack to overcome bizarre accelerometer spikes
+#	#-----------------------------------------------------------------------------------
+#	if qaz < 0.6 or qaz > 1.4:
+#		qaz = prev_qaz
+#		qaz_misses += 1
+#	else:
+#		prev_qaz = qaz
 
 	#-----------------------------------------------------------------------------------
 	# Now we have the sensor snapshot, tidy up the rest of the variable so that processing
@@ -1777,156 +1725,23 @@ while keep_looping:
 	elapsed_time = time_now - start_time
 	loop_count += 1
 
-	#-----------------------------------------------------------------------------------
-	# Track proportion of time handling sensors
-	#-----------------------------------------------------------------------------------
-	if statistics:
-		sample_time = time.time()
-		time_handling_inputs += sample_time - prev_sample_time
-		prev_sample_time = sample_time
-
 	#===================================================================================
-	# Targets: FSM inputs are mostly generated on a timer for testing; the exceptions are
-	# - SIGNAL generated by a Ctrl-C.  These produce the targets for the PIDs.  In this
-	# case, only the vertical speed target is modified - the horizontal X and Y speed targets
-	# are configured higher up to be 0.0 to create a stable hover regardless of take-off conditions
-	# of any external factors such as wind or weight balance.
-	#===================================================================================
-	if not ready_to_fly:
-		fsm_input = FSM_INPUT_START
-
-	elif fsm_state != FSM_STATE_UPDATING and (elapsed_time - rtf_time >= fp_total_time + update_total_time):
-			logger.critical('-> %s', fp_name[fp_index])
-			fsm_input = FSM_INPUT_UPDATE
-			next_evx_target = fp_evx_target[fp_index]
-			next_evy_target = fp_evy_target[fp_index]
-			next_evz_target = fp_evz_target[fp_index]
-
-			fp_index += 1
-			if fp_index == FP_STEPS:
-				fsm_input = FSM_INPUT_STOP
-			else:
-				fp_total_time += fp_time[fp_index]
-
-	#-----------------------------------------------------------------------------------
-	# Now we've been told what to do, do it
-	#-----------------------------------------------------------------------------------
-	if fsm_state == FSM_STATE_OFF and fsm_input == FSM_INPUT_START:
-		if hover_speed >= hover_target:
-			rtf_time = elapsed_time
-			ready_to_fly = True
-			hover_speed = hover_target
-			fsm_state = FSM_STATE_STABLE
-
-		elif elapsed_time - rtf_time > 0.05:
-			rtf_time += 0.05
-			hover_speed += 25
-
-	if fsm_state == FSM_STATE_STABLE and fsm_input == FSM_INPUT_UPDATE:
-		fsm_state = FSM_STATE_UPDATING
-		next_fsm_state = FSM_STATE_STABLE
-		fsm_input = FSM_INPUT_NONE
-
-		#---------------------AUTONOMOUS VERTICAL TAKE-OFF SPEED--------------------
-		prev_evx_target = evx_target
-		prev_evy_target = evy_target
-		prev_evz_target = evz_target
-		#---------------------AUTONOMOUS VERTICAL TAKE-OFF SPEED--------------------
-
-	if fsm_state == FSM_STATE_UPDATING and fsm_input == FSM_INPUT_NONE:
-		if update_start == 0.0:
-			update_start = time_now
-			fsm_update_period = 3 * math.copysign(next_evz_target - prev_evz_target, 1.0) + 0.5
-			logger.critical("%f seconds to attain next state", fsm_update_period)
-
-		update_fraction = (time_now - update_start) / fsm_update_period
-
-#		#-----------------------AUTONOMOUS BINARY TRANSITION------------------------
-#		evx_target =  next_evx_target
-#		evy_target =  next_evy_target
-#		evz_target =  next_evz_target
-#		#-----------------------AUTONOMOUS BINARY TRANSITION------------------------
-
-
-#		#-----------------------AUTONOMOUS LINEAR TRANSITION------------------------
-#		evx_target = prev_evx_target + update_fraction * (next_evx_target - prev_evx_target)
-#		evy_target = prev_evy_target + update_fraction * (next_evy_target - prev_evy_target)
-#		evz_target = prev_evz_target + update_fraction * (next_evz_target - prev_evz_target)
-#		#-----------------------AUTONOMOUS LINEAR TRANSITION------------------------
-
-		#-----------------------AUTONOMOUS SINUSOIDAL TRANSITION--------------------
-		signed_one = math.copysign(1.0, next_evx_target - prev_evx_target)
-		evx_target =  prev_evx_target + signed_one * 0.5 * (next_evx_target - prev_evx_target) * (signed_one + math.sin(signed_one * (2 * update_fraction - 1) * math.pi / 2))
-		signed_one = math.copysign(1.0, next_evy_target - prev_evy_target)
-		evy_target =  prev_evy_target + signed_one * 0.5 * (next_evy_target - prev_evy_target) * (signed_one + math.sin(signed_one * (2 * update_fraction - 1) * math.pi / 2))
-		signed_one = math.copysign(1.0, next_evz_target - prev_evz_target)
-		evz_target =  prev_evz_target + signed_one * 0.5 * (next_evz_target - prev_evz_target) * (signed_one + math.sin(signed_one * (2 * update_fraction - 1) * math.pi / 2))
-		#-----------------------AUTONOMOUS SINUSOIDAL TRANSITION--------------------
-
-		if update_fraction >= 1.00:
-			#---------------------AUTONOMOUS VERTICAL TAKE-OFF SPEED--------------------
-			evx_target = next_evx_target
-			evy_target = next_evy_target
-			evz_target = next_evz_target
-			#---------------------AUTONOMOUS VERTICAL TAKE-OFF SPEED--------------------
-
-			logger.critical('@ %s', fp_name[fp_index - 1])
-			fsm_state = FSM_STATE_STABLE
-			fsm_input = FSM_INPUT_NONE
-			update_total_time += time_now - update_start
-			update_start = 0.0
-
-	if fsm_state == FSM_STATE_UPDATING and fsm_input == FSM_INPUT_UPDATE:
-
-		#---------------------AUTONOMOUS VERTICAL TAKE-OFF SPEED--------------------
-		evx_target = next_evx_target
-		evy_target = next_evy_target
-		evz_target = next_evz_target
-		#---------------------AUTONOMOUS VERTICAL TAKE-OFF SPEED--------------------
-
-		logger.critical('@ %s', fp_name[fp_index - 1])
-		fsm_state = FSM_STATE_STABLE
-		fsm_input = FSM_INPUT_NONE
-		update_total_time += time_now - update_start
-		update_start = 0.0
-
-	if fsm_input == FSM_INPUT_STOP:
-		keep_looping = False
-		hover_speed = 0
-
-	#-----------------------------------------------------------------------------------
-	# Track proportion of time handling FSM
-	#-----------------------------------------------------------------------------------
-	if statistics:
-		sample_time = time.time()
-		time_handling_targets += sample_time - prev_sample_time
-		prev_sample_time = sample_time
-
-	#===================================================================================
-	# Averaging: Sensor data is summed over time, and later averaged
+	# Integration: Sensor data is integrated over time, and later averaged
 	#===================================================================================
 
 	#-----------------------------------------------------------------------------------
-	# Integrate the gyros rotation rate to determine absolute angles.
+	# Integrate the gyros readings.
 	#-----------------------------------------------------------------------------------
-	qgx_average += qgx * delta_time
-	qgy_average += qgy * delta_time
-	qgz_average += qgz * delta_time
+	qgx_integrated += qgx * delta_time
+	qgy_integrated += qgy * delta_time
+	qgz_integrated += qgz * delta_time
 
 	#-----------------------------------------------------------------------------------
-	# Integrate the accelerometer for averaging and determining velocities.
+	# Integrate the accelerometer readings.
 	#-----------------------------------------------------------------------------------
-	qax_average += qax * delta_time
-	qay_average += qay * delta_time
-	qaz_average += qaz * delta_time
-
-	#-----------------------------------------------------------------------------------
-	# Track proportion of time handling integration
-	#-----------------------------------------------------------------------------------
-	if statistics:
-		sample_time = time.time()
-		time_handling_integration += sample_time - prev_sample_time
-		prev_sample_time = sample_time
+	qax_integrated += qax * delta_time
+	qay_integrated += qay * delta_time
+	qaz_integrated += qaz * delta_time
 
 	#===================================================================================
 	# Motion Processing:  Use the recorded data to produce motion data and feed in the motion PIDs
@@ -1937,33 +1752,31 @@ while keep_looping:
 		#----------------------------------------------------------------------------------
 		# Work out the average acceleration and rotation rate
 		#----------------------------------------------------------------------------------
-		averaging_period = time_now - averaging_start
-		averaging_start = time_now
+		integration_period = time_now - integration_start
+		integration_start = time_now
 
-		qax = qax_average / averaging_period
-		qay = qay_average / averaging_period
-		qaz = qaz_average / averaging_period
+		#----------------------------------------------------------------------------------
+		# Convert the integrate accelerometer reading back to an averaged accelerometer reading
+		#----------------------------------------------------------------------------------
+		qfrav_x = qax_integrated / integration_period
+		qfrav_y = qay_integrated / integration_period
+		qfrav_z = qaz_integrated / integration_period
 
-		qgx = qgx_average / averaging_period
-		qgy = qgy_average / averaging_period
-		qgz = qgz_average / averaging_period
-
-		qax_average = 0.0
-		qay_average = 0.0
-		qaz_average = 0.0
-
-		qgx_average = 0.0
-		qgy_average = 0.0
-		qgz_average = 0.0
+		#---------------------------------------------------------------------------
+		# Correct the accelerometer readings by subtracing the quad frame error vector
+		#---------------------------------------------------------------------------
+		qax = qfrav_x - qfrev_x
+		qay = qfrav_y - qfrev_y
+		qaz = qfrav_z - qfrev_z
 
 		#===================================================================================
 		# Angles: Get angles in radians
 		#===================================================================================
 		e_pitch, e_roll, e_tilt = GetEulerAngles(qax, qay, qaz)
 
-		i_pitch += qgy * averaging_period
-		i_roll += qgx * averaging_period
-		i_yaw += qgz * averaging_period
+		i_pitch += qgy_integrated
+		i_roll += qgx_integrated
+		i_yaw += qgz_integrated
 
 		#-----------------------------------------------------------------------------------
 		# Apply complementary filter to ensure long-term accuracy of pitch / roll angles
@@ -1971,15 +1784,15 @@ while keep_looping:
 		# by the accelerometer Euler low-pass filter providing fast reaction to change from the
 		# gyro yet with low noise accurate Euler angles from the acclerometer.
 		#
-		# The combination of tau plus the time increment (delta_time) provides a fraction to mix
+		# The combination of tau plus the time increment provides a fraction to mix
 		# the two angles sources.
 		#-----------------------------------------------------------------------------------
-		tau_fraction = tau / (tau + averaging_period)
+		tau_fraction = tau / (tau + integration_period)
 
-		c_pitch = tau_fraction * (prev_c_pitch + qgy * averaging_period) + (1 - tau_fraction) * e_pitch
+		c_pitch = tau_fraction * (prev_c_pitch + qgy_integrated) + (1 - tau_fraction) * e_pitch
 		prev_c_pitch = c_pitch
 
-		c_roll = tau_fraction * (prev_c_roll + qgx * averaging_period) + (1 - tau_fraction) * e_roll
+		c_roll = tau_fraction * (prev_c_roll + qgx_integrated) + (1 - tau_fraction) * e_roll
 		prev_c_roll = c_roll
 
 		#-----------------------------------------------------------------------------------
@@ -1990,43 +1803,63 @@ while keep_looping:
 		ta = e_tilt
 		ya = i_yaw
 
-		#-----------------------------------------------------------------------------------
-		# Track proportion of time handling angles
-		#-----------------------------------------------------------------------------------
-		if statistics:
-			sample_time = time.time()
-			time_handling_angles += sample_time - prev_sample_time
-			prev_sample_time = sample_time
+		#----------------------------------------------------------------------------------
+		# Reset the averaged values for the next time round
+		#----------------------------------------------------------------------------------
+		qax_integrated = 0.0
+		qay_integrated = 0.0
+		qaz_integrated = 0.0
 
-		#===================================================================================
-		# Reference Frames: convert gravity and velocity PID targets to the quadcopter frame
-		#===================================================================================
-
-		#-----------------------------------------------------------------------------------
-		# Find the distribution of gravity in the quadcopter frame
-		#-----------------------------------------------------------------------------------
-		gqx, gqy, gqz = QuadFrame(0, 0, gez, pa, ra, ya, ta)
+		qgx_integrated = 0.0
+		qgy_integrated = 0.0
+		qgz_integrated = 0.0
 
 		#-----------------------------------------------------------------------------------
-		# Convert earth-frame velocity targets to quadcopter frame
+		# Get the curent flight plan targets
 		#-----------------------------------------------------------------------------------
-		qvx_target, qvy_target, qvz_target = QuadFrame(evx_target, evy_target, evz_target, pa, ra, ya, ta)
-		e_qvz_target = evz_target / math.cos(ta)
+		if not ready_to_fly:
+			if hover_speed >= hover_target:
+				hover_speed = hover_target
+				ready_to_fly = True	
+
+				#-------------------------------------------------------------------
+				# Register the flight plan with the authorities
+				#-------------------------------------------------------------------
+				fp = FlightPlan(time_now)
+
+			else:
+				hover_speed += int(hover_target * motion_period / rtf_period)
+
+		else:
+			evx_target, evy_target, evz_target = fp.getTargets(time_now)
 
 		#-----------------------------------------------------------------------------------
-		# Track proportion of time handling frame conversions
+		# Update the time for the next processing loop
 		#-----------------------------------------------------------------------------------
-		if statistics:
-			sample_time = time.time()
-			time_handling_frames += sample_time - prev_sample_time
-			prev_sample_time = sample_time
+		motion_period = 1 / motion_frequency
+		if jitter != 0:
+			motion_period *= (1 + random.uniform(-jitter, +jitter) / 100)
 
 		#-----------------------------------------------------------------------------------
-		# Subtract integrated gravity from integrated accelerometer readings to get velocity.
+		# Convert earth-frame velocity targets to quadcopter frame.  This isn't a rotation
+		# matrix conversion, simply accounting for the angle from horizontal / vertical.
 		#-----------------------------------------------------------------------------------
-		qvx_input += (qax - gqx) * averaging_period * G_FORCE
-		qvy_input += (qay - gqy) * averaging_period * G_FORCE
-		qvz_input += (qaz - gqz) * averaging_period * G_FORCE
+#		qvx_target, qvy_target, qvz_target = E2QFrame(evx_target, evy_target, evz_target, pa, ra, ya, ta)
+		qvx_target = evx_target / math.cos(pa)
+		qvy_target = evy_target / math.cos(ra)
+		qvz_target = evz_target / math.cos(ta)
+
+		#-----------------------------------------------------------------------------------
+		# Redistribute gravity around the new orientation of the quad
+		#-----------------------------------------------------------------------------------
+		qfrgv_x, qfrgv_y, qfrgv_z = E2QFrame(efrgv_x, efrgv_y, efrgv_z, pa, ra, ya, ta)
+
+		#-----------------------------------------------------------------------------------
+		# Delete reorientated gravity from raw accelerometer readings and sum to make net velocity
+		#-----------------------------------------------------------------------------------
+		qvx_input += (qfrav_x - qfrgv_x) * integration_period * G_FORCE
+		qvy_input += (qfrav_y - qfrgv_y) * integration_period * G_FORCE
+		qvz_input += (qfrav_z - qfrgv_z) * integration_period * G_FORCE
 
 		#===========================================================================
 		# Motion PIDs: Run the horizontal speed PIDs each rotation axis to determine
@@ -2055,21 +1888,6 @@ while keep_looping:
 		# Convert the vertical velocity PID output direct to PWM pulse width.
 		#---------------------------------------------------------------------------
 		vert_out = hover_speed + int(round(qvz_out))
-
-		#---------------------------------------------------------------------------
-		# Track proportion of time handling speed PIDs
-		#---------------------------------------------------------------------------
-		if statistics:
-			sample_time = time.time()
-			time_handling_motion_pids += sample_time - prev_sample_time
-			prev_sample_time = sample_time
-
-
-	#===================================================================================
-	# Attitude PIDs: controlling the rotation rate of Phoebe around her X, Y and Z axes.
-	#===================================================================================
-	if time_now - last_attitude_update >= attitude_period:
-		last_attitude_update += attitude_period
 
 		#===========================================================================
 		# Attitude PIDs: Run the rotation rate PIDs each rotation axis to determine
@@ -2105,29 +1923,10 @@ while keep_looping:
 		# END TESTCASE 3 CODE: Disable front-left and back right blades
 		#---------------------------------------------------------------------------
 
-		#---------------------------------------------------------------------------
-		# Only update the PWM if there's something worth updating.
-		#---------------------------------------------------------------------------
-		update_PWM = True
-
-		#---------------------------------------------------------------------------
-		# Track proportion of time handling angle PIDs
-		#---------------------------------------------------------------------------
-		if statistics:
-			sample_time = time.time()
-			time_handling_attitude_pids += sample_time - prev_sample_time
-			prev_sample_time = sample_time
-
-	#-----------------------------------------------------------------------------------
-	# Only update the PWM if there's something worth updating.
-	#-----------------------------------------------------------------------------------
-	if update_PWM:
-		update_PWM = False
-
-
 		#===========================================================================
-		# ESCs: Walk through the ESCs, and depending on their location, apply the
-		# rotation PID output accordingly
+		# PID output distribution: Walk through the ESCs, and apply the PID outputs
+		# i.e. the updates PWM pulse widths according to where the ESC is sited on the
+		# frame
 		#===========================================================================
 		for esc in esc_list:
 			#-------------------------------------------------------------------
@@ -2172,49 +1971,11 @@ while keep_looping:
 			#-------------------------------------------------------------------
 			esc.update(delta_spin)
 
-			#-------------------------------------------------------------------
-			# Track proportion of time applying PWM outputs
-			#-------------------------------------------------------------------
-			if statistics:
-				sample_time = time.time()
-				time_handling_pid_outputs += sample_time - prev_sample_time
-				prev_sample_time = sample_time
-
-
-	#-----------------------------------------------------------------------------------
-	# Diagnostic statistics log - every 0.1s
-	#-----------------------------------------------------------------------------------
-	if statistics:
-		logger.warning('%f, %f, %d, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %s, %f, %s, %d, %f, %f, %s, %f, %s, %d, %f, %f, %f, %s, %d, %f, %s, %d, %d, %d, %d, %d', elapsed_time, delta_time, loop_count, qgx, qgy, qgz, qax, qay, qaz, gez, gqx, gqy, gqz, qvx_input, qvy_input, qvz_input, math.degrees(i_pitch), math.degrees(i_roll), math.degrees(e_pitch), math.degrees(e_roll), math.degrees(c_pitch), math.degrees(c_roll), math.degrees(i_yaw), math.degrees(e_tilt), evx_target, qvx_target, qvx_diags, math.degrees(pr_target), pr_diags, pr_out, evy_target, qvy_target, qvy_diags, math.degrees(rr_target), rr_diags, rr_out, evz_target, qvz_target, e_qvz_target, qvz_diags, qvz_out, yr_target, yr_diags, yr_out, esc_list[0].current_pulse_width, esc_list[1].current_pulse_width, esc_list[2].current_pulse_width, esc_list[3].current_pulse_width)
-
-	#-----------------------------------------------------------------------------------
-	# Track proportion of time logging diagnostics
-	#-----------------------------------------------------------------------------------
-	if statistics:
-		sample_time = time.time()
-		time_handling_diagnostics += sample_time - prev_sample_time
-		prev_sample_time = sample_time
-
-	#-----------------------------------------------------------------------------------
-	# Slow down the scheduling loop to avoid making accelerometer noise.  This sleep critically
-	# takes place between the update of the PWM and reading the sensors, so that any
-	# PWM changes can stabilize (i.e. spikes reacted to) prior to reading the sensors.
-	#-----------------------------------------------------------------------------------
-#	loop_time = time.time() - time_now
-#	jitter = random.uniform(-sampling_jitter, sampling_jitter) / 100
-#	sleep_time = 1 / ((1 + jitter) * sampling_rate) - loop_time
-#	if sleep_time < 0.0:
-#		sleep_time = 0.0
-#	else:
-#		time.sleep(sleep_time)
-
-	#-----------------------------------------------------------------------------------
-	# Track proportion of time sleeping
-	#-----------------------------------------------------------------------------------
-	if statistics:
-		sample_time = time.time()
-		time_handling_sleep += sample_time - prev_sample_time
-		prev_sample_time = sample_time
+		#-----------------------------------------------------------------------------------
+		# Diagnostic log - every motion loop
+		#-----------------------------------------------------------------------------------
+		if diagnostics:
+		    logger.warning('%f, %f, %d, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %s, %f, %s, %d, %f, %f, %s, %f, %s, %d, %f, %f, %s, %d, %f, %s, %d, %d, %d, %d, %d', elapsed_time, integration_period, loop_count, qgx, qgy, qgz, efrgv_x, efrgv_y, efrgv_z, qfrev_x, qfrev_y, qfrev_z, qax, qay, qaz, qfrgv_x, qfrgv_y, qfrgv_z, qvx_input, qvy_input, qvz_input, math.degrees(i_pitch), math.degrees(i_roll), math.degrees(e_pitch), math.degrees(e_roll), math.degrees(c_pitch), math.degrees(c_roll), math.degrees(i_yaw), math.degrees(e_tilt), evx_target, qvx_target, qvx_diags, math.degrees(pr_target), pr_diags, pr_out, evy_target, qvy_target, qvy_diags, math.degrees(rr_target), rr_diags, rr_out, evz_target, qvz_target, qvz_diags, qvz_out, yr_target, yr_diags, yr_out, esc_list[0].current_pulse_width, esc_list[1].current_pulse_width, esc_list[2].current_pulse_width, esc_list[3].current_pulse_width)
 
 
 #-------------------------------------------------------------------------------------------
@@ -2223,20 +1984,8 @@ while keep_looping:
 logger.critical("loop speed %f loops per second", loop_count / elapsed_time)
 
 #-------------------------------------------------------------------------------------------
-# Dump the percentage time handling each step
+# Dump the variety of sensor misses
 #-------------------------------------------------------------------------------------------
-if statistics:
-	logger.critical("%% inputs:           %f", time_handling_inputs / elapsed_time * 100.0)
-	logger.critical("%% targets:          %f", time_handling_targets / elapsed_time * 100.0)
-	logger.critical("%% integration:      %f", time_handling_integration / elapsed_time * 100.0)
-	logger.critical("%% angles:           %f", time_handling_angles / elapsed_time * 100.0)
-	logger.critical("%% frames:           %f", time_handling_frames / elapsed_time * 100.0)
-	logger.critical("%% motion_pids:      %f", time_handling_motion_pids / elapsed_time * 100.0)
-	logger.critical("%% attitude_pids:    %f", time_handling_attitude_pids / elapsed_time * 100.0)
-	logger.critical("%% pid_outputs:      %f", time_handling_pid_outputs / elapsed_time * 100.0)
-	logger.critical("%% diagnostics:      %f", time_handling_diagnostics / elapsed_time * 100.0)
-	logger.critical("%% sleep:            %f", time_handling_sleep / elapsed_time * 100.0)
-
 mpu6050_misses, i2c_misses = mpu6050.getMisses()
 logger.critical("mpu6050 %d misses, i2c %d misses, qaz %d misses ", mpu6050_misses, i2c_misses, qaz_misses)
 
