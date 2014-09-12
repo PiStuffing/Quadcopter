@@ -4,7 +4,7 @@
 ###############################################################################################
 ##                                                                                           ##
 ## Hove's Raspberry Pi Python Quadcopter Flight Controller.  Open Source @ GitHub            ##
-## PiStuffing/Quadcopterunder GPL for non-commercial application.  Any code derived from     ##
+## PiStuffing/Quadcopter under GPL for non-commercial application.  Any code derived from     ##
 ## this should retain this copyright comment.                                                ##
 ##                                                                                           ##
 ## Copyright 2014 Andy Baker (Hove) - andy@pistuffing.co.uk                                  ##
@@ -301,19 +301,33 @@ class MPU6050 :
 		self.gy_offset = 0.0
 		self.gz_offset = 0.0
 
-		self.ax_offset = 0.0
-		self.ay_offset = 0.0
-		self.az_offset = 0.0
-		self.ax_gain = 1.0
-		self.ay_gain = 1.0
-		self.az_gain = 1.0
+#       	self.ax_offset = 0.0
+#       	self.ay_offset = 0.0
+#       	self.az_offset = 0.0
+#       	self.ax_gain = 1.0
+#       	self.ay_gain = 1.0
+#       	self.az_gain = 1.0
+#
+#       	self.ax_offset = -52.83
+#       	self.ay_offset = 146.79
+#       	self.az_offset = 845.01
+#       	self.ax_gain = 0.994675113
+#       	self.ay_gain = 0.992126089
+#       	self.az_gain = 1.000029908
 
-		self.ax_offset = -52.83
-		self.ay_offset = 146.79
-		self.az_offset = 845.01
-		self.ax_gain = 0.994675113
-		self.ay_gain = 0.992126089
-		self.az_gain = 1.000029908
+		self.ax_offset_m = -0.005946616
+		self.ax_offset_c = -79.36974547
+		self.ay_offset_m = 0.00487217
+		self.ay_offset_c = 168.534496
+		self.az_offset_m = 0.062838157
+		self.az_offset_c = 1125.456697
+		self.ax_gain_m = -0.000000132239
+		self.ax_gain_c = 0.994084929
+		self.ay_gain_m = -0.000000245706
+		self.ay_gain_c = 0.991029504
+		self.az_gain_m = 0.0000000977414
+		self.az_gain_c = 1.000466128
+
 
 		logger.info('Reseting MPU-6050')
 		#---------------------------------------------------------------------------
@@ -405,11 +419,6 @@ class MPU6050 :
 			logger.critical("dlpf_check = %d, dlpf_config = %d", dlpf_check, dlpf_config);
 			CleanShutdown()
 
-		#---------------------------------------------------------------------------
-		# Setup the interrupt for data ready
-		#---------------------------------------------------------------------------
-		RPIO.edge_detect_init(RPIO_DATA_READY_INTERRUPT, RPIO.RISING)
-
 
 	def readSensorsRaw(self):
 		global time_now
@@ -472,9 +481,16 @@ class MPU6050 :
 		#---------------------------------------------------------------------------
 		[ax, ay, az, temp, gx, gy, gz] = self.readSensorsRaw()
 
-		qax = (ax + self.ax_offset) * self.ax_gain
-		qay = (ay + self.ay_offset) * self.ay_gain
-		qaz = (az + self.az_offset) * self.az_gain
+		ax_offset = temp * self.ax_offset_m + self.ax_offset_c
+		ay_offset = temp * self.ay_offset_m + self.ay_offset_c
+		az_offset = temp * self.az_offset_m + self.az_offset_c
+		ax_gain = temp * self.ax_gain_m + self.ax_gain_c
+		ay_gain = temp * self.ay_gain_m + self.ay_gain_c
+		az_gain = temp * self.az_gain_m + self.az_gain_c
+
+		qax = (ax + ax_offset) * ax_gain
+		qay = (ay + ay_offset) * ay_gain
+		qaz = (az + az_offset) * az_gain
 
 		qgx = gx - self.gx_offset
 		qgy = gy - self.gy_offset
@@ -840,6 +856,7 @@ def RpioSetup():
 	#-----------------------------------------------------------------------------------
 	logger.info('Setup MPU6050 interrupt input %s', RPIO_DATA_READY_INTERRUPT)
 	RPIO.setup(RPIO_DATA_READY_INTERRUPT, RPIO.IN) # , RPIO.PUD_DOWN)
+	RPIO.edge_detect_init(RPIO_DATA_READY_INTERRUPT, RPIO.RISING)
 
 	#-----------------------------------------------------------------------------------
 	# Set up the globally shared single PWM channel
@@ -889,14 +906,14 @@ def CheckCLI(argv):
 	#-----------------------------------------------------------------------------------
 	# Defaults for pitch rate PIDs
 	#-----------------------------------------------------------------------------------
-	cli_prp_gain = 120.0
+	cli_prp_gain = 110.0
 	cli_pri_gain = 0.0
 	cli_prd_gain = 0.0
 
 	#-----------------------------------------------------------------------------------
 	# Defaults for roll rate PIDs
 	#-----------------------------------------------------------------------------------
-	cli_rrp_gain = 100.0
+	cli_rrp_gain = 95.0
 	cli_rri_gain = 0.0
 	cli_rrd_gain = 0.0
 
@@ -905,10 +922,10 @@ def CheckCLI(argv):
 	#-----------------------------------------------------------------------------------
 	cli_test_case = 0
 	cli_tau = 0.5
-	cli_dlpf = 4
+	cli_dlpf = 5
 	cli_jitter = 0
 	cli_diagnostics = False
-	cli_motion_frequency = 25
+	cli_motion_frequency = 31
 	cli_rtf_period = 1.0
 
 	hover_target_defaulted = True
@@ -1160,7 +1177,7 @@ class FlightPlan:
 	fp_evx_target  = [0.0,       0.0,       0.0,       0.0,       0.0]
 	fp_evy_target  = [0.0,       0.0,       0.0,       0.0,       0.0]
 	fp_evz_target  = [0.0,       0.3,       0.0,      -0.3,       0.0]
-	fp_time        = [0.0,       3.0,       3.0,       3.0,       0.0]
+	fp_time        = [0.0,       3.0,       5.0,       3.0,       0.0]
 	fp_name        = ["RTF",  "ASCENT",   "HOVER", "DESCENT",    "STOP"]
 	_FP_STEPS = 4
 
@@ -1366,7 +1383,7 @@ logger.addHandler(file_handler)
 # Check the command line for calibration or flight parameters
 #-------------------------------------------------------------------------------------------
 calibrate_sensors, flying, hover_target, shoot_video, vvp_gain, vvi_gain, vvd_gain, hvp_gain, hvi_gain, hvd_gain, prp_gain, pri_gain, prd_gain, rrp_gain, rri_gain, rrd_gain, test_case, tau, dlpf, jitter, motion_frequency, rtf_period, diagnostics = CheckCLI(sys.argv[1:])
-logger.critical("calibrate_sensors = %s, fly = %s, hover_target = %d, shoot_video = %s, vvp_gain = %f, vvi_gain = %f, vvd_gain= %f, hvp_gain = %f, hvi_gain = %f, hvd_gain = %f, prp_gain = %f, pri_gain = %f, prd_gain = %f, rrp_gain = %f, rri_gain = %f, rrd_gain = %f, test_case = %d, tau = %f, dlpf = %d, jitter = %d, motion_frequency = %f, rtf_period = %f, diagnostics = %s", calibrate_sensors, flying, hover_target, shoot_video, vvp_gain, vvi_gain, vvd_gain, hvp_gain, hvi_gain, hvd_gain, prp_gain, pri_gain, prd_gain, rrp_gain, rri_gain, rrd_gain, test_case, tau, dlpf, jitter, motion_frequency, rtf_period, diagnostics)
+logger.warning("calibrate_sensors = %s, fly = %s, hover_target = %d, shoot_video = %s, vvp_gain = %f, vvi_gain = %f, vvd_gain= %f, hvp_gain = %f, hvi_gain = %f, hvd_gain = %f, prp_gain = %f, pri_gain = %f, prd_gain = %f, rrp_gain = %f, rri_gain = %f, rrd_gain = %f, test_case = %d, tau = %f, dlpf = %d, jitter = %d, motion_frequency = %f, rtf_period = %f, diagnostics = %s", calibrate_sensors, flying, hover_target, shoot_video, vvp_gain, vvi_gain, vvd_gain, hvp_gain, hvi_gain, hvd_gain, prp_gain, pri_gain, prd_gain, rrp_gain, rri_gain, rrd_gain, test_case, tau, dlpf, jitter, motion_frequency, rtf_period, diagnostics)
 
 #-------------------------------------------------------------------------------------------
 # Initialize the motion processing period and jitter
@@ -1454,23 +1471,34 @@ qax_integrated = 0.0
 qay_integrated = 0.0
 qaz_integrated = 0.0
 
+prev_qax, prev_qay, prev_qaz, prev_qgx, prev_qgy, prev_qgz = mpu6050.readSensors()
+prev_time_now = time_now
+integration_start = time_now
+
 loop_count = 0
 while loop_count != 1000:
 	qax, qay, qaz, qgx, qgy, qgz = mpu6050.readSensors()
 
 	loop_count += 1
+	delta_time = time_now - prev_time_now
+	prev_time_now = time_now
 
-	qax_integrated += qax
-	qay_integrated += qay
-	qaz_integrated += qaz
+	qax_integrated += (qax + prev_qax) * delta_time
+	qay_integrated += (qay + prev_qay) * delta_time
+	qaz_integrated += (qaz + prev_qaz) * delta_time
+
+	prev_qax = qax
+	prev_qay = qay
+	prev_qaz = qaz
 
 #-------------------------------------------------------------------------------------------
 # Work out the average acceleration due to gravity
 # Save off the quad-frame raw gravity vector
 #-------------------------------------------------------------------------------------------
-qfrgv_x = qax_integrated * SCALE_ACCEL / loop_count
-qfrgv_y = qay_integrated * SCALE_ACCEL / loop_count
-qfrgv_z = qaz_integrated * SCALE_ACCEL / loop_count
+integration_period = time_now - integration_start
+qfrgv_x = qax_integrated * SCALE_ACCEL / (2 * integration_period)
+qfrgv_y = qay_integrated * SCALE_ACCEL / (2 * integration_period)
+qfrgv_z = qaz_integrated * SCALE_ACCEL / (2 * integration_period)
 
 qfrev_x = 0.0
 qfrev_y = 0.0
@@ -1480,7 +1508,7 @@ qfrev_z = 0.0
 # Iteratively refine measurements for offsets and angles
 #-------------------------------------------------------------------------------------------
 num_iterations = 1
-logger.critical("qfrgv_x, qfrgv_y, qfrgv_z, qfrgv_pitch, qfrgv_roll, qfrgv_tilt, efrgv_x, efrgv_y, efrgv_z, etrev_x, efrev_y, efrev_z, qfrev_x, qfrev_y, qfrev_z")
+logger.warning("qfrgv_x, qfrgv_y, qfrgv_z, qfrgv_pitch, qfrgv_roll, qfrgv_tilt, efrgv_x, efrgv_y, efrgv_z, etrev_x, efrev_y, efrev_z, qfrev_x, qfrev_y, qfrev_z")
 for iteration in range(0, num_iterations):
 	#-------------------------------------------------------------------------------------------
 	# Get the take-off platform slope
@@ -1497,13 +1525,7 @@ for iteration in range(0, num_iterations):
 #AB:	efrev_z = efrgv_z - GRAV_ACCEL
 
 	qfrev_x, qfrev_y, qfrev_z = E2QFrame(efrev_x, efrev_y, efrev_z, qfrgv_pitch, qfrgv_roll, 0.0, qfrgv_tilt)
-	logger.critical("%f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f", qfrgv_x, qfrgv_y, qfrgv_z, qfrgv_pitch, qfrgv_roll, qfrgv_tilt, efrgv_x, efrgv_y, efrgv_z, efrev_x, efrev_y, efrev_z, qfrev_x, qfrev_y, qfrev_z)
-
-#-------------------------------------------------------------------------------------------
-# Dump the variety of sensor misses
-#-------------------------------------------------------------------------------------------
-mpu6050_misses, i2c_misses = mpu6050.getMisses()
-logger.critical("mpu6050 %d misses, i2c %d misses", mpu6050_misses, i2c_misses)
+	logger.warning("%f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f", qfrgv_x, qfrgv_y, qfrgv_z, qfrgv_pitch, qfrgv_roll, qfrgv_tilt, efrgv_x, efrgv_y, efrgv_z, efrev_x, efrev_y, efrev_z, qfrev_x, qfrev_y, qfrev_z)
 
 #-------------------------------------------------------------------------------------------
 # Initialize complementary filter angles
@@ -1524,8 +1546,6 @@ qaz_integrated = 0.0
 qgx_integrated = 0.0
 qgy_integrated = 0.0
 qgz_integrated = 0.0
-
-start_integrating = True
 
 #-------------------------------------------------------------------------------------------
 # Countdown: 3 beeps prior to setting up the interrupt handler
@@ -1704,9 +1724,10 @@ if diagnostics:
 	logger.warning('time, dt, loop, qgx, qgy, qgz, efrgv_x, efrgv_y, efrgv_z, qfrev_x, qfrev_y, qfrev_z, qax, qay, qaz, qfrgv_x, qfrgv_y, qfrgv_z, qvx_input, qvy_input, qvz_input, i pitch, i roll, e pitch, e roll, c pitch, c roll, i yaw, e tilt, evx_target, qvx_target, qxp, qxi, qxd, pr_target, prp, pri, prd, pr_out, evy_yarget, qvy_target, qyp, qyi, qyd, rr_target, rrp, rri, rrd, rr_out, evz_target, qvz_target, qzp, qzi, qzd, qvz_out, yr_target, yrp, yri, yrd, yr_out, FL spin, FR spin, BL spin, BR spin')
 
 #==========================================================================================
-# Initialize critical timing immediately before starting the PIDs
+# Initialize critical timing immediately before starting the PIDs.  This is done by reading
+# the sensors, and that also gives us a starting position to integrated from.
 #==========================================================================================
-time_now = time.time()
+prev_qax, prev_qay, prev_qaz, prev_qgx, prev_qgy, prev_qgz = mpu6050.readSensors()
 
 #-------------------------------------------------------------------------------------------
 # Start the yaw absolute angle PID
@@ -1728,10 +1749,9 @@ qvy_pid = PID(PID_QVY_P_GAIN, PID_QVY_I_GAIN, PID_QVY_D_GAIN, time_now)
 qvz_pid = PID(PID_QVZ_P_GAIN, PID_QVZ_I_GAIN, PID_QVZ_D_GAIN, time_now)
 
 start_time = time_now
-last_log_time = time_now
-prev_sample_time = time_now
-last_motion_update = time_now
 elapsed_time = 0.0
+last_motion_update = time_now
+integration_start = time_now
 
 while keep_looping:
 	#===================================================================================
@@ -1752,38 +1772,21 @@ while keep_looping:
 	# Integration: Sensor data is integrated over time, and later averaged to produce
 	# smoother yet still accurate acceleration and rotation since the last PID updates.
 	#===================================================================================
-	if start_integrating:
-		start_integrating = False
-		integration_start = time_now
+	qgx_integrated += (prev_qgx + qgx) * delta_time
+	qgy_integrated += (prev_qgy + qgy) * delta_time
+	qgz_integrated += (prev_qgz + qgz) * delta_time
 
-		prev_qgx = qgx
-		prev_qgy = qgy
-		prev_qgz = qgz
-		prev_qax = qax
-		prev_qay = qay
-		prev_qaz = qaz
-	else:
-		#---------------------------------------------------------------------------
-		# Integrate the gyros readings.
-		#---------------------------------------------------------------------------
-		qgx_integrated += (prev_qgx + qgx) * delta_time
-		qgy_integrated += (prev_qgy + qgy) * delta_time
-		qgz_integrated += (prev_qgz + qgz) * delta_time
+	prev_qgx = qgx
+	prev_qgy = qgy
+	prev_qgz = qgz
 
-		prev_qgx = qgx
-		prev_qgy = qgy
-		prev_qgz = qgz
+	qax_integrated += (prev_qax + qax) * delta_time
+	qay_integrated += (prev_qay + qay) * delta_time
+	qaz_integrated += (prev_qaz + qaz) * delta_time
 
-		#---------------------------------------------------------------------------
-		# Integrate the accelerometer readings.
-		#---------------------------------------------------------------------------
-		qax_integrated += (prev_qax + qax) * delta_time
-		qay_integrated += (prev_qay + qay) * delta_time
-		qaz_integrated += (prev_qaz + qaz) * delta_time
-
-		prev_qax = qax
-		prev_qay = qay
-		prev_qaz = qaz
+	prev_qax = qax
+	prev_qay = qay
+	prev_qaz = qaz
 
 	#===================================================================================
 	# Motion Processing:  Use the recorded data to produce motion data and feed in the motion PIDs
@@ -1795,7 +1798,7 @@ while keep_looping:
 		# Work out the average acceleration and rotation rate
 		#----------------------------------------------------------------------------------
 		integration_period = time_now - integration_start
-		start_integrating = True
+		integration_start = time_now
 
 		#----------------------------------------------------------------------------------
 		# Sort out units and the double accounting in integration.
