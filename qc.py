@@ -28,13 +28,9 @@ import os
 import struct
 import logging
 
-#-------------------------------------------------------------------------------------------
-# Only required when using GPIO.wait_for_event() to block for hardware interrupts
-#-------------------------------------------------------------------------------------------
 import RPi.GPIO as RPIO
-# import RPIO
-
 from RPIO import PWM
+
 import subprocess
 from datetime import datetime
 import shutil
@@ -301,33 +297,19 @@ class MPU6050 :
 		self.gy_offset = 0.0
 		self.gz_offset = 0.0
 
-#       	self.ax_offset = 0.0
-#       	self.ay_offset = 0.0
-#       	self.az_offset = 0.0
-#       	self.ax_gain = 1.0
-#       	self.ay_gain = 1.0
-#       	self.az_gain = 1.0
-#
-#       	self.ax_offset = -52.83
-#       	self.ay_offset = 146.79
-#       	self.az_offset = 845.01
-#       	self.ax_gain = 0.994675113
-#       	self.ay_gain = 0.992126089
-#       	self.az_gain = 1.000029908
+		self.ax_offset_m = -0.008672274
+		self.ax_offset_c = -95.85877449
+		self.ay_offset_m =  0.001811116
+		self.ay_offset_c =  152.3654568
+		self.az_offset_m =  0.086221252
+		self.az_offset_c =  1245.398862
 
-		self.ax_offset_m = -0.005946616
-		self.ax_offset_c = -79.36974547
-		self.ay_offset_m = 0.00487217
-		self.ay_offset_c = 168.534496
-		self.az_offset_m = 0.062838157
-		self.az_offset_c = 1125.456697
-		self.ax_gain_m = -0.000000132239
-		self.ax_gain_c = 0.994084929
-		self.ay_gain_m = -0.000000245706
-		self.ay_gain_c = 0.991029504
-		self.az_gain_m = 0.0000000977414
-		self.az_gain_c = 1.000466128
-
+		self.ax_gain_m = -0.000000104005
+		self.ax_gain_c =  0.994343914
+		self.ay_gain_m = -0.000000134932
+		self.ay_gain_c =  0.991553647
+		self.az_gain_m = -0.000000177587
+		self.az_gain_c =  0.999063422
 
 		logger.info('Reseting MPU-6050')
 		#---------------------------------------------------------------------------
@@ -423,35 +405,9 @@ class MPU6050 :
 	def readSensorsRaw(self):
 		global time_now
 
-		#---------------------------------------------------------------------------
-		# Clear the data ready interrupt, optionally make sure it clears, then hard loop
-		# on the data ready interrupt until it gets set high again
-		# to ensure we get the freshest set of valid data.  Sleep just 0.5ms as data is
-		# updated every 4ms - need to allow time for the data to be read.
-		#
-		# The alternative is to wait for a rising edge n the data interrupt pin.
-		#---------------------------------------------------------------------------
-
-		#---------------------------------------------------------------------------
-		# Clear any pending interrupt and wait for fresh data
-		#---------------------------------------------------------------------------
-#AB:		self.i2c.readU8(self.__MPU6050_RA_INT_STATUS)
-
-#-------------------------------------------------------------------------------------------
-# Redundant code checking that the reset above has worked prior to the next step below
-#-------------------------------------------------------------------------------------------
-#AB:		while not (self.i2c.readU8(self.__MPU6050_RA_INT_STATUS) == 0x00):
-#AB:                       time.sleep(0.0001)
-
-#-------------------------------------------------------------------------------------------
-# Current working and fast example using polling of the interupt status register
-#-------------------------------------------------------------------------------------------
-#AB:		while not (self.i2c.readU8(self.__MPU6050_RA_INT_STATUS) == 0x01):
-#AB:			self.misses += 1
-
-#-------------------------------------------------------------------------------------------
-# Working but slower approach to use the hardware interrupt directly to detect data ready
-#-------------------------------------------------------------------------------------------
+                #---------------------------------------------------------------------------
+                # Wait for the data ready interrupt
+                #---------------------------------------------------------------------------
 		RPIO.edge_detect_wait(RPIO_DATA_READY_INTERRUPT)
 
 		#---------------------------------------------------------------------------
@@ -925,7 +881,7 @@ def CheckCLI(argv):
 	cli_dlpf = 5
 	cli_jitter = 0
 	cli_diagnostics = False
-	cli_motion_frequency = 31
+	cli_motion_frequency = 37
 	cli_rtf_period = 1.0
 
 	hover_target_defaulted = True
@@ -1170,6 +1126,7 @@ def SignalHandler(signal, frame):
 #
 ############################################################################################
 class FlightPlan:
+	global keep_looping
 
 	#-----------------------------------------------------------------------------------
 	# The flight plan - move to file at some point
@@ -1179,42 +1136,12 @@ class FlightPlan:
 	fp_evz_target  = [0.0,       0.3,       0.0,      -0.3,       0.0]
 	fp_time        = [0.0,       3.0,       5.0,       3.0,       0.0]
 	fp_name        = ["RTF",  "ASCENT",   "HOVER", "DESCENT",    "STOP"]
-	_FP_STEPS = 4
-
-	#-----------------------------------------------------------------------------------
-	# Flight plan step transition FSM constants
-	#-----------------------------------------------------------------------------------
-	_FSM_INPUT_NONE = 0
-	_FSM_INPUT_UPDATE = 1
-	_FSM_INPUT_STOP = 2
-
-	_FSM_STATE_OFF = 0
-	_FSM_STATE_UPDATING = 1
-	_FSM_STATE_STABLE = 2
+	_FP_STEPS = 5
 
 	def __init__(self, time_now):
 
-		self.fsm_input = self._FSM_INPUT_UPDATE
-		self.fsm_state = self._FSM_STATE_STABLE
-
-		self.update_start = 0.0
-
-		self.fp_total_time = 0.0
-		self.update_start = 0.0
-		self.update_total_time = 0.0
-
-		self.prev_evx_target = 0.0
-		self.prev_evy_target = 0.0
-		self.prev_evz_target = 0.0
-		self.evx_target = 0.0
-		self.evy_target = 0.0
-		self.evz_target = 0.0
-		self.next_evx_target = 0.0
-		self.next_evy_target = 0.0
-		self.next_evz_target = 0.0
-
 		self.fp_index = 0
-		self.fp_total_time = 0.0
+		self.fp_prev_index = 0
 		self.start_time = time_now
 
 
@@ -1223,98 +1150,23 @@ class FlightPlan:
 
 		elapsed_time = time_now - self.start_time
 
-		#---------------------------------------------------------------------------
-		# Work out the next input to the FSM - this mostly just depends on time
-		#---------------------------------------------------------------------------
-		if self.fsm_state == self._FSM_STATE_STABLE and (elapsed_time >= self.fp_total_time + self.update_total_time):
-				self.fp_index += 1
-
-				logger.critical('-> %s', self.fp_name[self.fp_index])
-				self.fsm_input = self._FSM_INPUT_UPDATE
-				self.next_evx_target = self.fp_evx_target[self.fp_index]
-				self.next_evy_target = self.fp_evy_target[self.fp_index]
-				self.next_evz_target = self.fp_evz_target[self.fp_index]
-
-				self.prev_evx_target = self.fp_evx_target[self.fp_index - 1]
-				self.prev_evy_target = self.fp_evy_target[self.fp_index - 1]
-				self.prev_evz_target = self.fp_evz_target[self.fp_index - 1]
-
-				self.fp_total_time += self.fp_time[self.fp_index]
-
-				if self.fp_index == self._FP_STEPS:
-					self.fsm_input = self._FSM_INPUT_STOP
-
-		#---------------------------------------------------------------------------
-		# Now we've decided the next input, apply it
-		#---------------------------------------------------------------------------
-
-		if self.fsm_state == self._FSM_STATE_STABLE and self.fsm_input == self._FSM_INPUT_UPDATE:
-			self.fsm_state = self._FSM_STATE_UPDATING
-			self.next_fsm_state = self._FSM_STATE_STABLE
-			self.fsm_input = self._FSM_INPUT_NONE
-
-
-		if self.fsm_state == self._FSM_STATE_UPDATING and self.fsm_input == self._FSM_INPUT_NONE:
-			if self.update_start == 0.0:
-				self.update_start = time_now
-				self.fsm_update_period = 2.0 * math.copysign(self.next_evz_target - self.prev_evz_target, 1.0) + 0.2
-
-			update_fraction = (time_now - self.update_start) / self.fsm_update_period
-
-#        		#-----------------------AUTONOMOUS BINARY TRANSITION------------------------
-#        		self.evx_target =  self.next_evx_target
-#        		self.evy_target =  self.next_evy_target
-#        		self.evz_target =  self.next_evz_target
-#        		#-----------------------AUTONOMOUS BINARY TRANSITION------------------------
-
-
-#        		#-----------------------AUTONOMOUS LINEAR TRANSITION------------------------
-#        		self.evx_target = self.prev_evx_target + update_fraction * (self.next_evx_target - self.prev_evx_target)
-#        		self.evy_target = self.prev_evy_target + update_fraction * (self.next_evy_target - self.prev_evy_target)
-#        		self.evz_target = self.prev_evz_target + update_fraction * (self.next_evz_target - self.prev_evz_target)
-#        		#-----------------------AUTONOMOUS LINEAR TRANSITION------------------------
-
-			#-----------------------AUTONOMOUS SINUSOIDAL TRANSITION--------------------
-			signed_one = math.copysign(1.0, self.next_evx_target - self.prev_evx_target)
-			self.evx_target =  self.prev_evx_target + signed_one * 0.5 * (self.next_evx_target - self.prev_evx_target) * (signed_one + math.sin(signed_one * (2 * update_fraction - 1) * math.pi / 2))
-			signed_one = math.copysign(1.0, self.next_evy_target - self.prev_evy_target)
-			self.evy_target =  self.prev_evy_target + signed_one * 0.5 * (self.next_evy_target - self.prev_evy_target) * (signed_one + math.sin(signed_one * (2 * update_fraction - 1) * math.pi / 2))
-			signed_one = math.copysign(1.0, self.next_evz_target - self.prev_evz_target)
-			self.evz_target =  self.prev_evz_target + signed_one * 0.5 * (self.next_evz_target - self.prev_evz_target) * (signed_one + math.sin(signed_one * (2 * update_fraction - 1) * math.pi / 2))
-			#-----------------------AUTONOMOUS SINUSOIDAL TRANSITION--------------------
-
-			if update_fraction >= 1.00:
-				#---------------------AUTONOMOUS VERTICAL TAKE-OFF SPEED--------------------
-				self.evx_target = self.next_evx_target
-				self.evy_target = self.next_evy_target
-				self.evz_target = self.next_evz_target
-				#---------------------AUTONOMOUS VERTICAL TAKE-OFF SPEED--------------------
-
-				logger.critical('@ %s', self.fp_name[self.fp_index])
-				self.fsm_state = self._FSM_STATE_STABLE
-				self.fsm_input = self._FSM_INPUT_NONE
-				self.update_total_time += time_now - self.update_start
-				self.update_start = 0.0
-
-		if self.fsm_state == self._FSM_STATE_UPDATING and self.fsm_input == self._FSM_INPUT_UPDATE:
-
-			#---------------------AUTONOMOUS VERTICAL TAKE-OFF SPEED--------------------
-			self.evx_target = self.next_evx_target
-			self.evy_target = self.next_evy_target
-			self.evz_target = self.next_evz_target
-			#---------------------AUTONOMOUS VERTICAL TAKE-OFF SPEED--------------------
-
-			logger.critical('@ %s', self.fp_name[fp_index])
-			self.fsm_state = self._FSM_STATE_STABLE
-			self.fsm_input = self._FSM_INPUT_NONE
-			self.update_total_time += time_now - self.update_start
-			self.update_start = 0.0
-
-		if self.fsm_input == self._FSM_INPUT_STOP:
+		fp_total_time = 0.0
+		for fp_index in range(0, self._FP_STEPS):
+			fp_total_time += self.fp_time[fp_index]
+			if elapsed_time < fp_total_time:
+				break
+		else:
 			keep_looping = False
 
+		evx_target = self.fp_evx_target[fp_index]
+		evy_target = self.fp_evy_target[fp_index]
+		evz_target = self.fp_evz_target[fp_index]
 
-		return self.evx_target, self.evy_target, self.evz_target
+		if fp_index != self.fp_prev_index:
+			logger.critical("%s", self.fp_name[fp_index])
+			self.fp_prev_index = fp_index
+
+		return evx_target, evy_target, evz_target
 
 ############################################################################################
 #
@@ -1500,32 +1352,15 @@ qfrgv_x = qax_integrated * SCALE_ACCEL / (2 * integration_period)
 qfrgv_y = qay_integrated * SCALE_ACCEL / (2 * integration_period)
 qfrgv_z = qaz_integrated * SCALE_ACCEL / (2 * integration_period)
 
-qfrev_x = 0.0
-qfrev_y = 0.0
-qfrev_z = 0.0
+#-------------------------------------------------------------------------------------------
+# Get the take-off platform slope
+#-------------------------------------------------------------------------------------------
+qfrgv_pitch, qfrgv_roll, qfrgv_tilt = GetEulerAngles(qfrgv_x, qfrgv_y, qfrgv_z)
 
 #-------------------------------------------------------------------------------------------
-# Iteratively refine measurements for offsets and angles
+# Now measure gravity in earth axes according to the sensors
 #-------------------------------------------------------------------------------------------
-num_iterations = 1
-logger.warning("qfrgv_x, qfrgv_y, qfrgv_z, qfrgv_pitch, qfrgv_roll, qfrgv_tilt, efrgv_x, efrgv_y, efrgv_z, etrev_x, efrev_y, efrev_z, qfrev_x, qfrev_y, qfrev_z")
-for iteration in range(0, num_iterations):
-	#-------------------------------------------------------------------------------------------
-	# Get the take-off platform slope
-	#-------------------------------------------------------------------------------------------
-	qfrgv_pitch, qfrgv_roll, qfrgv_tilt = GetEulerAngles(qfrgv_x - qfrev_x, qfrgv_y - qfrev_y, qfrgv_z - qfrev_z)
-
-	#-------------------------------------------------------------------------------------------
-	# Find better values for the qfrev_* from the revised angles
-	#-------------------------------------------------------------------------------------------
-	efrgv_x, efrgv_y, efrgv_z = Q2EFrame(qfrgv_x, qfrgv_y, qfrgv_z, qfrgv_pitch, qfrgv_roll, 0.0, qfrgv_tilt)
-	efrev_x = efrgv_x - 0.0
-	efrev_y = efrgv_y - 0.0
-	efrev_z = 0.0
-#AB:	efrev_z = efrgv_z - GRAV_ACCEL
-
-	qfrev_x, qfrev_y, qfrev_z = E2QFrame(efrev_x, efrev_y, efrev_z, qfrgv_pitch, qfrgv_roll, 0.0, qfrgv_tilt)
-	logger.warning("%f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f", qfrgv_x, qfrgv_y, qfrgv_z, qfrgv_pitch, qfrgv_roll, qfrgv_tilt, efrgv_x, efrgv_y, efrgv_z, efrev_x, efrev_y, efrev_z, qfrev_x, qfrev_y, qfrev_z)
+efrgv_x, efrgv_y, efrgv_z = Q2EFrame(qfrgv_x, qfrgv_y, qfrgv_z, qfrgv_pitch, qfrgv_roll, 0.0, qfrgv_tilt)
 
 #-------------------------------------------------------------------------------------------
 # Initialize complementary filter angles
@@ -1721,7 +1556,7 @@ logger.critical('Thunderbirds are go!')
 # Diagnostic log header
 #-------------------------------------------------------------------------------------------
 if diagnostics:
-	logger.warning('time, dt, loop, qgx, qgy, qgz, efrgv_x, efrgv_y, efrgv_z, qfrev_x, qfrev_y, qfrev_z, qax, qay, qaz, qfrgv_x, qfrgv_y, qfrgv_z, qvx_input, qvy_input, qvz_input, i pitch, i roll, e pitch, e roll, c pitch, c roll, i yaw, e tilt, evx_target, qvx_target, qxp, qxi, qxd, pr_target, prp, pri, prd, pr_out, evy_yarget, qvy_target, qyp, qyi, qyd, rr_target, rrp, rri, rrd, rr_out, evz_target, qvz_target, qzp, qzi, qzd, qvz_out, yr_target, yrp, yri, yrd, yr_out, FL spin, FR spin, BL spin, BR spin')
+	logger.warning('time, dt, loop, qgx, qgy, qgz, efrgv_x, efrgv_y, efrgv_z, qax, qay, qaz, qfrgv_x, qfrgv_y, qfrgv_z, qvx_input, qvy_input, qvz_input, i pitch, i roll, e pitch, e roll, c pitch, c roll, i yaw, e tilt, evx_target, qvx_target, qxp, qxi, qxd, pr_target, prp, pri, prd, pr_out, evy_yarget, qvy_target, qyp, qyi, qyd, rr_target, rrp, rri, rrd, rr_out, evz_target, qvz_target, qzp, qzi, qzd, qvz_out, yr_target, yrp, yri, yrd, yr_out, FL spin, FR spin, BL spin, BR spin')
 
 #==========================================================================================
 # Initialize critical timing immediately before starting the PIDs.  This is done by reading
@@ -1821,16 +1656,9 @@ while keep_looping:
 		#----------------------------------------------------------------------------------
 		# Convert the integrate accelerometer reading back to an averaged accelerometer reading
 		#----------------------------------------------------------------------------------
-		qfrav_x = qax_integrated / integration_period
-		qfrav_y = qay_integrated / integration_period
-		qfrav_z = qaz_integrated / integration_period
-
-		#---------------------------------------------------------------------------
-		# Correct the accelerometer readings by subtracing the quad frame error vector
-		#---------------------------------------------------------------------------
-		qax = qfrav_x - qfrev_x
-		qay = qfrav_y - qfrev_y
-		qaz = qfrav_z - qfrev_z
+		qax = qax_integrated / integration_period
+		qay = qay_integrated / integration_period
+		qaz = qaz_integrated / integration_period
 
 		#===================================================================================
 		# Angles: Get angles in radians
@@ -1908,22 +1736,18 @@ while keep_looping:
 		# matrix conversion, simply accounting for the angle from horizontal / vertical.
 		#-----------------------------------------------------------------------------------
 		qvx_target, qvy_target, qvz_target = E2QFrame(evx_target, evy_target, evz_target, pa, ra, ya, ta)
-#AB:		qvx_target = evx_target / math.cos(pa)
-#AB:		qvy_target = evy_target / math.cos(ra)
-#AB:		qvz_target /= math.cos(ta)
 
 		#-----------------------------------------------------------------------------------
 		# Redistribute gravity around the new orientation of the quad
 		#-----------------------------------------------------------------------------------
 		qfrgv_x, qfrgv_y, qfrgv_z = E2QFrame(efrgv_x, efrgv_y, efrgv_z, pa, ra, ya, ta)
-#AB:		qfrgv_x, qfrgv_y, qfrgv_z = E2QFrame(0, 0, 1, pa, ra, ya, ta)
 
 		#-----------------------------------------------------------------------------------
 		# Delete reorientated gravity from raw accelerometer readings and sum to make net velocity
 		#-----------------------------------------------------------------------------------
-		qvx_input += (qfrav_x - qfrgv_x) * integration_period * GRAV_ACCEL
-		qvy_input += (qfrav_y - qfrgv_y) * integration_period * GRAV_ACCEL
-		qvz_input += (qfrav_z - qfrgv_z) * integration_period * GRAV_ACCEL
+		qvx_input += (qax - qfrgv_x) * integration_period * GRAV_ACCEL
+		qvy_input += (qay - qfrgv_y) * integration_period * GRAV_ACCEL
+		qvz_input += (qaz - qfrgv_z) * integration_period * GRAV_ACCEL
 
 		#===========================================================================
 		# Motion PIDs: Run the horizontal speed PIDs each rotation axis to determine
@@ -1945,8 +1769,6 @@ while keep_looping:
 		# Convert the horizontal velocity PID output i.e. the horizontal acceleration
 		# target in q's into the pitch and roll angle PID targets in radians
 		#---------------------------------------------------------------------------
-#AB:		pr_target = -math.atan2(qvx_out, math.pow(math.pow(qay, 2) + math.pow(qaz, 2), 0.5))
-#AB:		rr_target = -math.atan2(qvy_out, math.pow(math.pow(qax, 2) + math.pow(qaz, 2), 0.5))
 		pr_target = -qvx_out
 		rr_target = -qvy_out
 
@@ -2032,7 +1854,7 @@ while keep_looping:
 		# Diagnostic log - every motion loop
 		#-----------------------------------------------------------------------------------
 		if diagnostics:
-			logger.warning('%f, %f, %d, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %s, %f, %s, %d, %f, %f, %s, %f, %s, %d, %f, %f, %s, %d, %f, %s, %d, %d, %d, %d, %d', elapsed_time, integration_period, loop_count, qgx, qgy, qgz, efrgv_x, efrgv_y, efrgv_z, qfrev_x, qfrev_y, qfrev_z, qax, qay, qaz, qfrgv_x, qfrgv_y, qfrgv_z, qvx_input, qvy_input, qvz_input, math.degrees(i_pitch), math.degrees(i_roll), math.degrees(e_pitch), math.degrees(e_roll), math.degrees(c_pitch), math.degrees(c_roll), math.degrees(i_yaw), math.degrees(e_tilt), evx_target, qvx_target, qvx_diags, math.degrees(pr_target), pr_diags, pr_out, evy_target, qvy_target, qvy_diags, math.degrees(rr_target), rr_diags, rr_out, evz_target, qvz_target, qvz_diags, qvz_out, yr_target, yr_diags, yr_out, esc_list[0].current_pulse_width, esc_list[1].current_pulse_width, esc_list[2].current_pulse_width, esc_list[3].current_pulse_width)
+			logger.warning('%f, %f, %d, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %s, %f, %s, %d, %f, %f, %s, %f, %s, %d, %f, %f, %s, %d, %f, %s, %d, %d, %d, %d, %d', elapsed_time, integration_period, loop_count, qgx, qgy, qgz, efrgv_x, efrgv_y, efrgv_z, qax, qay, qaz, qfrgv_x, qfrgv_y, qfrgv_z, qvx_input, qvy_input, qvz_input, math.degrees(i_pitch), math.degrees(i_roll), math.degrees(e_pitch), math.degrees(e_roll), math.degrees(c_pitch), math.degrees(c_roll), math.degrees(i_yaw), math.degrees(e_tilt), evx_target, qvx_target, qvx_diags, math.degrees(pr_target), pr_diags, pr_out, evy_target, qvy_target, qvy_diags, math.degrees(rr_target), rr_diags, rr_out, evz_target, qvz_target, qvz_diags, qvz_out, yr_target, yr_diags, yr_out, esc_list[0].current_pulse_width, esc_list[1].current_pulse_width, esc_list[2].current_pulse_width, esc_list[3].current_pulse_width)
 
 
 #-------------------------------------------------------------------------------------------
