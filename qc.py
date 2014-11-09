@@ -311,23 +311,23 @@ class MPU6050 :
 		self.az_offset = 0.0
 		self.az_gain = 1.0
 
-                if i_am_phoebe:
-                        #--------------------------------------------------------------------------
-		        # Phoebe @ dlpf 6, 1180 / 40oC
-		        #--------------------------------------------------------------------------
-		        self.ax_offset = -5.5
-		        self.ax_gain = 0.994704703
-		        self.ay_offset = 85.68
-		        self.ay_gain = 0.991817986
-		        self.az_offset = -320.78
-		        self.az_gain = 1.004176305
-                elif i_am_chloe:
-		        self.ax_offset = -75.64
-		        self.ax_gain = 0.997474655
-		        self.ay_offset = -335.08
-		        self.ay_gain = 1.001905479
-		        self.az_offset = -1181.88
-		        self.az_gain = 0.986795348
+		if i_am_phoebe:
+			#--------------------------------------------------------------------------
+			# Phoebe @ dlpf 6, 1180 / 40oC
+			#--------------------------------------------------------------------------
+			self.ax_offset = -5.5
+			self.ax_gain = 0.994704703
+			self.ay_offset = 85.68
+			self.ay_gain = 0.991817986
+			self.az_offset = -320.78
+			self.az_gain = 1.004176305
+		elif i_am_chloe:
+			self.ax_offset = -75.64
+			self.ax_gain = 0.997474655
+			self.ay_offset = -335.08
+			self.ay_gain = 1.001905479
+			self.az_offset = -1181.88
+			self.az_gain = 0.986795348
 
 		logger.info('Reseting MPU-6050')
 		#---------------------------------------------------------------------------
@@ -876,67 +876,67 @@ def CheckCLI(argv):
 	cli_calibrate_gravity = False
 	cli_video = False
 
-        if i_am_phoebe:
-        	cli_hover_target = 550
+	if i_am_phoebe:
+		cli_hover_target = 550
 
-        	#-----------------------------------------------------------------------------------
-        	# Defaults for vertical velocity PIDs
-        	#-----------------------------------------------------------------------------------
-        	cli_vvp_gain = 300.0
-        	cli_vvi_gain = 150.0
-        	cli_vvd_gain = 0.0
+		#-----------------------------------------------------------------------------------
+		# Defaults for vertical velocity PIDs
+		#-----------------------------------------------------------------------------------
+		cli_vvp_gain = 300.0
+		cli_vvi_gain = 150.0
+		cli_vvd_gain = 0.0
 
-        	#-----------------------------------------------------------------------------------
-        	# Defaults for horizontal velocity PIDs
-        	#-----------------------------------------------------------------------------------
-        	cli_hvp_gain = 0.5
-        	cli_hvi_gain = 0.3
-        	cli_hvd_gain = 0.1
+		#-----------------------------------------------------------------------------------
+		# Defaults for horizontal velocity PIDs
+		#-----------------------------------------------------------------------------------
+		cli_hvp_gain = 0.5
+		cli_hvi_gain = 0.3
+		cli_hvd_gain = 0.1
 
-        	#-----------------------------------------------------------------------------------
-        	# Defaults for pitch rate PIDs
-        	#-----------------------------------------------------------------------------------
-        	cli_prp_gain = 110.0
-        	cli_pri_gain = 0.0
-        	cli_prd_gain = 0.0
+		#-----------------------------------------------------------------------------------
+		# Defaults for pitch rate PIDs
+		#-----------------------------------------------------------------------------------
+		cli_prp_gain = 110.0
+		cli_pri_gain = 0.0
+		cli_prd_gain = 0.0
 
-        	#-----------------------------------------------------------------------------------
-        	# Defaults for roll rate PIDs
-        	#-----------------------------------------------------------------------------------
-        	cli_rrp_gain = 95.0
-        	cli_rri_gain = 0.0
-        	cli_rrd_gain = 0.0
+		#-----------------------------------------------------------------------------------
+		# Defaults for roll rate PIDs
+		#-----------------------------------------------------------------------------------
+		cli_rrp_gain = 95.0
+		cli_rri_gain = 0.0
+		cli_rrd_gain = 0.0
 
-        elif i_am_chloe:
-        	cli_hover_target = 550
+	elif i_am_chloe:
+		cli_hover_target = 550
 
-        	#-----------------------------------------------------------------------------------
-        	# Defaults for vertical velocity PIDs
-        	#-----------------------------------------------------------------------------------
-        	cli_vvp_gain = 300.0
-        	cli_vvi_gain = 150.0
-        	cli_vvd_gain = 0.0
+		#-----------------------------------------------------------------------------------
+		# Defaults for vertical velocity PIDs
+		#-----------------------------------------------------------------------------------
+		cli_vvp_gain = 300.0
+		cli_vvi_gain = 150.0
+		cli_vvd_gain = 0.0
 
-        	#-----------------------------------------------------------------------------------
-        	# Defaults for horizontal velocity PIDs
-        	#-----------------------------------------------------------------------------------
-        	cli_hvp_gain = 0.5
-        	cli_hvi_gain = 0.3
-        	cli_hvd_gain = 0.1
+		#-----------------------------------------------------------------------------------
+		# Defaults for horizontal velocity PIDs
+		#-----------------------------------------------------------------------------------
+		cli_hvp_gain = 0.5
+		cli_hvi_gain = 0.3
+		cli_hvd_gain = 0.1
 
-        	#-----------------------------------------------------------------------------------
-        	# Defaults for pitch rate PIDs
-        	#-----------------------------------------------------------------------------------
-        	cli_prp_gain = 110.0
-        	cli_pri_gain = 0.0
-        	cli_prd_gain = 0.0
+		#-----------------------------------------------------------------------------------
+		# Defaults for pitch rate PIDs
+		#-----------------------------------------------------------------------------------
+		cli_prp_gain = 110.0
+		cli_pri_gain = 0.0
+		cli_prd_gain = 0.0
 
-        	#-----------------------------------------------------------------------------------
-        	# Defaults for roll rate PIDs
-        	#-----------------------------------------------------------------------------------
-        	cli_rrp_gain = 95.0
-        	cli_rri_gain = 0.0
-        	cli_rrd_gain = 0.0
+		#-----------------------------------------------------------------------------------
+		# Defaults for roll rate PIDs
+		#-----------------------------------------------------------------------------------
+		cli_rrp_gain = 95.0
+		cli_rri_gain = 0.0
+		cli_rrd_gain = 0.0
 
 	#-----------------------------------------------------------------------------------
 	# Other configuration defaults
@@ -1261,13 +1261,13 @@ i_am_chloe = False
 my_name = os.uname()[1]
 if my_name == "phoebe.local":
 	print "Hi, I'm Phoebe. Nice to meet you!"
-        i_am_phoebe = True
+	i_am_phoebe = True
 elif my_name == "chloe.local":
 	print "Hi, I'm Chloe.  Nice to meet you!"
-        i_am_chloe = True
+	i_am_chloe = True
 else:
-        print "Sorry, I'm not qualified to run the quadcopter code."
-        sys.exit(0)
+	print "Sorry, I'm not qualified to run the quadcopter code."
+	sys.exit(0)
 
 #-------------------------------------------------------------------------------------------
 # Lock code permanently in memory - no swapping to disk
@@ -1295,13 +1295,13 @@ mlockall()
 RPIO_DMA_CHANNEL = 1
 
 if i_am_phoebe:
-        RPIO_STATUS_SOUNDER = 27
-        RPIO_DATA_READY_INTERRUPT = 24
-        RPIO_THERMOSTAT_PWM = 25
+	RPIO_STATUS_SOUNDER = 27
+	RPIO_DATA_READY_INTERRUPT = 24
+	RPIO_THERMOSTAT_PWM = 25
 elif i_am_chloe:
-        RPIO_STATUS_SOUNDER = 27
-        RPIO_DATA_READY_INTERRUPT = 25
-        RPIO_THERMOSTAT_PWM = 26
+	RPIO_STATUS_SOUNDER = 27
+	RPIO_DATA_READY_INTERRUPT = 25
+	RPIO_THERMOSTAT_PWM = 26
 
 
 #-------------------------------------------------------------------------------------------
@@ -1353,15 +1353,15 @@ signal.signal(signal.SIGINT, SignalHandler)
 # Set up the ESC to GPIO pin and location mappings and assign to each ESC
 #-------------------------------------------------------------------------------------------
 if i_am_phoebe:
-        ESC_BCM_BL = 22
-        ESC_BCM_FL = 17
-        ESC_BCM_FR = 18
-        ESC_BCM_BR = 23
+	ESC_BCM_BL = 22
+	ESC_BCM_FL = 17
+	ESC_BCM_FR = 18
+	ESC_BCM_BR = 23
 elif i_am_chloe:
-        ESC_BCM_BL = 23
-        ESC_BCM_FL = 18
-        ESC_BCM_FR = 17
-        ESC_BCM_BR = 22
+	ESC_BCM_BL = 23
+	ESC_BCM_FL = 18
+	ESC_BCM_FR = 17
+	ESC_BCM_BR = 22
 
 MOTOR_LOCATION_FRONT = 0b00000001
 MOTOR_LOCATION_BACK =  0b00000010
@@ -1425,7 +1425,7 @@ MPU6050_TEMP_TARGET = 1180
 mpu6050.readSensors()
 
 PID_TEMP_P_GAIN = 1.0
-PID_TEMP_I_GAIN = 0.01
+PID_TEMP_I_GAIN = 0.02
 PID_TEMP_D_GAIN = 0.00
 
 temp_pid = PID(PID_TEMP_P_GAIN, PID_TEMP_I_GAIN, PID_TEMP_D_GAIN, time_now)
@@ -1433,11 +1433,11 @@ heater = HEATER(RPIO_THERMOSTAT_PWM)
 
 #------------------------------------------------------------------------------------------
 # Using a temperature rolling average (tra), bring the running temperature of the sensors to
-# a constance 30oC
+# a constance 40oC
 #------------------------------------------------------------------------------------------
 if (temp_now - MPU6050_TEMP_TARGET) > 340:
-        logger.critical("Sorry, too warm to fly (%foC)", temp_now / 340 + 36.53)
-        CleanShutdown()
+	logger.critical("Sorry, too warm to fly (%foC)", temp_now / 340 + 36.53)
+	CleanShutdown()
 
 logger.critical("Just warning up...")
 tra_log_time = time_now
@@ -1454,7 +1454,7 @@ while True:
 	tra_prev_temp = tra_temp
 
 	#-----------------------------------------------------------------------------------
-	# Rolling average of temperature until it stabilizes at the target 340 = 1oC
+	# Rolling average of temperature until it stabilizes at the target 34 = 0.1oC
 	#-----------------------------------------------------------------------------------
 	if time_now - tra_log_time > 1.0:
 		logger.critical("temp %f", temp_now / 340 + 36.53)
@@ -1527,8 +1527,6 @@ logger.critical("efrgv_x: %f  efrgv: %f  efrgv_z: = %f", efrgv_x, efrgv_y, efrgv
 #-------------------------------------------------------------------------------------------
 prev_c_pitch = pitch
 prev_c_roll = roll
-i_pitch = pitch
-i_roll = roll
 i_yaw = 0.0
 
 #-------------------------------------------------------------------------------------------
@@ -1696,7 +1694,7 @@ qgx_integrated = 0.0
 qgy_integrated = 0.0
 qgz_integrated = 0.0
 
-prev_qax, prev_qay, prev_qaz, prev_qgx, prev_qgy, prev_qgz = mpu6050.readSensors()
+mpu6050.readSensors()
 [p_out, i_out, d_out] = temp_pid.Compute(temp_now, MPU6050_TEMP_TARGET, time_now)
 temp_out = p_out + i_out + d_out
 heater.update(temp_out)
@@ -1744,21 +1742,13 @@ while keep_looping:
 	# Integration: Sensor data is integrated over time, and later averaged to produce
 	# smoother yet still accurate acceleration and rotation since the last PID updates.
 	#===================================================================================
-	qgx_integrated += (prev_qgx + qgx) * delta_time
-	qgy_integrated += (prev_qgy + qgy) * delta_time
-	qgz_integrated += (prev_qgz + qgz) * delta_time
+	qgx_integrated += qgx * delta_time
+	qgy_integrated += qgy * delta_time
+	qgz_integrated += qgz * delta_time
 
-	prev_qgx = qgx
-	prev_qgy = qgy
-	prev_qgz = qgz
-
-	qax_integrated += (prev_qax + qax) * delta_time
-	qay_integrated += (prev_qay + qay) * delta_time
-	qaz_integrated += (prev_qaz + qaz) * delta_time
-
-	prev_qax = qax
-	prev_qay = qay
-	prev_qaz = qaz
+	qax_integrated += qax * delta_time
+	qay_integrated += qay * delta_time
+	qaz_integrated += qaz * delta_time
 
 	#===================================================================================
 	# Motion Processing:  Use the recorded data to produce motion data and feed in the motion PIDs
@@ -1775,13 +1765,13 @@ while keep_looping:
 		#---------------------------------------------------------------------------
 		# Sort out units and the double accounting in integration.
 		#---------------------------------------------------------------------------
-		qgx_integrated *= SCALE_GYRO / 2
-		qgy_integrated *= SCALE_GYRO / 2
-		qgz_integrated *= SCALE_GYRO / 2
+		qgx_integrated *= SCALE_GYRO
+		qgy_integrated *= SCALE_GYRO
+		qgz_integrated *= SCALE_GYRO
 
-		qax_integrated *= SCALE_ACCEL / 2
-		qay_integrated *= SCALE_ACCEL / 2
-		qaz_integrated *= SCALE_ACCEL / 2
+		qax_integrated *= SCALE_ACCEL
+		qay_integrated *= SCALE_ACCEL
+		qaz_integrated *= SCALE_ACCEL
 
 		#---------------------------------------------------------------------------
 		# Convert the integrated gyroscope reading back to an averaged gyroscope reading
@@ -1802,8 +1792,6 @@ while keep_looping:
 		#===========================================================================
 		e_pitch, e_roll = GetAngles(qax, qay, qaz)
 
-		i_pitch += qgy_integrated
-		i_roll += qgx_integrated
 		i_yaw += qgz_integrated
 
 		#---------------------------------------------------------------------------
@@ -1888,9 +1876,9 @@ while keep_looping:
 		#===========================================================================
 		# Temperaure PID: maintain a constant temperature for reading other sensors
 		#===========================================================================
-	        if math.fabs(temp_now - MPU6050_TEMP_TARGET) > 340:
-                        logger.critical("Flight temperature range exceeded, abort");
-                        keep_looping = False
+		if math.fabs(temp_now - MPU6050_TEMP_TARGET) > 340:
+			logger.critical("Flight temperature range exceeded, abort");
+			keep_looping = False
 
 		[p_out, i_out, d_out] = temp_pid.Compute(temp_now, MPU6050_TEMP_TARGET, time_now)
 		temp_diags = "%f, %f, %f" % (p_out, i_out, d_out)
@@ -2002,7 +1990,7 @@ while keep_looping:
 		# Diagnostic log - every motion loop
 		#---------------------------------------------------------------------------
 		if diagnostics:
-			logger.warning('%f, %f, %d, %f, %d, %s, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %s, %f, %s, %d, %f, %f, %s, %f, %s, %d, %f, %f, %s, %d, %f, %s, %d, %d, %d, %d, %d', elapsed_time, integration_period, loop_count, temp_now / 340 + 36.53, temp_now, temp_diags, qgx, qgy, qgz, efrgv_x, efrgv_y, efrgv_z, qax, qay, qaz, qfrgv_x, qfrgv_y, qfrgv_z, qvx_input, qvy_input, qvz_input, math.degrees(i_pitch), math.degrees(i_roll), math.degrees(e_pitch), math.degrees(e_roll), math.degrees(c_pitch), math.degrees(c_roll), math.degrees(i_yaw), evx_target, qvx_target, qvx_diags, math.degrees(pr_target), pr_diags, pr_out, evy_target, qvy_target, qvy_diags, math.degrees(rr_target), rr_diags, rr_out, evz_target, qvz_target, qvz_diags, qvz_out, yr_target, yr_diags, yr_out, esc_list[0].pulse_width, esc_list[1].pulse_width, esc_list[2].pulse_width, esc_list[3].pulse_width)
+			logger.warning('%f, %f, %d, %f, %d, %s, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %s, %f, %s, %d, %f, %f, %s, %f, %s, %d, %f, %f, %s, %d, %f, %s, %d, %d, %d, %d, %d', elapsed_time, integration_period, loop_count, temp_now / 340 + 36.53, temp_now, temp_diags, qgx, qgy, qgz, efrgv_x, efrgv_y, efrgv_z, qax, qay, qaz, qfrgv_x, qfrgv_y, qfrgv_z, qvx_input, qvy_input, qvz_input, math.degrees(e_pitch), math.degrees(e_roll), math.degrees(c_pitch), math.degrees(c_roll), math.degrees(i_yaw), evx_target, qvx_target, qvx_diags, math.degrees(pr_target), pr_diags, pr_out, evy_target, qvy_target, qvy_diags, math.degrees(rr_target), rr_diags, rr_out, evz_target, qvz_target, qvz_diags, qvz_out, yr_target, yr_diags, yr_out, esc_list[0].pulse_width, esc_list[1].pulse_width, esc_list[2].pulse_width, esc_list[3].pulse_width)
 
 
 #-------------------------------------------------------------------------------------------
