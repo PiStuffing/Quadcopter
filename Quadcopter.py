@@ -1,16 +1,16 @@
 #!/usr/bin/env python
 
-###############################################################################################
-###############################################################################################
-##                                                                                           ##
-## Hove's Raspberry Pi Python Quadcopter Flight Controller.  Open Source @ GitHub            ##
-## PiStuffing/Quadcopter under GPL for non-commercial application.  Any code derived from    ##
-## this should retain this copyright comment.                                                ##
-##                                                                                           ##
-## Copyright 2014 Andy Baker (Hove) - andy@pistuffing.co.uk                                  ##
-##                                                                                           ##
-###############################################################################################
-###############################################################################################
+####################################################################################################
+####################################################################################################
+##                                                                                                ##
+## Hove's Raspberry Pi Python Quadcopter Flight Controller.  Open Source @ GitHub                 ##
+## PiStuffing/Quadcopter under GPL for non-commercial application.  Any code derived from         ##
+## this should retain this copyright comment.                                                     ##
+##                                                                                                ##
+## Copyright 2014 Andy Baker (Hove) - andy@pistuffing.co.uk                                       ##
+##                                                                                                ##
+####################################################################################################
+####################################################################################################
 
 from __future__ import division
 import signal
@@ -38,11 +38,11 @@ import ctypes
 from ctypes.util import find_library
 import random
 
-############################################################################################
+####################################################################################################
 #
 #  Adafruit i2c interface enhanced with performance / error handling enhancements
 #
-############################################################################################
+####################################################################################################
 class I2C:
 
 	def __init__(self, address, bus=smbus.SMBus(1)):
@@ -67,11 +67,9 @@ class I2C:
 		while True:
 			try:
 				self.bus.write_byte_data(self.address, reg, value)
-				logger.debug('I2C: Wrote 0x%02X to register 0x%02X', value, reg)
 				break
 			except IOError, err:
 				self.misses += 1
-				logger.exception('Error %d, %s accessing 0x%02X: Check your I2C address', err.errno, err.strerror, self.address)
 				time.sleep(0.0001)
 
 	def writeList(self, reg, list):
@@ -82,7 +80,6 @@ class I2C:
 				break
 			except IOError, err:
 				self.misses += 1
-				logger.exception('Error %d, %s accessing 0x%02X: Check your I2C address', err.errno, err.strerror, self.address)
 				time.sleep(0.0001)
 
 	def readU8(self, reg):
@@ -90,11 +87,9 @@ class I2C:
 		while True:
 			try:
 				result = self.bus.read_byte_data(self.address, reg)
-				logger.debug('I2C: Device 0x%02X returned 0x%02X from reg 0x%02X', self.address, result & 0xFF, reg)
 				return result
 			except IOError, err:
 				self.misses += 1
-				logger.exception('Error %d, %s accessing 0x%02X: Check your I2C address', err.errno, err.strerror, self.address)
 				time.sleep(0.0001)
 
 	def readS8(self, reg):
@@ -102,14 +97,12 @@ class I2C:
 		while True:
 			try:
 				result = self.bus.read_byte_data(self.address, reg)
-				logger.debug('I2C: Device 0x%02X returned 0x%02X from reg 0x%02X', self.address, result & 0xFF, reg)
 				if (result > 127):
 					return result - 256
 				else:
 					return result
 			except IOError, err:
 				self.misses += 1
-				logger.exception('Error %d, %s accessing 0x%02X: Check your I2C address', err.errno, err.strerror, self.address)
 				time.sleep(0.0001)
 
 	def readU16(self, reg):
@@ -118,15 +111,12 @@ class I2C:
 			try:
 				hibyte = self.bus.read_byte_data(self.address, reg)
 				result = (hibyte << 8) + self.bus.read_byte_data(self.address, reg+1)
-				logger.debug('I2C: Device 0x%02X returned 0x%04X from reg 0x%02X', self.address, result & 0xFFFF, reg)
 				if result == 0x7FFF or result == 0x8000:
-					logger.critical('I2C read max value')
 					time.sleep(0.0005)
 				else:
 					return result
 			except IOError, err:
 				self.misses += 1
-				logger.exception('Error %d, %s accessing 0x%02X: Check your I2C address', err.errno, err.strerror, self.address)
 				time.sleep(0.0001)
 
 	def readS16(self, reg):
@@ -137,15 +127,12 @@ class I2C:
 				if (hibyte > 127):
 					hibyte -= 256
 				result = (hibyte << 8) + self.bus.read_byte_data(self.address, reg+1)
-				logger.debug('I2C: Device 0x%02X returned 0x%04X from reg 0x%02X', self.address, result & 0xFFFF, reg)
 				if result == 0x7FFF or result == 0x8000:
-					logger.critical('I2C read max value')
 					time.sleep(0.0005)
 				else:
 					return result
 			except IOError, err:
 				self.misses += 1
-				logger.exception('Error %d, %s accessing 0x%02X: Check your I2C address', err.errno, err.strerror, self.address)
 				time.sleep(0.0001)
 				
 	def readList(self, reg, length):
@@ -153,22 +140,20 @@ class I2C:
 		while True:
 			try:
 				result = self.bus.read_i2c_block_data(self.address, reg, length)
-				logger.debug('I2C: Device 0x%02X from reg 0x%02X', self.address, reg)
 				return result
 			except IOError, err:
 				self.misses += 1
-				logger.exception('Error %d, %s accessing 0x%02X: Check your I2C address', err.errno, err.strerror, self.address)
 				time.sleep(0.0001)
 
 	def getMisses(self):
 		return self.misses
 
 
-############################################################################################
+####################################################################################################
 #
 #  Gyroscope / Accelerometer class for reading position / movement
 #
-############################################################################################
+####################################################################################################
 class MPU6050 :
 	i2c = None
 
@@ -297,13 +282,13 @@ class MPU6050 :
 		self.gy_offset = 0.0
 		self.gz_offset = 0.0
 
-		#---------------------------------------------------------------------------
+		#-----------------------------------------------------------------------------------
 		# These values are derived from the last calibration run.
-		#---------------------------------------------------------------------------
+		#-----------------------------------------------------------------------------------
 
-		#--------------------------------------------------------------------------
+		#-----------------------------------------------------------------------------------
 		# No calibration
-		#--------------------------------------------------------------------------
+		#-----------------------------------------------------------------------------------
 		self.ax_offset = 0.0
 		self.ax_gain = 1.0
 		self.ay_offset = 0.0
@@ -312,9 +297,9 @@ class MPU6050 :
 		self.az_gain = 1.0
 
 		if i_am_phoebe:
-			#--------------------------------------------------------------------------
+			#---------------------------------------------------------------------------
 			# Phoebe @ dlpf 6, 1180 / 40oC
-			#--------------------------------------------------------------------------
+			#---------------------------------------------------------------------------
 			self.ax_offset = 46.28
 			self.ax_gain = 0.99328514
 			self.ay_offset = 78.58
@@ -331,33 +316,33 @@ class MPU6050 :
 			self.az_gain = 0.986795348
 
 		logger.info('Reseting MPU-6050')
-		#---------------------------------------------------------------------------
+		#-----------------------------------------------------------------------------------
 		# Ensure chip has completed boot
-		#---------------------------------------------------------------------------
+		#-----------------------------------------------------------------------------------
 		time.sleep(0.5)
 
-		#---------------------------------------------------------------------------
+		#-----------------------------------------------------------------------------------
 		# Reset all registers
-		#---------------------------------------------------------------------------
+		#-----------------------------------------------------------------------------------
 		logger.debug('Reset all registers')
 		self.i2c.write8(self.__MPU6050_RA_PWR_MGMT_1, 0x80)
 		time.sleep(5.0)
 	
-		#---------------------------------------------------------------------------
+		#-----------------------------------------------------------------------------------
 		# Sets sample rate to 1kHz/1+0 = 1kHz or 1ms
-		#---------------------------------------------------------------------------
+		#-----------------------------------------------------------------------------------
 		logger.debug('Sample rate 1kHz')
-		self.i2c.write8(self.__MPU6050_RA_SMPLRT_DIV, 0x0)
+		self.i2c.write8(self.__MPU6050_RA_SMPLRT_DIV, 0)
 		time.sleep(0.1)
 	
-		#---------------------------------------------------------------------------
+		#-----------------------------------------------------------------------------------
 		# Sets clock source to gyro reference w/ PLL
-		#---------------------------------------------------------------------------
+		#-----------------------------------------------------------------------------------
 		logger.debug('Clock gyro PLL')
 		self.i2c.write8(self.__MPU6050_RA_PWR_MGMT_1, 0x02)
 		time.sleep(0.1)
 
-		#---------------------------------------------------------------------------
+		#-----------------------------------------------------------------------------------
 		# Disable FSync, Use of DLPF => 1kHz sample frequency used above divided by the
 		# sample divide factor.
 		# 0x01 = 180Hz
@@ -366,55 +351,55 @@ class MPU6050 :
 		# 0x04 =  20Hz
 		# 0x05 =  10Hz
 		# 0x06 =   5Hz
-		#---------------------------------------------------------------------------
+		#-----------------------------------------------------------------------------------
 		logger.debug('configurable DLPF to filter out non-gravitational acceleration for Euler')
 		self.i2c.write8(self.__MPU6050_RA_CONFIG, dlpf)
 		time.sleep(0.1)
 	
-		#---------------------------------------------------------------------------
+		#-----------------------------------------------------------------------------------
 		# Disable gyro self tests, scale of
 		# 0x00 =  +/- 250 degrees/s
 		# 0x08 =  +/- 500 degrees/s
 		# 0x10 = +/- 1000 degrees/s
 		# 0x18 = +/- 2000 degrees/s
 		# See SCALE_GYRO for converstion from raw data to units of radians per second
-		#---------------------------------------------------------------------------
+		#-----------------------------------------------------------------------------------
 		# int(math.log(degrees / 250, 2)) << 3
 		logger.debug('Gyro +/-250 degrees/s')
 		self.i2c.write8(self.__MPU6050_RA_GYRO_CONFIG, 0x00)
 		time.sleep(0.1)
 	
-		#---------------------------------------------------------------------------
+		#-----------------------------------------------------------------------------------
 		# Disable accel self tests, scale of +/-2g
 		# 0x00 =  +/- 2g
 		# 0x08 =  +/- 4g
 		# 0x10 =  +/- 8g
 		# 0x18 = +/- 16g
 		# See SCALE_ACCEL for convertion from raw data to units of meters per second squared
-		#---------------------------------------------------------------------------
+		#-----------------------------------------------------------------------------------
 		# int(math.log(g / 2, 2)) << 3
 
 		logger.debug('Accel +/- 2g')
 		self.i2c.write8(self.__MPU6050_RA_ACCEL_CONFIG, 0x00)
 		time.sleep(0.1)
 
-		#---------------------------------------------------------------------------
+		#-----------------------------------------------------------------------------------
 		# Setup INT pin to latch and AUX I2C pass through
-		#---------------------------------------------------------------------------
+		#-----------------------------------------------------------------------------------
 		logger.debug('Enable interrupt')
 		self.i2c.write8(self.__MPU6050_RA_INT_PIN_CFG, 0x10) # 0x10 for edge detection, 0x20 for polling
 		time.sleep(0.1)
 	
-		#---------------------------------------------------------------------------
+		#-----------------------------------------------------------------------------------
 		# Enable data ready interrupt
-		#---------------------------------------------------------------------------
+		#-----------------------------------------------------------------------------------
 		logger.debug('Interrupt data ready')
 		self.i2c.write8(self.__MPU6050_RA_INT_ENABLE, 0x01)
 		time.sleep(0.1)
 
-		#---------------------------------------------------------------------------
+		#-----------------------------------------------------------------------------------
 		# Check DLPF programming has worked.
-		#---------------------------------------------------------------------------
+		#-----------------------------------------------------------------------------------
 		check_dlpf = self.i2c.readU8(self.__MPU6050_RA_CONFIG)
 		if check_dlpf != dlpf:
 			logger.critical("dlpf_check = %d, dlpf_config = %d", dlpf_check, dlpf_config);
@@ -425,22 +410,22 @@ class MPU6050 :
 		global time_now
 		global temp_now
 
-		#---------------------------------------------------------------------------
+		#-----------------------------------------------------------------------------------
 		# Wait for the data ready interrupt
-		#---------------------------------------------------------------------------
+		#-----------------------------------------------------------------------------------
 		RPIO.edge_detect_wait(RPIO_DATA_READY_INTERRUPT)
 
-		#---------------------------------------------------------------------------
-		# For speed of reading, read all the sensors and parse to SHORTs after.  This
-		# also ensures a self consistent set of sensor data compared to reading each
-		# individually where the sensor data registers could be updated between reads.
-		#---------------------------------------------------------------------------
+		#-----------------------------------------------------------------------------------
+		# For speed of reading, read all the sensors and parse to SHORTs after.  This also
+		# ensures a self consistent set of sensor data compared to reading each individually
+		# where the sensor data registers could be updated between reads.
+		#-----------------------------------------------------------------------------------
 		sensor_data = self.i2c.readList(self.__MPU6050_RA_ACCEL_XOUT_H, 14)
 
-		#---------------------------------------------------------------------------
+		#-----------------------------------------------------------------------------------
 		# Time stamp the data for the best integration possible in the main
 		# processing loop
-		#---------------------------------------------------------------------------
+		#-----------------------------------------------------------------------------------
 		time_now = time.time()
 
 		for index in range(0, 14, 2):
@@ -448,10 +433,10 @@ class MPU6050 :
 				sensor_data[index] -= 256
 			self.result_array[int(index / 2)] = (sensor_data[index] << 8) + sensor_data[index + 1]
 
-		#---------------------------------------------------------------------------
+		#-----------------------------------------------------------------------------------
 		# +/- 2g 2 * 16 bit range for the accelerometer
 		# +/- 250 degrees per second * 16 bit range for the gyroscope - converted to radians
-		#---------------------------------------------------------------------------
+		#-----------------------------------------------------------------------------------
 		[ax, ay, az, temp_now, gx, gy, gz] = self.result_array
 
 		qax = (float(ax) + self.ax_offset) * self.ax_gain
@@ -507,9 +492,9 @@ class MPU6050 :
 
 		temp = temp_now / 340 + 36.53
 
-		#---------------------------------------------------------------------------
+		#-----------------------------------------------------------------------------------
 		# Open the offset config file
-		#---------------------------------------------------------------------------
+		#-----------------------------------------------------------------------------------
 		cfg_rc = True
 		try:
 			with open(file_name, 'a') as cfg_file:
@@ -533,12 +518,12 @@ class MPU6050 :
 		
 
 
-############################################################################################
+####################################################################################################
 #
 # PID algorithm to take input sensor readings, and target requirements, and
 # as a result feedback new rotor speeds.
 #
-############################################################################################
+####################################################################################################
 class PID:
 
 	def __init__(self, p_gain, i_gain, d_gain, now):
@@ -555,83 +540,83 @@ class PID:
 	def Compute(self, input, target, now):
 		dt = (now - self.last_time)
 
-		#---------------------------------------------------------------------------
+		#-----------------------------------------------------------------------------------
 		# Error is what the PID alogithm acts upon to derive the output
-		#---------------------------------------------------------------------------
+		#-----------------------------------------------------------------------------------
 		error = target - input
 
-		#---------------------------------------------------------------------------
+		#-----------------------------------------------------------------------------------
 		# The proportional term takes the distance between current input and target
 		# and uses this proportially (based on Kp) to control the ESC pulse width
-		#---------------------------------------------------------------------------
+		#-----------------------------------------------------------------------------------
 		p_error = error
 
-		#---------------------------------------------------------------------------
+		#-----------------------------------------------------------------------------------
 		# The integral term sums the errors across many compute calls to allow for
 		# external factors like wind speed and friction
-		#---------------------------------------------------------------------------
+		#-----------------------------------------------------------------------------------
 		self.i_error += (error + self.last_error) * dt
 		i_error = self.i_error
 
-		#---------------------------------------------------------------------------
+		#-----------------------------------------------------------------------------------
 		# The differential term accounts for the fact that as error approaches 0,
 		# the output needs to be reduced proportionally to ensure factors such as
 		# momentum do not cause overshoot.
-		#---------------------------------------------------------------------------
+		#-----------------------------------------------------------------------------------
 		d_error = (error - self.last_error) / dt
 
-		#---------------------------------------------------------------------------
+		#-----------------------------------------------------------------------------------
 		# The overall output is the sum of the (P)roportional, (I)ntegral and (D)iffertial terms
-		#---------------------------------------------------------------------------
+		#-----------------------------------------------------------------------------------
 		p_output = self.p_gain * p_error
 		i_output = self.i_gain * i_error
 		d_output = self.d_gain * d_error
 
-		#---------------------------------------------------------------------------
+		#-----------------------------------------------------------------------------------
 		# Store off last input for the next differential calculation and time for next integral calculation
-		#---------------------------------------------------------------------------
+		#-----------------------------------------------------------------------------------
 		self.last_error = error
 		self.last_time = now
 
-		#---------------------------------------------------------------------------
+		#-----------------------------------------------------------------------------------
 		# Return the output, which has been tuned to be the increment / decrement in ESC PWM
-		#---------------------------------------------------------------------------
+		#-----------------------------------------------------------------------------------
 		return p_output, i_output, d_output
 
-############################################################################################
+####################################################################################################
 #
 #  Class for managing each blade + motor configuration via its ESC
 #
-############################################################################################
+####################################################################################################
 class ESC:
 
 	def __init__(self, pin, location, rotation, name):
-		#---------------------------------------------------------------------------
+		#-----------------------------------------------------------------------------------
 		# The GPIO BCM numbered pin providing PWM signal for this ESC
-		#---------------------------------------------------------------------------
+		#-----------------------------------------------------------------------------------
 		self.bcm_pin = pin
 
-		#---------------------------------------------------------------------------
+		#-----------------------------------------------------------------------------------
 		# Physical parameters of the ESC / motors / propellers
-		#---------------------------------------------------------------------------
+		#-----------------------------------------------------------------------------------
 		self.motor_location = location
 		self.motor_rotation = rotation
 		
-		#---------------------------------------------------------------------------
+		#-----------------------------------------------------------------------------------
 		# Initialize the RPIO DMa PWM for this ESC in microseconds - 1ms - 2ms of
 		# pulse widths with 3ms carrier.
-		#---------------------------------------------------------------------------
+		#-----------------------------------------------------------------------------------
 		self.min_pulse_width = 1000
 		self.max_pulse_width = 2000
 
-		#---------------------------------------------------------------------------
+		#-----------------------------------------------------------------------------------
 		# The PWM pulse range required by this ESC
-		#---------------------------------------------------------------------------
+		#-----------------------------------------------------------------------------------
 		self.pulse_width = self.min_pulse_width
 
-		#---------------------------------------------------------------------------
+		#-----------------------------------------------------------------------------------
 		# Initialize the RPIO DMA PWM for this ESC.
-		#---------------------------------------------------------------------------
+		#-----------------------------------------------------------------------------------
 		PWM.add_channel_pulse(RPIO_DMA_CHANNEL, self.bcm_pin, 0, self.pulse_width)
 
 
@@ -646,34 +631,34 @@ class ESC:
 		PWM.add_channel_pulse(RPIO_DMA_CHANNEL, self.bcm_pin, 0, self.pulse_width)
 
 
-############################################################################################
+####################################################################################################
 #
 #  Class for managing each blade + motor configuration via its ESC
 #
-############################################################################################
+####################################################################################################
 class HEATER:
 
 	def __init__(self, pin):
-		#---------------------------------------------------------------------------
+		#-----------------------------------------------------------------------------------
 		# The GPIO BCM numbered pin providing PWM signal for this ESC
-		#---------------------------------------------------------------------------
+		#-----------------------------------------------------------------------------------
 		self.bcm_pin = pin
 
-		#---------------------------------------------------------------------------
+		#-----------------------------------------------------------------------------------
 		# Initialize the RPIO DMA PWM for the THERMOSTAT in microseconds - full range
 		# of pulse widths for 3ms carrier.
-		#---------------------------------------------------------------------------
+		#-----------------------------------------------------------------------------------
 		self.min_pulse_width = 0
 		self.max_pulse_width = 2999
 
-		#---------------------------------------------------------------------------
+		#-----------------------------------------------------------------------------------
 		# The PWM pulse range required by this ESC
-		#---------------------------------------------------------------------------
+		#-----------------------------------------------------------------------------------
 		pulse_width = self.min_pulse_width
 
-		#---------------------------------------------------------------------------
+		#-----------------------------------------------------------------------------------
 		# Initialize the RPIO DMA PWM for the THERMOSTAT.
-		#---------------------------------------------------------------------------
+		#-----------------------------------------------------------------------------------
 		PWM.add_channel_pulse(RPIO_DMA_CHANNEL, self.bcm_pin, 0, pulse_width)
 
 	def update(self, temp_out):
@@ -687,32 +672,62 @@ class HEATER:
 		PWM.add_channel_pulse(RPIO_DMA_CHANNEL, self.bcm_pin, 0, pulse_width)
 
 		
-############################################################################################
+####################################################################################################
 #
-# Angles required to convert between Earth (interal reference frame) and Quadcopter (body
-# reference frame).
+# Angles required to convert between Earth (interal reference frame) and Quadcopter (body # reference
+# frame).
 #
 # This is used for reorientating gravity into the quad frame to calculated quad frame velocities
 #
-############################################################################################
+####################################################################################################
 def GetEulerAngles(ax, ay, az):
-	#---------------------------------------------------------------------------
+	#-------------------------------------------------------------------------------------------
 	# What's the angle in the x and y plane from horizontal in radians?
-	#---------------------------------------------------------------------------
+	#-------------------------------------------------------------------------------------------
 	pitch = math.atan2(ax, math.pow(math.pow(ay, 2) + math.pow(az, 2), 0.5))
 	roll = math.atan2(ay, az)
+	tilt = math.atan2(math.pow(math.pow(ax, 2) + math.pow(ay, 2), 0.5), az)
 
-	return pitch, roll
+	return pitch, roll, tilt
 
 
-############################################################################################
+####################################################################################################
+#
+# Convert a body frame gyro rotation rate to Euler frame rotation
+#
+####################################################################################################
+def Body2EulerRates(qgy, qgx, qgz, pa, ra):
+	#===========================================================================================
+	# Axes: Convert a set of gyro body frame rotation rates into Euler frames
+	#
+	# Matrix
+	# ---------
+	# |err|   | 1 ,  sin(ra) * tan(pa) , cos(ra) * tan(pa) | |qgx|
+	# |epr| = | 0 ,  cos(ra)           ,     -sin(ra)      | |qgy|
+	# |eyr|   | 0 ,  sin(ra) / cos(pa) , cos(ra) / cos(pa) | |qgz|
+	#
+	#===========================================================================================
+	c_pa = math.cos(pa)
+	t_pa = math.tan(-pa)
+	c_ra = math.cos(ra)
+	s_ra = math.sin(ra)
+
+	err = qgx + qgy * s_ra * t_pa + qgz * c_ra * t_pa
+	epr =       qgy * c_ra        - qgz * s_ra
+	eyr =       qgy * s_ra / c_pa + qgz * c_ra / c_pa
+
+	return epr, err, eyr
+
+
+
+####################################################################################################
 #
 # Convert a vector to quadcopter-frame coordinates from earth-frame coordinates
 #
-############################################################################################
+####################################################################################################
 def E2QFrame(evx, evy, evz, pa, ra, ya):
 
-	#===================================================================================
+	#===========================================================================================
 	# Axes: Convert a vector from earth- to quadcopter frame
 	#
 	# Matrix
@@ -721,7 +736,7 @@ def E2QFrame(evx, evy, evz, pa, ra, ya):
 	# |qvy| = | sin(ra) * sin(pa) * cos(ya) - cos(ra) * sin(ya),   sin(ra) * sin(pa) * sin(ya) + cos(ra) * cos(ya),  sin(ra) * cos(pa)| |evy|
 	# |qvz|   | cos(ra) * sin(pa) * cos(ya) + sin(ra) * sin(ya),   cos(ra) * sin(pa) * sin(ya) - sin(ra) * cos(ya),  cos(pa) * cos(ra)| |evz|
 	#
-	#===================================================================================
+	#===========================================================================================
 	c_pa = math.cos(pa)
 	s_pa = math.sin(-pa)
 	c_ra = math.cos(ra)
@@ -736,11 +751,11 @@ def E2QFrame(evx, evy, evz, pa, ra, ya):
 	return qvx, qvy, qvz
 
 
-############################################################################################
+####################################################################################################
 #
 # Convert a vector to earth-frame coordingates from quadcopter-frame coordinates.
 #
-############################################################################################
+####################################################################################################
 def Q2EFrame(qvx, qvy, qvz, pa, ra, ya):
 
 	#==================================================================================
@@ -831,11 +846,11 @@ def Q2EFrame(qvx, qvy, qvz, pa, ra, ya):
 	return evx, evy, evz
 
 
-############################################################################################
+####################################################################################################
 #
 # GPIO pins initialization for MPU6050 interrupt, sounder and hardware PWM
 #
-############################################################################################
+####################################################################################################
 def RpioSetup():
 	RPIO.setmode(RPIO.BCM)
 
@@ -853,22 +868,22 @@ def RpioSetup():
 	PWM.setup(1)                                    # 1us resolution pulses
 	PWM.init_channel(RPIO_DMA_CHANNEL, 3000)        # pulse every 3ms
 
-############################################################################################
+####################################################################################################
 #
 # GPIO pins cleanup for MPU6050 interrupt, sounder and hardware PWM
 #
-############################################################################################
+####################################################################################################
 def RpioCleanup():
 	PWM.cleanup()
 	RPIO.edge_detect_term(RPIO_DATA_READY_INTERRUPT)
 	RPIO.cleanup()
 
 
-############################################################################################
+####################################################################################################
 #
 # Check CLI validity, set calibrate_sensors / fly or sys.exit(1)
 #
-############################################################################################
+####################################################################################################
 def CheckCLI(argv):
 	cli_fly = False
 	cli_calibrate_gravity = False
@@ -881,20 +896,20 @@ def CheckCLI(argv):
 		# Defaults for vertical velocity PIDs
 		#-----------------------------------------------------------------------------------
 		cli_vvp_gain = 300.0
-		cli_vvi_gain = 150.0
+		cli_vvi_gain = 60.0
 		cli_vvd_gain = 0.0
 
 		#-----------------------------------------------------------------------------------
 		# Defaults for horizontal velocity PIDs
 		#-----------------------------------------------------------------------------------
-		cli_hvp_gain = 2.0
-		cli_hvi_gain = 1.0
-		cli_hvd_gain = 0.5
+		cli_hvp_gain = 0.5
+		cli_hvi_gain = 0.1
+		cli_hvd_gain = 0.005
 
 		#-----------------------------------------------------------------------------------
 		# Defaults for pitch rate PIDs
 		#-----------------------------------------------------------------------------------
-		cli_prp_gain = 110.0
+		cli_prp_gain = 90.0
 		cli_pri_gain = 0.0
 		cli_prd_gain = 0.0
 
@@ -911,8 +926,8 @@ def CheckCLI(argv):
 		#-----------------------------------------------------------------------------------
 		# Defaults for vertical velocity PIDs
 		#-----------------------------------------------------------------------------------
-		cli_vvp_gain = 300.0
-		cli_vvi_gain = 100.0
+		cli_vvp_gain = 250.0
+		cli_vvi_gain = 50.0
 		cli_vvd_gain = 0.0
 
 		#-----------------------------------------------------------------------------------
@@ -925,25 +940,26 @@ def CheckCLI(argv):
 		#-----------------------------------------------------------------------------------
 		# Defaults for pitch rate PIDs
 		#-----------------------------------------------------------------------------------
-		cli_prp_gain = 90
+		cli_prp_gain = 75.0
 		cli_pri_gain = 0.0
 		cli_prd_gain = 0.0
 
 		#-----------------------------------------------------------------------------------
 		# Defaults for roll rate PIDs
 		#-----------------------------------------------------------------------------------
-		cli_rrp_gain = 75.0
+		cli_rrp_gain = 60.0
 		cli_rri_gain = 0.0
 		cli_rrd_gain = 0.0
 
-	#-----------------------------------------------------------------------------------
+	#-------------------------------------------------------------------------------------------
 	# Other configuration defaults
-	#-----------------------------------------------------------------------------------
+	#-------------------------------------------------------------------------------------------
 	cli_test_case = 0
-	cli_dlpf = 6
+	cli_dlpf = 4
 	cli_diagnostics = False
-	cli_motion_frequency = 37
+	cli_motion_frequency = 43
 	cli_rtf_period = 1.0
+	cli_tau = 0.5
 
 	hover_target_defaulted = True
 	no_drift_control = False
@@ -954,14 +970,14 @@ def CheckCLI(argv):
 	rri_set = False
 	rrd_set = False
 
-	#-----------------------------------------------------------------------------------
+	#-------------------------------------------------------------------------------------------
 	# Right, let's get on with reading the command line and checking consistency
-	#-----------------------------------------------------------------------------------
+	#-------------------------------------------------------------------------------------------
 	try:
-		opts, args = getopt.getopt(argv,'dfgvh:m:r:', ['tc=', 'vvp=', 'vvi=', 'vvd=', 'hvp=', 'hvi=', 'hvd=', 'prp=', 'pri=', 'prd=', 'rrp=', 'rri=', 'rrd=', 'dlpf='])
+		opts, args = getopt.getopt(argv,'dfgvh:m:r:t:', ['tc=', 'vvp=', 'vvi=', 'vvd=', 'hvp=', 'hvi=', 'hvd=', 'prp=', 'pri=', 'prd=', 'rrp=', 'rri=', 'rrd=', 'dlpf='])
 	except getopt.GetoptError:
 		logger.critical('Must specify one of -f or -g or --tc')
-		logger.critical('  qcpi.py
+		logger.critical('  qcpi.py')
 		logger.critical('  -f set whether to fly')
 		logger.critical('  -h set the hover speed for manual testing')
 		logger.critical('  -g calibrate gravity against temperature, save and end')
@@ -969,6 +985,7 @@ def CheckCLI(argv):
 		logger.critical('  -v video the flight')
 		logger.critical('  -m ??  set motion processing update frequency')
 		logger.critical('  -r ??  set the ready-to-fly period')
+		logger.critical('  -t ??  set the -3dB point of the complementary filter')
 		logger.critical('  --vvp  set vertical speed PID P gain')
 		logger.critical('  --vvi  set vertical speed PID P gain')
 		logger.critical('  --vvd  set vertical speed PID P gain')
@@ -1007,6 +1024,9 @@ def CheckCLI(argv):
 
 		elif opt in '-r':
 			cli_rtf_period = float(arg)
+	
+		elif opt in '-t':
+			cli_tau = float(arg)
 	
 		elif opt in '--vvp':
 			cli_vvp_gain = float(arg)
@@ -1080,9 +1100,9 @@ def CheckCLI(argv):
 		logger.critical('Choose a specific test case (--tc) or fly (-f) or calibrate gravity (-g)')
 		sys.exit(2)
 
-	#---------------------------------------------------------------------------------------
+	#-------------------------------------------------------------------------------------------
 	# Test case 1: Check all the blades work and spin in the right direction
-	#---------------------------------------------------------------------------------------
+	#-------------------------------------------------------------------------------------------
 	elif cli_test_case != 1:
 		logger.critical('Only testcase 1 is valid')
 		sys.exit(2)
@@ -1092,73 +1112,73 @@ def CheckCLI(argv):
 		sys.exit(2)
 
 
-	return cli_calibrate_gravity, cli_fly, cli_hover_target, cli_video, cli_vvp_gain, cli_vvi_gain, cli_vvd_gain, cli_hvp_gain, cli_hvi_gain, cli_hvd_gain, cli_prp_gain, cli_pri_gain, cli_prd_gain, cli_rrp_gain, cli_rri_gain, cli_rrd_gain, cli_test_case, cli_dlpf, cli_motion_frequency, cli_rtf_period, cli_diagnostics
+	return cli_calibrate_gravity, cli_fly, cli_hover_target, cli_video, cli_vvp_gain, cli_vvi_gain, cli_vvd_gain, cli_hvp_gain, cli_hvi_gain, cli_hvd_gain, cli_prp_gain, cli_pri_gain, cli_prd_gain, cli_rrp_gain, cli_rri_gain, cli_rrd_gain, cli_test_case, cli_dlpf, cli_motion_frequency, cli_rtf_period, cli_tau, cli_diagnostics
 
-############################################################################################
+####################################################################################################
 #
 # Shutdown triggered by early Ctrl-C or end of script
 #
-############################################################################################
+####################################################################################################
 def CleanShutdown():
 	
-	#-----------------------------------------------------------------------------------
+	#-------------------------------------------------------------------------------------------
 	# Stop the signal handler
-	#-----------------------------------------------------------------------------------
+	#-------------------------------------------------------------------------------------------
 	signal.signal(signal.SIGINT, signal.SIG_IGN)
 
-	#-----------------------------------------------------------------------------------
+	#-------------------------------------------------------------------------------------------
 	# Stop the blades spinning
-	#-----------------------------------------------------------------------------------
+	#-------------------------------------------------------------------------------------------
 	for esc in esc_list:
 		esc.update(0)
 
-	#-----------------------------------------------------------------------------------
+	#-------------------------------------------------------------------------------------------
 	# Stop the heater
-	#-----------------------------------------------------------------------------------
+	#-------------------------------------------------------------------------------------------
 	heater.update(0)
 
-	#-----------------------------------------------------------------------------------
+	#-------------------------------------------------------------------------------------------
 	# Stop the video if it's running
-	#-----------------------------------------------------------------------------------
+	#-------------------------------------------------------------------------------------------
 	if shoot_video:
 		video.send_signal(signal.SIGINT)
 
-	#-----------------------------------------------------------------------------------
+	#-------------------------------------------------------------------------------------------
 	# Record MPU6050 / i2c bus data misses.
-	#-----------------------------------------------------------------------------------
+	#-------------------------------------------------------------------------------------------
 	mpu6050_misses, i2c_misses = mpu6050.getMisses()
 	logger.critical("mpu6050 %d misses, i2c %d misses", mpu6050_misses, i2c_misses)
 
-	#-----------------------------------------------------------------------------------
+	#-------------------------------------------------------------------------------------------
 	# Copy logs from /dev/shm (shared / virtual memory) to the Logs directory.
-	#-----------------------------------------------------------------------------------
+	#-------------------------------------------------------------------------------------------
 	now = datetime.now()
 	now_string = now.strftime("%y%m%d-%H:%M:%S")
 	log_file_name = "qcstats" + now_string + ".csv"
 	shutil.move("/dev/shm/qclogs", log_file_name)
 
-	#-----------------------------------------------------------------------------------
+	#-------------------------------------------------------------------------------------------
 	# Clean up PWM / GPIO
-	#-----------------------------------------------------------------------------------
+	#-------------------------------------------------------------------------------------------
 	RpioCleanup()
 
-	#-----------------------------------------------------------------------------------
+	#-------------------------------------------------------------------------------------------
 	# Unlock memory we've used from RAM
-	#-----------------------------------------------------------------------------------
+	#-------------------------------------------------------------------------------------------
 	munlockall()
 
-	#-----------------------------------------------------------------------------------
+	#-------------------------------------------------------------------------------------------
 	# Reset the signal handler to default
-	#-----------------------------------------------------------------------------------
+	#-------------------------------------------------------------------------------------------
 	signal.signal(signal.SIGINT, signal.SIG_DFL)
 
 	sys.exit(0)
 
-############################################################################################
+####################################################################################################
 #
 # Signal handler for Ctrl-C => abort cleanly
 #
-############################################################################################
+####################################################################################################
 def SignalHandler(signal, frame):
 	global keep_looping
 
@@ -1167,16 +1187,16 @@ def SignalHandler(signal, frame):
 	else:
 		CleanShutdown()
 
-############################################################################################
+####################################################################################################
 #
 # Flight plan management
 #
-############################################################################################
+####################################################################################################
 class FlightPlan:
 
-	#-----------------------------------------------------------------------------------
+	#-------------------------------------------------------------------------------------------
 	# The flight plan - move to file at some point
-	#-----------------------------------------------------------------------------------
+	#-------------------------------------------------------------------------------------------
 	fp_evx_target  = [0.0,       0.0,       0.0,       0.0,       0.0]
 	fp_evy_target  = [0.0,       0.0,       0.0,       0.0,       0.0]
 	fp_evz_target  = [0.0,       0.5,       0.0,      -0.5,       0.0]
@@ -1214,38 +1234,37 @@ class FlightPlan:
 
 		return evx_target, evy_target, evz_target
 
-############################################################################################
+####################################################################################################
 #
 # Functions to lock memory to prevent paging
 #
-############################################################################################
+####################################################################################################
 MCL_CURRENT = 1
 MCL_FUTURE  = 2
 def mlockall(flags = MCL_CURRENT| MCL_FUTURE):
-        libc_name = ctypes.util.find_library("c")
-        libc = ctypes.CDLL(libc_name, use_errno=True)
+	libc_name = ctypes.util.find_library("c")
+	libc = ctypes.CDLL(libc_name, use_errno=True)
 	result = libc.mlockall(flags)
 	if result != 0:
 		raise Exception("cannot lock memmory, errno=%s" % ctypes.get_errno())
 
 def munlockall():
-        libc_name = ctypes.util.find_library("c")
-        libc = ctypes.CDLL(libc_name, use_errno=True)
+	libc_name = ctypes.util.find_library("c")
+	libc = ctypes.CDLL(libc_name, use_errno=True)
 	result = libc.munlockall()
 	if result != 0:
 		raise Exception("cannot lock memmory, errno=%s" % ctypes.get_errno())
 
-############################################################################################
+####################################################################################################
 #
 # Main
 #
-############################################################################################
-
+####################################################################################################
 def go():
 
-	#-----------------------------------------------------------------------------------
+	#-------------------------------------------------------------------------------------------
 	# Global variables
-	#-----------------------------------------------------------------------------------
+	#-------------------------------------------------------------------------------------------
 	global logger
 	global keep_looping
 	global time_now
@@ -1259,36 +1278,36 @@ def go():
 	global heater
 	global mpu6050
 
-	#-----------------------------------------------------------------------------------
+	#-------------------------------------------------------------------------------------------
 	# Global constants
-	#-----------------------------------------------------------------------------------
+	#-------------------------------------------------------------------------------------------
 	global RPIO_DATA_READY_INTERRUPT
 	global RPIO_DMA_CHANNEL
 
-        #-----------------------------------------------------------------------------------
-        # Who am I?
-        #-----------------------------------------------------------------------------------
-        i_am_phoebe = False
-        i_am_chloe = False
-        my_name = os.uname()[1]
-        if my_name == "phoebe.local":
-                print "Hi, I'm Phoebe. Nice to meet you!"
-                i_am_phoebe = True
-        elif my_name == "chloe.local":
-                print "Hi, I'm Chloe.  Nice to meet you!"
-                i_am_chloe = True
-        else:
-                print "Sorry, I'm not qualified to run the quadcopter code."
-                sys.exit(0)
+	#-------------------------------------------------------------------------------------------
+	# Who am I?
+	#-------------------------------------------------------------------------------------------
+	i_am_phoebe = False
+	i_am_chloe = False
+	my_name = os.uname()[1]
+	if my_name == "phoebe.local":
+		print "Hi, I'm Phoebe. Nice to meet you!"
+		i_am_phoebe = True
+	elif my_name == "chloe.local":
+		print "Hi, I'm Chloe.  Nice to meet you!"
+		i_am_chloe = True
+	else:
+		print "Sorry, I'm not qualified to fly this quadcopter."
+		sys.exit(0)
 
-	#-----------------------------------------------------------------------------------
+	#-------------------------------------------------------------------------------------------
 	# Lock code permanently in memory - no swapping to disk
-	#-----------------------------------------------------------------------------------
+	#-------------------------------------------------------------------------------------------
 	mlockall()
 
-	#-----------------------------------------------------------------------------------
+	#-------------------------------------------------------------------------------------------
 	# Set the BCM output / intput assigned to LED and sensor interrupt respectively
-	#-----------------------------------------------------------------------------------
+	#-------------------------------------------------------------------------------------------
 	RPIO_DMA_CHANNEL = 1
 
 	if i_am_phoebe:
@@ -1298,54 +1317,54 @@ def go():
 		RPIO_DATA_READY_INTERRUPT = 25
 		RPIO_THERMOSTAT_PWM = 26
 
-	#-----------------------------------------------------------------------------------
+	#-------------------------------------------------------------------------------------------
 	# Set up the base logging
-	#-----------------------------------------------------------------------------------
+	#-------------------------------------------------------------------------------------------
 	logger = logging.getLogger('QC logger')
 	logger.setLevel(logging.INFO)
 
-	#-----------------------------------------------------------------------------------
+	#-------------------------------------------------------------------------------------------
 	# Create file and console logger handlers - the file is written into shared memory and only
 	# dumped to disk / SD card at the end of a flight for performance reasons
-	#-----------------------------------------------------------------------------------
+	#-------------------------------------------------------------------------------------------
 	file_handler = logging.FileHandler("/dev/shm/qclogs", 'w')
 	file_handler.setLevel(logging.WARNING)
 
 	console_handler = logging.StreamHandler()
 	console_handler.setLevel(logging.CRITICAL)
 
-	#-----------------------------------------------------------------------------------
+	#-------------------------------------------------------------------------------------------
 	# Create a formatter and add it to both handlers
-	#-----------------------------------------------------------------------------------
+	#-------------------------------------------------------------------------------------------
 	console_formatter = logging.Formatter('%(message)s')
 	console_handler.setFormatter(console_formatter)
 
 	file_formatter = logging.Formatter('[%(levelname)s] (%(threadName)-10s) %(funcName)s %(lineno)d, %(message)s')
 	file_handler.setFormatter(file_formatter)
 
-	#-----------------------------------------------------------------------------------
+	#-------------------------------------------------------------------------------------------
 	# Add both handlers to the logger
-	#-----------------------------------------------------------------------------------
+	#-------------------------------------------------------------------------------------------
 	logger.addHandler(console_handler)
 	logger.addHandler(file_handler)
 
-	#-----------------------------------------------------------------------------------
+	#-------------------------------------------------------------------------------------------
 	# Enable RPIO for beeper, MPU 6050 interrupts and PWM.  This must be set up prior to adding
 	# the SignalHandler below or it will overwrite what we set thus killing the "Kill Switch"..
-	#-----------------------------------------------------------------------------------
+	#-------------------------------------------------------------------------------------------
 	RpioSetup()
 
-	#-----------------------------------------------------------------------------------
+	#-------------------------------------------------------------------------------------------
 	# Set the signal handler here so the core processing loop can be stopped (or not started) by
 	# Ctrl-C.
-	#-----------------------------------------------------------------------------------
+	#-------------------------------------------------------------------------------------------
 	loop_count = 0
 	keep_looping = True
 	signal.signal(signal.SIGINT, SignalHandler)
 
-	#-----------------------------------------------------------------------------------
+	#-------------------------------------------------------------------------------------------
 	# Set up the ESC to GPIO pin and location mappings and assign to each ESC
-	#-----------------------------------------------------------------------------------
+	#-------------------------------------------------------------------------------------------
 	if i_am_phoebe:
 		ESC_BCM_BL = 5
 		ESC_BCM_FL = 27
@@ -1370,41 +1389,41 @@ def go():
 	rotation_list = [MOTOR_ROTATION_ACW, MOTOR_ROTATION_CW, MOTOR_ROTATION_CW, MOTOR_ROTATION_ACW]
 	name_list = ['front left', 'front right', 'back left', 'back right']
 
-	#-----------------------------------------------------------------------------------
+	#-------------------------------------------------------------------------------------------
 	# Prime the ESCs with the default 0 spin rotors to shut them up.
-	#-----------------------------------------------------------------------------------
+	#-------------------------------------------------------------------------------------------
 	esc_list = []
 	for esc_index in range(0, 4):
 		esc = ESC(pin_list[esc_index], location_list[esc_index], rotation_list[esc_index], name_list[esc_index])
 		esc_list.append(esc)
 
-	#-----------------------------------------------------------------------------------
+	#-------------------------------------------------------------------------------------------
 	# Check the command line for calibration or flight parameters
-	#-----------------------------------------------------------------------------------
-	calibrate_gravity, flying, hover_target, shoot_video, vvp_gain, vvi_gain, vvd_gain, hvp_gain, hvi_gain, hvd_gain, prp_gain, pri_gain, prd_gain, rrp_gain, rri_gain, rrd_gain, test_case, dlpf, motion_frequency, rtf_period, diagnostics = CheckCLI(sys.argv[1:])
-	logger.warning("calibrate_gravity = %s, fly = %s, hover_target = %d, shoot_video = %s, vvp_gain = %f, vvi_gain = %f, vvd_gain= %f, hvp_gain = %f, hvi_gain = %f, hvd_gain = %f, prp_gain = %f, pri_gain = %f, prd_gain = %f, rrp_gain = %f, rri_gain = %f, rrd_gain = %f, test_case = %d, dlpf = %d, motion_frequency = %f, rtf_period = %f, diagnostics = %s", calibrate_gravity, flying, hover_target, shoot_video, vvp_gain, vvi_gain, vvd_gain, hvp_gain, hvi_gain, hvd_gain, prp_gain, pri_gain, prd_gain, rrp_gain, rri_gain, rrd_gain, test_case, dlpf, motion_frequency, rtf_period, diagnostics)
+	#-------------------------------------------------------------------------------------------
+	calibrate_gravity, flying, hover_target, shoot_video, vvp_gain, vvi_gain, vvd_gain, hvp_gain, hvi_gain, hvd_gain, prp_gain, pri_gain, prd_gain, rrp_gain, rri_gain, rrd_gain, test_case, dlpf, motion_frequency, rtf_period, tau, diagnostics = CheckCLI(sys.argv[1:])
+	logger.warning("calibrate_gravity = %s, fly = %s, hover_target = %d, shoot_video = %s, vvp_gain = %f, vvi_gain = %f, vvd_gain= %f, hvp_gain = %f, hvi_gain = %f, hvd_gain = %f, prp_gain = %f, pri_gain = %f, prd_gain = %f, rrp_gain = %f, rri_gain = %f, rrd_gain = %f, test_case = %d, dlpf = %d, motion_frequency = %f, rtf_period = %f, tau = %f, diagnostics = %s", calibrate_gravity, flying, hover_target, shoot_video, vvp_gain, vvi_gain, vvd_gain, hvp_gain, hvi_gain, hvd_gain, prp_gain, pri_gain, prd_gain, rrp_gain, rri_gain, rrd_gain, test_case, dlpf, motion_frequency, rtf_period, tau, diagnostics)
 
-	#-----------------------------------------------------------------------------------
+	#-------------------------------------------------------------------------------------------
 	# Initialize the motion processing period
-	#-----------------------------------------------------------------------------------
+	#-------------------------------------------------------------------------------------------
 	motion_period = 1 / motion_frequency
 
-	#-----------------------------------------------------------------------------------
+	#-------------------------------------------------------------------------------------------
 	# Set up the global constants
 	# - gravity in meters per second squared
 	# - accelerometer in g's
 	# - gyroscope in radians per second
-	#-----------------------------------------------------------------------------------
+	#-------------------------------------------------------------------------------------------
 	GRAV_ACCEL = 9.80665
 	SCALE_GYRO = 500.0 * math.pi / (65536 * 180)
 	SCALE_ACCEL = 4.0 / 65536
 
-	#-----------------------------------------------------------------------------------
+	#-------------------------------------------------------------------------------------------
 	# Initialize the gyroscope / accelerometer I2C object
-	#-----------------------------------------------------------------------------------
+	#-------------------------------------------------------------------------------------------
 	mpu6050 = MPU6050(0x68, dlpf)
 
-	#===================================================================================
+	#===========================================================================================
 	# Initialize the heater and loop waiting until we have a stable temperature of 40 degrees
 	#     t(oC) = t(raw) / 340 + 36.53
 	#
@@ -1412,28 +1431,27 @@ def go():
 	#     40oC  =  1180
 	#     50oC  =  4580
 	#
-	#===================================================================================
+	#===========================================================================================
 	MPU6050_TEMP_TARGET = 1180
 	mpu6050.readSensors()
 
-	PID_TEMP_P_GAIN = 0.1
-	PID_TEMP_I_GAIN = 0.005
-	PID_TEMP_D_GAIN = 0.00
+	PID_TEMP_P_GAIN = 0.75
+	PID_TEMP_I_GAIN = 0.01
+	PID_TEMP_D_GAIN = 0.001
 
 	temp_pid = PID(PID_TEMP_P_GAIN, PID_TEMP_I_GAIN, PID_TEMP_D_GAIN, time_now)
 	heater = HEATER(RPIO_THERMOSTAT_PWM)
 
-	#-----------------------------------------------------------------------------------
-	# Using a temperature rolling average (tra), bring the running temperature of the sensors to
-	# a constance 40oC
-	#-----------------------------------------------------------------------------------
+	#-------------------------------------------------------------------------------------------
+	# Bring the running temperature of the sensors to
+	# a constant 40oC
+	#-------------------------------------------------------------------------------------------
 	if (temp_now - MPU6050_TEMP_TARGET) > 340:
 		logger.critical("Sorry, too warm to fly (%foC)", temp_now / 340 + 36.53)
 		CleanShutdown()
 
 	logger.critical("Just warning up...")
-	tra_log_time = time_now
-	tra_prev_temp = temp_now
+	last_temp_log = time_now
 
 	while True:
 		time.sleep(0.1)
@@ -1442,44 +1460,45 @@ def go():
 		temp_out = p_out + i_out + d_out
 		heater.update(temp_out)
 
-		tra_temp = 0.8 * tra_prev_temp + 0.2 * temp_now
-		tra_prev_temp = tra_temp
-
-		#---------------------------------------------------------------------------
+		#-----------------------------------------------------------------------------------
 		# Rolling average of temperature until it stabilizes at the target 34 = 0.1oC
-		#---------------------------------------------------------------------------
-		if time_now - tra_log_time > 1.0:
+		#-----------------------------------------------------------------------------------
+		if time_now - last_temp_log > 1.0:
 			logger.critical("temp %f", temp_now / 340 + 36.53)
-			tra_log_time += 1.0
-		if math.fabs(tra_temp - MPU6050_TEMP_TARGET) < 34:
+			last_temp_log += 1.0
+		if math.fabs(temp_now - MPU6050_TEMP_TARGET) < 34:
 			break
 
-	#===================================================================================
+	#===========================================================================================
 	# From this point on, at every read of the sensors, take the opportunity to maintain the
 	# stable temperature of the MPU6050 core.
-	#===================================================================================
+	#===========================================================================================
 
-	#-----------------------------------------------------------------------------------
+	#-------------------------------------------------------------------------------------------
 	# Calibrate gravity at the now stabilized temperature.
-	#-----------------------------------------------------------------------------------
+	#-------------------------------------------------------------------------------------------
 	if calibrate_gravity:
 		mpu6050.calibrateGravity("./qcoffsets.csv")
 		CleanShutdown()
 
-	#-----------------------------------------------------------------------------------
+	#-------------------------------------------------------------------------------------------
 	# Calibrate gyros - this is a one-off
-	#-----------------------------------------------------------------------------------
+	#-------------------------------------------------------------------------------------------
 	mpu6050.calibrateGyros()
 	[p_out, i_out, d_out] = temp_pid.Compute(temp_now, MPU6050_TEMP_TARGET, time_now)
 	temp_out = p_out + i_out + d_out
 	heater.update(temp_out)
 
-	#-----------------------------------------------------------------------------------
+	#-------------------------------------------------------------------------------------------
 	# Measure average gravity distribution across the quadframe
-	#-----------------------------------------------------------------------------------
-	qax_averaged = 0.0
-	qay_averaged = 0.0
-	qaz_averaged = 0.0
+	#-------------------------------------------------------------------------------------------
+	qax_integrated = 0.0
+	qay_integrated = 0.0
+	qaz_integrated = 0.0
+
+	elapsed_time = 0.0
+	start_time = time_now
+	integration_start = time_now
 
 	for iteration in range(0, 50):
 		qax, qay, qaz, qgx, qgy, qgz = mpu6050.readSensors()
@@ -1487,49 +1506,52 @@ def go():
 		temp_out = p_out + i_out + d_out
 		heater.update(temp_out)
 
-		qax_averaged += qax
-		qay_averaged += qay
-		qaz_averaged += qaz
+		delta_time = time_now - start_time - elapsed_time
+		elapsed_time = time_now - start_time
 
-	#-----------------------------------------------------------------------------------
+		qax_integrated += qax * delta_time
+		qay_integrated += qay * delta_time
+		qaz_integrated += qaz * delta_time
+
+	#-------------------------------------------------------------------------------------------
 	# Work out the average acceleration due to gravity in the quad reference frame
-	#-----------------------------------------------------------------------------------
-	qfrgv_x = qax_averaged * SCALE_ACCEL / 50
-	qfrgv_y = qay_averaged * SCALE_ACCEL / 50
-	qfrgv_z = qaz_averaged * SCALE_ACCEL / 50
+	#-------------------------------------------------------------------------------------------
+	qax = qax_integrated * SCALE_ACCEL / elapsed_time
+	qay = qay_integrated * SCALE_ACCEL / elapsed_time
+	qaz = qaz_integrated * SCALE_ACCEL / elapsed_time
 
-	#-----------------------------------------------------------------------------------
+	#-------------------------------------------------------------------------------------------
 	# Get the take-off platform slope
-	#-----------------------------------------------------------------------------------
-	pitch, roll = GetEulerAngles(qfrgv_x, qfrgv_y, qfrgv_z)
+	#-------------------------------------------------------------------------------------------
+	pa, ra, ta = GetEulerAngles(qax, qay, qaz)
+	ya = 0.0
 
-	#-----------------------------------------------------------------------------------
+	#-------------------------------------------------------------------------------------------
 	# Now rotate the quadframe gravity to earth axes.  This is used later to subtract gravity
 	# from total measured acceleration to get net acceleration associated with movement.  Note
-	# that gravity doesn't yaw.
-	#-----------------------------------------------------------------------------------
-	logger.critical("pitch %f, roll %f", math.degrees(pitch), math.degrees(roll))
-	logger.critical("qfrgv_x: %f  qfrgv_y: %f  qfrgv_z: = %f", qfrgv_x, qfrgv_y, qfrgv_z)
+	# that gravity doesn't yaw when sitting still on the ground!
+	#-------------------------------------------------------------------------------------------
+	logger.critical("pitch %f, roll %f", math.degrees(pa), math.degrees(ra))
+	logger.critical("quad frame gravity: x = %f, y = %f, z = %f", qax, qay, qaz)
 
-	efrgv_x, efrgv_y, efrgv_z = Q2EFrame(qfrgv_x, qfrgv_y, qfrgv_z, pitch, roll, 0.0)
-	logger.critical("efrgv_x: %f  efrgv: %f  efrgv_z: = %f", efrgv_x, efrgv_y, efrgv_z)
+	eax, eay, eaz = Q2EFrame(qax, qay, qaz, pa, ra, 0.0)
+	logger.critical("earth frame gravity: x = %f, y = %f, z: = %f", eax, eay, eaz)
 
-	#-----------------------------------------------------------------------------------
-	# Although the X and Y calibrated values of gravity are both 0 as expected, Z seems to be a
-	# bit variable, and it seems to work better set to the value it should be to get the right
-	# level of acceleration.
-	#-----------------------------------------------------------------------------------
-	# efrgv_z = 1.0
+	#-------------------------------------------------------------------------------------------
+	# Clean up calibration
+	#-------------------------------------------------------------------------------------------
+	qgx_integrated = 0.0
+	qgy_integrated = 0.0
+	qgz_integrated = 0.0
 
-	#-----------------------------------------------------------------------------------
-	# Initialize yaw as we cannot measure it at this stage.
-	#-----------------------------------------------------------------------------------
-	i_yaw = 0.0
+	qax_integrated = 0.0
+	qay_integrated = 0.0
+	qaz_integrated = 0.0
 
-	#-----------------------------------------------------------------------------------
+	#-------------------------------------------------------------------------------------------
 	# Start up the video camera if required - this runs from take-off through to shutdown automatically.
 	# Run it in its own process group so that Ctrl-C for QC doesn't get through and stop the video
-	#-----------------------------------------------------------------------------------
+	#-------------------------------------------------------------------------------------------
 	def Daemonize():
 		os.setpgrp()
 
@@ -1538,10 +1560,9 @@ def go():
 		now_string = now.strftime("%y%m%d-%H:%M:%S")
 		video = subprocess.Popen(["raspivid", "-rot", "180", "-w", "1280", "-h", "720", "-o", "/home/pi/Videos/qcvid_" + now_string + ".h264", "-n", "-t", "0", "-fps", "30", "-b", "5000000"], preexec_fn =  Daemonize)
 
-	#-----------------------------------------------------------------------------------
+	#-------------------------------------------------------------------------------------------
 	# Set up the bits of state setup before takeoff
-	#-----------------------------------------------------------------------------------
-
+	#-------------------------------------------------------------------------------------------
 	evx_target = 0.0
 	evy_target = 0.0
 	evz_target = 0.0
@@ -1566,143 +1587,115 @@ def go():
 	hover_speed = 0
 	ready_to_fly = False
 
-	#-----------------------------------------------------------------------------------
-	# START TESTCASE 1 CODE: spin up each blade individually for 10s each and check they all turn the right way
-	#-----------------------------------------------------------------------------------
+	#-------------------------------------------------------------------------------------------
+	# START TESTCASE 1 CODE: spin up each blade individually for 10s each and check they all turn
+	#                        the right way
+	#-------------------------------------------------------------------------------------------
 	if test_case == 1:
 		for esc in esc_list:
 			for count in range(0, hover_target, 10):
-				#-----------------------------------------------------------
+				#-------------------------------------------------------------------
 				# Spin up to user determined (-h) hover speeds ~200
-				#-----------------------------------------------------------
+				#-------------------------------------------------------------------
 				esc.update(count)
 				time.sleep(0.01)
 			time.sleep(10.0)
 			esc.update(0)
 		CleanShutdown()
-	#-----------------------------------------------------------------------------------
+	#-------------------------------------------------------------------------------------------
 	# END TESTCASE 1 CODE: spin up each blade individually for 10s each and check they all turn the right way
-	#-----------------------------------------------------------------------------------
+	#-------------------------------------------------------------------------------------------
 
-	#===================================================================================
+	#===========================================================================================
 	# Tuning: Set up the PID gains - some are hard coded mathematical approximations, some come
-	# from the CLI parameters to allow for tuning
-	#===================================================================================
-	# A PID is a simple algorithm which takes a desired state of a system (the "target", perhaps from a remote control)
-	# and the current state (the "input" or "feedback", perhaps from a sensor), subtracts them to determine the "error" in
-	# the system, and applies some simple math(s) to come up with a corrective "output". It does this repeatedly with the aim
-	# that the "error" reduces and is maintained at near zero due to the "feedback".
-	#
-	# This mechanism allows complex systems to be broken down and corrected even when a complete mathematical model of the
-	# system is too complicated or external factors mean the system cannot be modelled directly.
-	#
-	# In a quadcopter, the external targets (those a user control for flight) are horizontal and vertical speed plus tilt.
-	#
-	# - Horizontal speed error is corrected by providing the as the horizontal acceleration target
-	# - The horizontal acceleration target is converted to a required rotation rate
-	# - Rotation rate error is corrected proportionally by providing the corrective output to the motors' ESCs
-	#
-	# - Horizontal speed feedback is provided by integrated accelerometer (or GPS in future)
-	# - Angular speed feedback comes directly from the gyros
-	#
-	# That's 2 PIDs each for horizontal X & Y axes movement - 4 in total so far.
-	#
-	# - Vertical speed error is corrected proportionally by providing the corrective output to the motors' ESCs (cf. angular speed above)
-	#
-	# - Vertical speed feedback comes from the Z-axis accelerometer integrated over time, and compensated for any tilt (cos(theta)cos(phi))
-	#
-	# That's 1 PID for vertical Z axis speed control.
-	#
-	# - Yaw speed error is corrected proportionally by providing the corrective output to the motors' ESCs
-	#
-	# - Yaw speed feedback comes directly from the Z-axis gyro
-	#
-	# That's 2 PID for Z axis yaw control.
-	#
-	# So 7 PIDs in total
-	#===================================================================================
+	# from the CLI parameters to allow for tuning  - 7 in all
+	# - Quad X axis speed speed
+	# - Quad Y axis speed speed
+	# - Quad Z axis speed speed
+	# - Pitch rotation rate
+	# - Roll Rotation rate
+	# - Yaw angle
+	# = Yaw Rotation rate
+	# - Temperature
+	#===========================================================================================
 
-	#-----------------------------------------------------------------------------------
-	# The earth X axis speed controls forward / backward speed
-	#-----------------------------------------------------------------------------------
+	#-------------------------------------------------------------------------------------------
+	# The quad X axis speed controls forward / backward speed
+	#-------------------------------------------------------------------------------------------
 	PID_QVX_P_GAIN = hvp_gain
 	PID_QVX_I_GAIN = hvi_gain
 	PID_QVX_D_GAIN = hvd_gain	
 
-	#-----------------------------------------------------------------------------------
-	# The earth Y axis speed controls left / right speed
-	#-----------------------------------------------------------------------------------
+	#-------------------------------------------------------------------------------------------
+	# The quad Y axis speed controls left / right speed
+	#-------------------------------------------------------------------------------------------
 	PID_QVY_P_GAIN = hvp_gain
 	PID_QVY_I_GAIN = hvi_gain
 	PID_QVY_D_GAIN = hvd_gain	
 
-	#-----------------------------------------------------------------------------------
-	# The earth Z axis speed controls rise / fall speed
-	#-----------------------------------------------------------------------------------
+	#-------------------------------------------------------------------------------------------
+	# The quad Z axis speed controls rise / fall speed
+	#-------------------------------------------------------------------------------------------
 	PID_QVZ_P_GAIN = vvp_gain
 	PID_QVZ_I_GAIN = vvi_gain
 	PID_QVZ_D_GAIN = vvd_gain
 
-	#-----------------------------------------------------------------------------------
-	# The YAW ANGLE PID maintains a stable rotation angle about the Z-axis
-	#-----------------------------------------------------------------------------------
+	#-------------------------------------------------------------------------------------------
+	# The yaw angle PID maintains a stable rotation angle about the Z-axis
+	#-------------------------------------------------------------------------------------------
 	PID_YA_P_GAIN = 6.0
 	PID_YA_I_GAIN = 3.0
 	PID_YA_D_GAIN = 1.0
 
-	#-----------------------------------------------------------------------------------
-	# The PITCH RATE PID controls stable rotation rate around the Y-axis
-	#-----------------------------------------------------------------------------------
+	#-------------------------------------------------------------------------------------------
+	# The pitch rate PID controls stable rotation rate around the Y-axis
+	#-------------------------------------------------------------------------------------------
 	PID_PR_P_GAIN = prp_gain
 	PID_PR_I_GAIN = pri_gain
 	PID_PR_D_GAIN = prd_gain
 
-	#-----------------------------------------------------------------------------------
-	# The ROLL RATE PID controls stable rotation rate around the X-axis
-	#-----------------------------------------------------------------------------------
+	#-------------------------------------------------------------------------------------------
+	# The roll rate PID controls stable rotation rate around the X-axis
+	#-------------------------------------------------------------------------------------------
 	PID_RR_P_GAIN = rrp_gain
 	PID_RR_I_GAIN = rri_gain
 	PID_RR_D_GAIN = rrd_gain
 
-	#-----------------------------------------------------------------------------------
-	# The YAW RATE PID controls stable rotation speed around the Z-axis
-	#-----------------------------------------------------------------------------------
+	#-------------------------------------------------------------------------------------------
+	# The yaw rate PID controls stable rotation speed around the Z-axis
+	#-------------------------------------------------------------------------------------------
 	PID_YR_P_GAIN = rrp_gain / 2.0
 	PID_YR_I_GAIN = rri_gain / 2.0
 	PID_YR_D_GAIN = rrd_gain / 2.0
 
 	logger.critical('Thunderbirds are go!')
 
-	#-----------------------------------------------------------------------------------
+	#-------------------------------------------------------------------------------------------
 	# Diagnostic log header
-	#-----------------------------------------------------------------------------------
+	#-------------------------------------------------------------------------------------------
 	if diagnostics:
-		logger.warning('time, dt, loop, temp, temp_raw, tpp, tpi, tpd, qgx, qgy, qgz, efrgv_x, efrgv_y, efrgv_z, qax, qay, qaz, qfrgv_x, qfrgv_y, qfrgv_z, qvx_input, qvy_input, qvz_input, e pitch, e roll, i yaw, evx_target, qvx_target, qxp, qxi, qxd, pr_target, prp, pri, prd, pr_out, evy_yarget, qvy_target, qyp, qyi, qyd, rr_target, rrp, rri, rrd, rr_out, evz_target, qvz_target, qzp, qzi, qzd, qvz_out, yr_target, yrp, yri, yrd, yr_out, FL spin, FR spin, BL spin, BR spin')
+		logger.warning('time, dt, loop, temp, temp_raw, tpp, tpi, tpd, qgx, qgy, qgz, qax, qay, qaz, efrgv_x, efrgv_y, efrgv_z, qfrgv_x, qfrgv_y, qfrgv_z, qvx_input, qvy_input, qvz_input, epa, era, eta, pa, ra, ya, evx_target, qvx_target, qxp, qxi, qxd, pr_target, prp, pri, prd, pr_out, evy_yarget, qvy_target, qyp, qyi, qyd, rr_target, rrp, rri, rrd, rr_out, evz_target, qvz_target, qzp, qzi, qzd, qvz_out, yr_target, yrp, yri, yrd, yr_out, FL spin, FR spin, BL spin, BR spin')
 
-	#===================================================================================
+	#===========================================================================================
 	# Initialize critical timing immediately before starting the PIDs.  This is done by reading
 	# the sensors, and that also gives us a starting position of the rolling average from.
-	#===================================================================================
-	qax_rave, qay_rave, qaz_rave, qgx_rave, qgy_rave, qgz_rave = mpu6050.readSensors()
-	[p_out, i_out, d_out] = temp_pid.Compute(temp_now, MPU6050_TEMP_TARGET, time_now)
-	temp_out = p_out + i_out + d_out
-	heater.update(temp_out)
+	#===========================================================================================
 
-	#-----------------------------------------------------------------------------------
+	#-------------------------------------------------------------------------------------------
 	# Start the yaw absolute angle PID
-	#-----------------------------------------------------------------------------------
+	#-------------------------------------------------------------------------------------------
 	ya_pid = PID(PID_YA_P_GAIN, PID_YA_I_GAIN, PID_YA_D_GAIN, time_now)
 
-	#-----------------------------------------------------------------------------------
+	#-------------------------------------------------------------------------------------------
 	# Start the pitch, roll and yaw rate PIDs
-	#-----------------------------------------------------------------------------------
+	#-------------------------------------------------------------------------------------------
 	pr_pid = PID(PID_PR_P_GAIN, PID_PR_I_GAIN, PID_PR_D_GAIN, time_now)
 	rr_pid = PID(PID_RR_P_GAIN, PID_RR_I_GAIN, PID_RR_D_GAIN, time_now)
 	yr_pid = PID(PID_YR_P_GAIN, PID_YR_I_GAIN, PID_YR_D_GAIN, time_now)
 
-	#-----------------------------------------------------------------------------------
+	#-------------------------------------------------------------------------------------------
 	# Start the X, Y (horizontal) and Z (vertical) velocity PIDs
-	#-----------------------------------------------------------------------------------
+	#-------------------------------------------------------------------------------------------
 	qvx_pid = PID(PID_QVX_P_GAIN, PID_QVX_I_GAIN, PID_QVX_D_GAIN, time_now)
 	qvy_pid = PID(PID_QVY_P_GAIN, PID_QVY_I_GAIN, PID_QVY_D_GAIN, time_now)
 	qvz_pid = PID(PID_QVZ_P_GAIN, PID_QVZ_I_GAIN, PID_QVZ_D_GAIN, time_now)
@@ -1711,78 +1704,120 @@ def go():
 	start_time = time_now
 	last_motion_update = time_now
 	integration_start = time_now
+	last_temp_check = time_now
 
 	while keep_looping:
-		#===========================================================================
+		#===================================================================================
 		# Sensors: Read the sensor values; note that this also sets the time_now to be as
 		# accurate a time stamp for the sensor data as possible.
-		#===========================================================================
+		#===================================================================================
 		qax, qay, qaz, qgx, qgy, qgz = mpu6050.readSensors()
 
-		#---------------------------------------------------------------------------
+		#-----------------------------------------------------------------------------------
 		# Now we have the sensor snapshot, tidy up the rest of the variable so that processing
 		# takes zero time.
-		#---------------------------------------------------------------------------
+		#-----------------------------------------------------------------------------------
 		delta_time = time_now - start_time - elapsed_time
 		elapsed_time = time_now - start_time
 		loop_count += 1
 
-		#===========================================================================
+		#===================================================================================
 		# Integration: Sensor data is integrated over time, and later averaged to produce
 		# smoother yet still accurate acceleration and rotation since the last PID updates.
-		#===========================================================================
-		alpha = motion_period / (motion_period + delta_time)
+		#===================================================================================
 
-		qax_rave = alpha * qax + (1 - alpha) * qax_rave
-		qay_rave = alpha * qay + (1 - alpha) * qay_rave
-		qaz_rave = alpha * qaz + (1 - alpha) * qaz_rave
-		qgx_rave = alpha * qgx + (1 - alpha) * qgx_rave
-		qgy_rave = alpha * qgy + (1 - alpha) * qgy_rave
-		qgz_rave = alpha * qgz + (1 - alpha) * qgz_rave
+		#-----------------------------------------------------------------------------------
+		# Integrate the gyros readings.
+		#-----------------------------------------------------------------------------------
+		qgx_integrated += qgx * delta_time
+		qgy_integrated += qgy * delta_time
+		qgz_integrated += qgz * delta_time
 
-		#===========================================================================
+		#-----------------------------------------------------------------------------------
+		# Integrate the accelerometer readings.
+		#-----------------------------------------------------------------------------------
+		qax_integrated += qax * delta_time
+		qay_integrated += qay * delta_time
+		qaz_integrated += qaz * delta_time
+
+		#===================================================================================
 		# Motion Processing:  Use the recorded data to produce motion data and feed in the motion PIDs
-		#===========================================================================
-
+		#===================================================================================
 		if time_now - last_motion_update >= motion_period:
-			mp_dt = time_now - last_motion_update
 			last_motion_update += motion_period
 
-			#-------------------------------------------------------------------
+			#---------------------------------------------------------------------------
+			# Work out the average acceleration and rotation rate
+			#---------------------------------------------------------------------------
+			integration_period = time_now - integration_start
+			integration_start = time_now
+
+			#---------------------------------------------------------------------------
 			# Sort out units
-			#-------------------------------------------------------------------
-			qgx = qgx_rave * SCALE_GYRO
-			qgy = qgy_rave * SCALE_GYRO
-			qgz = qgz_rave * SCALE_GYRO
+			#---------------------------------------------------------------------------
+			qgx_integrated *= SCALE_GYRO
+			qgy_integrated *= SCALE_GYRO
+			qgz_integrated *= SCALE_GYRO
 
-			qax = qax_rave * SCALE_ACCEL
-			qay = qay_rave * SCALE_ACCEL
-			qaz = qaz_rave * SCALE_ACCEL
+			qax_integrated *= SCALE_ACCEL
+			qay_integrated *= SCALE_ACCEL
+			qaz_integrated *= SCALE_ACCEL
 
-			#===================================================================
+			#---------------------------------------------------------------------------
+			# Convert the integrated gyroscope reading back to an averaged gyroscope reading
+			#---------------------------------------------------------------------------
+			qgx = qgx_integrated / integration_period
+			qgy = qgy_integrated / integration_period
+			qgz = qgz_integrated / integration_period
+
+			#---------------------------------------------------------------------------
+			# Convert the integrate accelerometer reading back to an averaged accelerometer reading
+			#---------------------------------------------------------------------------
+			qax = qax_integrated / integration_period
+			qay = qay_integrated / integration_period
+			qaz = qaz_integrated / integration_period
+
+			#---------------------------------------------------------------------------
+			# Clear the integration for next time round
+			#---------------------------------------------------------------------------
+			qgx_integrated = 0.0
+			qgy_integrated = 0.0
+			qgz_integrated = 0.0
+			qax_integrated = 0.0
+			qay_integrated = 0.0
+			qaz_integrated = 0.0
+
+			#===========================================================================
 			# Angles: Get angles in radians
-			#===================================================================
-			e_pitch, e_roll = GetEulerAngles(qax, qay, qaz)
-			i_yaw += qgz * mp_dt
+			#===========================================================================
+			epa, era, eta = GetEulerAngles(qax, qay, qaz)
 
-			#-------------------------------------------------------------------
-			# Choose the best measure of the angles
-			#-------------------------------------------------------------------
-			pa = e_pitch
-			ra = e_roll
-			ya = i_yaw
+			#---------------------------------------------------------------------------
+			# Convert the gyro quad-frame rotation rates into the Euler frames rotation
+			# rates
+			#---------------------------------------------------------------------------
+			epr, err, eyr = Body2EulerRates(qgy, qgx, qgz, pa, ra)
 
-			#-------------------------------------------------------------------
+			#---------------------------------------------------------------------------
+			# Merge with a complementary filter and fill in the blanks
+			#---------------------------------------------------------------------------
+			tau_fraction = tau / (tau + integration_period)
+			pa = tau_fraction * (pa + epr * integration_period) + (1 - tau_fraction) * epa
+			ra = tau_fraction * (ra + err * integration_period) + (1 - tau_fraction) * era
+			ta = eta
+			ya += qgz * integration_period
+
+			#---------------------------------------------------------------------------
 			# Get the curent flight plan targets
-			#-------------------------------------------------------------------
+			#---------------------------------------------------------------------------
 			if not ready_to_fly:
 				if hover_speed >= hover_target:
 					hover_speed = hover_target
 					ready_to_fly = True	
 
-					#---------------------------------------------------
+					#-----------------------------------------------------------
 					# Register the flight plan with the authorities
-					#---------------------------------------------------
+					#-----------------------------------------------------------
 					fp = FlightPlan(time_now)
 
 				else:
@@ -1791,41 +1826,42 @@ def go():
 			else:
 				evx_target, evy_target, evz_target = fp.getTargets(time_now)
 
-			#-------------------------------------------------------------------
+			#---------------------------------------------------------------------------
 			# Convert earth-frame velocity targets to quadcopter frame.
-			#-------------------------------------------------------------------
+			#---------------------------------------------------------------------------
 			qvx_target, qvy_target, qvz_target = E2QFrame(evx_target, evy_target, evz_target, pa, ra, ya)
 
-			#-------------------------------------------------------------------
-			# Redistribute gravity around the new orientation of the quad - again note
-			# that gravity doesn't yaw
-			#-------------------------------------------------------------------
-			qfrgv_x, qfrgv_y, qfrgv_z = E2QFrame(efrgv_x, efrgv_y, efrgv_z, pa, ra, 0.0)
+			#---------------------------------------------------------------------------
+			# Redistribute gravity around the new orientation of the quad
+			#---------------------------------------------------------------------------
+			gax, gay, gaz = E2QFrame(eax, eay, eaz, pa, ra, ya)
 
-			#-------------------------------------------------------------------
+			#---------------------------------------------------------------------------
 			# Delete reorientated gravity from raw accelerometer readings and sum to make
 			# velocity all in quad frame
-			#-------------------------------------------------------------------
-			qvx_input += (qax - qfrgv_x) * mp_dt * GRAV_ACCEL
-			qvy_input += (qay - qfrgv_y) * mp_dt * GRAV_ACCEL
-			qvz_input += (qaz - qfrgv_z) * mp_dt * GRAV_ACCEL
+			#---------------------------------------------------------------------------
+			qvx_input += (qax - gax) * integration_period * GRAV_ACCEL
+			qvy_input += (qay - gay) * integration_period * GRAV_ACCEL
+			qvz_input += (qaz - gaz) * integration_period * GRAV_ACCEL
 
-			#===================================================================
+			#===========================================================================
 			# Temperaure PID: maintain a constant temperature for reading other sensors
-			#===================================================================
+			#===========================================================================
 			if math.fabs(temp_now - MPU6050_TEMP_TARGET) > 340:
-				logger.critical("Flight temperature range exceeded, abort");
-				keep_looping = False
+				if time_now - last_temp_check > 1.0:
+					logger.critical("Flight temperature range exceeded: %foC", temp_now / 340 + 36.53);
+					last_temp_check += 1.0
+#				keep_looping = False
 
 			[p_out, i_out, d_out] = temp_pid.Compute(temp_now, MPU6050_TEMP_TARGET, time_now)
 			temp_diags = "%f, %f, %f" % (p_out, i_out, d_out)
 			temp_out = p_out + i_out + d_out
 			heater.update(temp_out)
 
-			#===================================================================
+			#===========================================================================
 			# Motion PIDs: Run the horizontal speed PIDs each rotation axis to determine
 			# targets for absolute angle PIDs and the verical speed PID to control height.
-			#===================================================================
+			#===========================================================================
 			[p_out, i_out, d_out] = qvx_pid.Compute(qvx_input, qvx_target, time_now)
 			qvx_diags = "%f, %f, %f" % (p_out, i_out, d_out)
 			qvx_out = p_out + i_out + d_out
@@ -1838,22 +1874,22 @@ def go():
 			qvz_diags = "%f, %f, %f" % (p_out, i_out, d_out)
 			qvz_out = p_out + i_out + d_out
 
-			#-------------------------------------------------------------------
+			#---------------------------------------------------------------------------
 			# Convert the horizontal velocity PID output i.e. the horizontal acceleration
 			# target in q's into the pitch and roll angle PID targets in radians
-			#-------------------------------------------------------------------
+			#---------------------------------------------------------------------------
 			pr_target = -qvx_out
 			rr_target = -qvy_out
 
-			#-------------------------------------------------------------------
+			#---------------------------------------------------------------------------
 			# Convert the vertical velocity PID output direct to PWM pulse width.
-			#-------------------------------------------------------------------
+			#---------------------------------------------------------------------------
 			vert_out = hover_speed + int(round(qvz_out))
 
-			#===================================================================
+			#===========================================================================
 			# Attitude PIDs: Run the rotation rate PIDs each rotation axis to determine
 			# overall PWM output.
-			#===================================================================
+			#===========================================================================
 			[p_out, i_out, d_out] = ya_pid.Compute(ya, ya_target, time_now)
 			ya_diags = "%f, %f, %f" % (p_out, i_out, d_out)
 			yr_target = p_out + i_out + d_out
@@ -1868,75 +1904,75 @@ def go():
 			yr_diags = "%f, %f, %f" % (p_out, i_out, d_out)
 			yr_out = p_out + i_out + d_out
 
-			#-------------------------------------------------------------------
+			#---------------------------------------------------------------------------
 			# Convert the rotation rate PID outputs direct to PWM pulse width
-			#-------------------------------------------------------------------
+			#---------------------------------------------------------------------------
 			pr_out = int(round(pr_out / 2))
 			rr_out = int(round(rr_out / 2))
 			yr_out = int(round(yr_out / 2))
 
-			#===================================================================
+			#===========================================================================
 			# PID output distribution: Walk through the ESCs, and apply the PID outputs
 			# i.e. the updates PWM pulse widths according to where the ESC is sited on the
 			# frame
-			#===================================================================
+			#===========================================================================
 			for esc in esc_list:
-				#-----------------------------------------------------------
+				#-------------------------------------------------------------------
 				# Update all blades' power in accordance with the z error
-				#-----------------------------------------------------------
+				#-------------------------------------------------------------------
 				delta_spin = vert_out
 
-				#-----------------------------------------------------------
+				#-------------------------------------------------------------------
 				# For a left downwards roll, the x gyro goes negative, so the PID error is positive,
 				# meaning PID output is positive, meaning this needs to be added to the left blades
 				# and subtracted from the right.
-				#-----------------------------------------------------------
+				#-------------------------------------------------------------------
 				if esc.motor_location & MOTOR_LOCATION_RIGHT:
 					delta_spin -= rr_out
 				else:
 					delta_spin += rr_out
 
-				#-----------------------------------------------------------
+				#-------------------------------------------------------------------
 				# For a forward downwards pitch, the y gyro goes positive, but is negated
 				# in mpu6050.readSensors() so it is consistent with the accelerometer +
 				# Euler angle calculations.  The PID error is postive as a result,
 				# meaning PID output is positive, meaning this needs to be added to the
 				# front blades and subtracted from the back.
-				#-----------------------------------------------------------
+				#-------------------------------------------------------------------
 				if esc.motor_location & MOTOR_LOCATION_BACK:
 					delta_spin -= pr_out
 				else:
 					delta_spin += pr_out
 
-				#-----------------------------------------------------------
+				#-------------------------------------------------------------------
 				# For CW yaw, the z gyro goes negative, so the PID error is postitive,
 				# meaning PID output is positive, meaning this need to be added to the
 				# ACW (FL and BR) blades and subtracted from the CW (FR & BL) blades.
-				#-----------------------------------------------------------
+				#-------------------------------------------------------------------
 				if esc.motor_rotation == MOTOR_ROTATION_CW:
 					delta_spin += yr_out
 				else:
 					delta_spin -= yr_out
 
-				#-----------------------------------------------------------
+				#-------------------------------------------------------------------
 				# Apply the blended outputs to the esc PWM signal
-				#-----------------------------------------------------------
+				#-------------------------------------------------------------------
 				esc.update(delta_spin)
 
-			#-------------------------------------------------------------------
+			#---------------------------------------------------------------------------
 			# Diagnostic log - every motion loop
-			#-------------------------------------------------------------------
+			#---------------------------------------------------------------------------
 			if diagnostics:
-				logger.warning('%f, %f, %d, %f, %d, %s, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %s, %f, %s, %d, %f, %f, %s, %f, %s, %d, %f, %f, %s, %d, %f, %s, %d, %d, %d, %d, %d', elapsed_time, mp_dt, loop_count, temp_now / 340 + 36.53, temp_now, temp_diags, qgx, qgy, qgz, efrgv_x, efrgv_y, efrgv_z, qax, qay, qaz, qfrgv_x, qfrgv_y, qfrgv_z, qvx_input, qvy_input, qvz_input, math.degrees(e_pitch), math.degrees(e_roll), math.degrees(i_yaw), evx_target, qvx_target, qvx_diags, math.degrees(pr_target), pr_diags, pr_out, evy_target, qvy_target, qvy_diags, math.degrees(rr_target), rr_diags, rr_out, evz_target, qvz_target, qvz_diags, qvz_out, yr_target, yr_diags, yr_out, esc_list[0].pulse_width, esc_list[1].pulse_width, esc_list[2].pulse_width, esc_list[3].pulse_width)
+				logger.warning('%f, %f, %d, %f, %d, %s, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %s, %f, %s, %d, %f, %f, %s, %f, %s, %d, %f, %f, %s, %d, %f, %s, %d, %d, %d, %d, %d', elapsed_time, integration_period, loop_count, temp_now / 340 + 36.53, temp_now, temp_diags, qgx, qgy, qgz, qax, qay, qaz, eax, eay, eaz, gax, gay, gaz, qvx_input, qvy_input, qvz_input, math.degrees(epa), math.degrees(era), math.degrees(eta), math.degrees(pa), math.degrees(ra), math.degrees(ya), evx_target, qvx_target, qvx_diags, math.degrees(pr_target), pr_diags, pr_out, evy_target, qvy_target, qvy_diags, math.degrees(rr_target), rr_diags, rr_out, evz_target, qvz_target, qvz_diags, qvz_out, yr_target, yr_diags, yr_out, esc_list[0].pulse_width, esc_list[1].pulse_width, esc_list[2].pulse_width, esc_list[3].pulse_width)
 
 
-	#-----------------------------------------------------------------------------------
+	#-------------------------------------------------------------------------------------------
 	# Dump the loops per second
-	#-----------------------------------------------------------------------------------
+	#-------------------------------------------------------------------------------------------
 	logger.critical("loop speed %f loops per second", loop_count / elapsed_time)
 
-	#-----------------------------------------------------------------------------------
+	#-------------------------------------------------------------------------------------------
 	# Time for telly bye byes
-	#-----------------------------------------------------------------------------------
+	#-------------------------------------------------------------------------------------------
 	CleanShutdown()
 
