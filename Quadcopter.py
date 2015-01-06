@@ -70,7 +70,6 @@ class I2C:
 				break
 			except IOError, err:
 				self.misses += 1
-				time.sleep(0.0001)
 
 	def writeList(self, reg, list):
 		"Writes an array of bytes using I2C format"
@@ -80,7 +79,6 @@ class I2C:
 				break
 			except IOError, err:
 				self.misses += 1
-				time.sleep(0.0001)
 
 	def readU8(self, reg):
 		"Read an unsigned byte from the I2C device"
@@ -90,7 +88,6 @@ class I2C:
 				return result
 			except IOError, err:
 				self.misses += 1
-				time.sleep(0.0001)
 
 	def readS8(self, reg):
 		"Reads a signed byte from the I2C device"
@@ -103,7 +100,6 @@ class I2C:
 					return result
 			except IOError, err:
 				self.misses += 1
-				time.sleep(0.0001)
 
 	def readU16(self, reg):
 		"Reads an unsigned 16-bit value from the I2C device"
@@ -111,13 +107,9 @@ class I2C:
 			try:
 				hibyte = self.bus.read_byte_data(self.address, reg)
 				result = (hibyte << 8) + self.bus.read_byte_data(self.address, reg+1)
-				if result == 0x7FFF or result == 0x8000:
-					time.sleep(0.0005)
-				else:
-					return result
+				return result
 			except IOError, err:
 				self.misses += 1
-				time.sleep(0.0001)
 
 	def readS16(self, reg):
 		"Reads a signed 16-bit value from the I2C device"
@@ -127,13 +119,9 @@ class I2C:
 				if (hibyte > 127):
 					hibyte -= 256
 				result = (hibyte << 8) + self.bus.read_byte_data(self.address, reg+1)
-				if result == 0x7FFF or result == 0x8000:
-					time.sleep(0.0005)
-				else:
-					return result
+				return result
 			except IOError, err:
 				self.misses += 1
-				time.sleep(0.0001)
 				
 	def readList(self, reg, length):
 		"Reads a a byte array value from the I2C device"
@@ -143,7 +131,6 @@ class I2C:
 				return result
 			except IOError, err:
 				self.misses += 1
-				time.sleep(0.0001)
 
 	def getMisses(self):
 		return self.misses
@@ -271,6 +258,9 @@ class MPU6050 :
 
 	__CALIBRATION_ITERATIONS = 50
 
+	__SCALE_GYRO = 500.0 * math.pi / (65536 * 180)
+	__SCALE_ACCEL = 4.0 / 65536
+
 	def __init__(self, address=0x68, dlpf=6):
 		self.i2c = I2C(address)
 		self.address = address
@@ -329,7 +319,9 @@ class MPU6050 :
 		time.sleep(5.0)
 	
 		#-----------------------------------------------------------------------------------
-		# Sets sample rate to 1kHz/1+0 = 1kHz or 1ms
+		# Sets sample rate to 1kHz/(1+0) = 1kHz or 1ms (note 1kHz assumes dlpf is on - setting
+		# dlpf to 0 or 7 changes 1kHz to 8kHz and therefore will require sample rate divider
+		# to be changed to 7 to obtain the same 1kHz sample rate.
 		#-----------------------------------------------------------------------------------
 		logger.debug('Sample rate 1kHz')
 		self.i2c.write8(self.__MPU6050_RA_SMPLRT_DIV, 0)
@@ -384,10 +376,10 @@ class MPU6050 :
 		time.sleep(0.1)
 
 		#-----------------------------------------------------------------------------------
-		# Setup INT pin to latch and AUX I2C pass through
+		# Setup INT pin to 50us pulse and AUX I2C pass through
 		#-----------------------------------------------------------------------------------
 		logger.debug('Enable interrupt')
-		self.i2c.write8(self.__MPU6050_RA_INT_PIN_CFG, 0x10) # 0x10 for edge detection, 0x20 for polling
+		self.i2c.write8(self.__MPU6050_RA_INT_PIN_CFG, 0x10)
 		time.sleep(0.1)
 	
 		#-----------------------------------------------------------------------------------
@@ -406,7 +398,7 @@ class MPU6050 :
 			CleanShutdown()
 
 
-	def readSensors(self):
+	def readSensorsRaw(self):
 		global time_now
 		global temp_now
 
@@ -434,20 +426,24 @@ class MPU6050 :
 			self.result_array[int(index / 2)] = (sensor_data[index] << 8) + sensor_data[index + 1]
 
 		#-----------------------------------------------------------------------------------
-		# +/- 2g 2 * 16 bit range for the accelerometer
-		# +/- 250 degrees per second * 16 bit range for the gyroscope - converted to radians
+		# +/- 2g * 16 bit range for the accelerometer
+		# +/- 250 degrees per second * 16 bit range for the gyroscope
 		#-----------------------------------------------------------------------------------
 		[ax, ay, az, temp_now, gx, gy, gz] = self.result_array
 
-		qax = (float(ax) + self.ax_offset) * self.ax_gain
-		qay = (float(ay) + self.ay_offset) * self.ay_gain
-		qaz = (float(az) + self.az_offset) * self.az_gain
+		return ax, ay, az, gx, gy, gz
 
-		qgx = float(gx) - self.gx_offset
-		qgy = float(gy) - self.gy_offset
-		qgz = float(gz) - self.gz_offset
+	def rawCorrection(self, ax, ay, az, gx, gy, gz):
 
-		return qax, qay, qaz, qgx, -qgy, qgz
+		qax = (ax + self.ax_offset) * self.ax_gain * self.__SCALE_ACCEL
+		qay = (ay + self.ay_offset) * self.ay_gain * self.__SCALE_ACCEL
+		qaz = (az + self.az_offset) * self.az_gain * self.__SCALE_ACCEL
+
+		qgx = (gx - self.gx_offset) * self.__SCALE_GYRO
+		qgy = (gy - self.gy_offset) * self.__SCALE_GYRO
+		qgz = (gz - self.gz_offset) * self.__SCALE_GYRO
+
+		return qax, qay, qaz, qgx, qgy, qgz
 	
 
 	def calibrateGyros(self):
@@ -456,7 +452,7 @@ class MPU6050 :
 		gz_offset = 0.0
 
 		for iteration in range(0, self.__CALIBRATION_ITERATIONS):
-			[ax, ay, az, gx, gy, gz] = self.readSensors()
+			[ax, ay, az, gx, gy, gz] = self.readSensorsRaw()
 
 			gx_offset += gx
 			gy_offset += gy
@@ -481,7 +477,7 @@ class MPU6050 :
 		gravity_z = 0.0
 
 		for iteration in range(0, self.__CALIBRATION_ITERATIONS):
-			[ax, ay, az, gx, gy, gz] = self.readSensors()
+			[ax, ay, az, gx, gy, gz] = self.readSensorsRaw()
 			gravity_x += ax
 			gravity_y += ay
 			gravity_z += az
@@ -684,7 +680,7 @@ def GetEulerAngles(ax, ay, az):
 	#-------------------------------------------------------------------------------------------
 	# What's the angle in the x and y plane from horizontal in radians?
 	#-------------------------------------------------------------------------------------------
-	pitch = math.atan2(ax, math.pow(math.pow(ay, 2) + math.pow(az, 2), 0.5))
+	pitch = math.atan2(-ax, math.pow(math.pow(ay, 2) + math.pow(az, 2), 0.5))
 	roll = math.atan2(ay, az)
 	tilt = math.atan2(math.pow(math.pow(ax, 2) + math.pow(ay, 2), 0.5), az)
 
@@ -708,7 +704,7 @@ def Body2EulerRates(qgy, qgx, qgz, pa, ra):
 	#
 	#===========================================================================================
 	c_pa = math.cos(pa)
-	t_pa = math.tan(-pa)
+	t_pa = math.tan(pa)
 	c_ra = math.cos(ra)
 	s_ra = math.sin(ra)
 
@@ -738,7 +734,7 @@ def E2QFrame(evx, evy, evz, pa, ra, ya):
 	#
 	#===========================================================================================
 	c_pa = math.cos(pa)
-	s_pa = math.sin(-pa)
+	s_pa = math.sin(pa)
 	c_ra = math.cos(ra)
 	s_ra = math.sin(ra)
 	c_ya = math.cos(ya)
@@ -833,7 +829,7 @@ def Q2EFrame(qvx, qvy, qvz, pa, ra, ya):
 	# c_ra^2 + s_ra^2 = 1
 	#===================================================================================
 	c_pa = math.cos(pa)
-	s_pa = -math.sin(pa)
+	s_pa = math.sin(pa)
 	c_ra = math.cos(ra)
 	s_ra = math.sin(ra)
 	c_ya = math.cos(ya)
@@ -902,7 +898,7 @@ def CheckCLI(argv):
 		#-----------------------------------------------------------------------------------
 		# Defaults for horizontal velocity PIDs
 		#-----------------------------------------------------------------------------------
-		cli_hvp_gain = 0.5
+		cli_hvp_gain = 0.6
 		cli_hvi_gain = 0.1
 		cli_hvd_gain = 0.005
 
@@ -933,9 +929,9 @@ def CheckCLI(argv):
 		#-----------------------------------------------------------------------------------
 		# Defaults for horizontal velocity PIDs
 		#-----------------------------------------------------------------------------------
-		cli_hvp_gain = 2.0
-		cli_hvi_gain = 1.0
-		cli_hvd_gain = 0.5
+		cli_hvp_gain = 0.6
+		cli_hvi_gain = 0.1
+		cli_hvd_gain = 0.005
 
 		#-----------------------------------------------------------------------------------
 		# Defaults for pitch rate PIDs
@@ -1200,7 +1196,7 @@ class FlightPlan:
 	fp_evx_target  = [0.0,       0.0,       0.0,       0.0,       0.0]
 	fp_evy_target  = [0.0,       0.0,       0.0,       0.0,       0.0]
 	fp_evz_target  = [0.0,       0.5,       0.0,      -0.5,       0.0]
-	fp_time        = [0.0,       3.0,       5.0,       3.0,       0.0]
+	fp_time        = [0.0,       2.0,       5.0,       2.0,       0.0]
 	fp_name        = ["RTF",  "ASCENT",   "HOVER", "DESCENT",    "STOP"]
 	_FP_STEPS = 5
 
@@ -1246,7 +1242,7 @@ def mlockall(flags = MCL_CURRENT| MCL_FUTURE):
 	libc = ctypes.CDLL(libc_name, use_errno=True)
 	result = libc.mlockall(flags)
 	if result != 0:
-		raise Exception("cannot lock memmory, errno=%s" % ctypes.get_errno())
+		raise Exception("cannot lock memory, errno=%s" % ctypes.get_errno())
 
 def munlockall():
 	libc_name = ctypes.util.find_library("c")
@@ -1415,8 +1411,6 @@ def go():
 	# - gyroscope in radians per second
 	#-------------------------------------------------------------------------------------------
 	GRAV_ACCEL = 9.80665
-	SCALE_GYRO = 500.0 * math.pi / (65536 * 180)
-	SCALE_ACCEL = 4.0 / 65536
 
 	#-------------------------------------------------------------------------------------------
 	# Initialize the gyroscope / accelerometer I2C object
@@ -1433,7 +1427,7 @@ def go():
 	#
 	#===========================================================================================
 	MPU6050_TEMP_TARGET = 1180
-	mpu6050.readSensors()
+	mpu6050.readSensorsRaw()
 
 	PID_TEMP_P_GAIN = 0.75
 	PID_TEMP_I_GAIN = 0.01
@@ -1455,7 +1449,7 @@ def go():
 
 	while True:
 		time.sleep(0.1)
-		mpu6050.readSensors()
+		mpu6050.readSensorsRaw()
 		[p_out, i_out, d_out] = temp_pid.Compute(temp_now, MPU6050_TEMP_TARGET, time_now)
 		temp_out = p_out + i_out + d_out
 		heater.update(temp_out)
@@ -1496,12 +1490,16 @@ def go():
 	qay_integrated = 0.0
 	qaz_integrated = 0.0
 
+	qgx_integrated = 0.0
+	qgy_integrated = 0.0
+	qgz_integrated = 0.0
+
 	elapsed_time = 0.0
 	start_time = time_now
 	integration_start = time_now
 
 	for iteration in range(0, 50):
-		qax, qay, qaz, qgx, qgy, qgz = mpu6050.readSensors()
+		qax, qay, qaz, qgx, qgy, qgz = mpu6050.readSensorsRaw()
 		[p_out, i_out, d_out] = temp_pid.Compute(temp_now, MPU6050_TEMP_TARGET, time_now)
 		temp_out = p_out + i_out + d_out
 		heater.update(temp_out)
@@ -1513,12 +1511,20 @@ def go():
 		qay_integrated += qay * delta_time
 		qaz_integrated += qaz * delta_time
 
+		qgx_integrated += qgx * delta_time
+		qgy_integrated += qgy * delta_time
+		qgz_integrated += qgz * delta_time
+
+
 	#-------------------------------------------------------------------------------------------
 	# Work out the average acceleration due to gravity in the quad reference frame
 	#-------------------------------------------------------------------------------------------
-	qax = qax_integrated * SCALE_ACCEL / elapsed_time
-	qay = qay_integrated * SCALE_ACCEL / elapsed_time
-	qaz = qaz_integrated * SCALE_ACCEL / elapsed_time
+	qax, qay, qaz, qgx, qgy, qgz = mpu6050.rawCorrection(qax_integrated / elapsed_time,
+							     qay_integrated / elapsed_time,
+							     qaz_integrated / elapsed_time,
+							     qgx_integrated / elapsed_time,
+							     qgy_integrated / elapsed_time,
+							     qgz_integrated / elapsed_time)
 
 	#-------------------------------------------------------------------------------------------
 	# Get the take-off platform slope
@@ -1711,7 +1717,7 @@ def go():
 		# Sensors: Read the sensor values; note that this also sets the time_now to be as
 		# accurate a time stamp for the sensor data as possible.
 		#===================================================================================
-		qax, qay, qaz, qgx, qgy, qgz = mpu6050.readSensors()
+		qax, qay, qaz, qgx, qgy, qgz = mpu6050.readSensorsRaw()
 
 		#-----------------------------------------------------------------------------------
 		# Now we have the sensor snapshot, tidy up the rest of the variable so that processing
@@ -1727,18 +1733,18 @@ def go():
 		#===================================================================================
 
 		#-----------------------------------------------------------------------------------
-		# Integrate the gyros readings.
-		#-----------------------------------------------------------------------------------
-		qgx_integrated += qgx * delta_time
-		qgy_integrated += qgy * delta_time
-		qgz_integrated += qgz * delta_time
-
-		#-----------------------------------------------------------------------------------
 		# Integrate the accelerometer readings.
 		#-----------------------------------------------------------------------------------
 		qax_integrated += qax * delta_time
 		qay_integrated += qay * delta_time
 		qaz_integrated += qaz * delta_time
+
+		#-----------------------------------------------------------------------------------
+		# Integrate the gyros readings.
+		#-----------------------------------------------------------------------------------
+		qgx_integrated += qgx * delta_time
+		qgy_integrated += qgy * delta_time
+		qgz_integrated += qgz * delta_time
 
 		#===================================================================================
 		# Motion Processing:  Use the recorded data to produce motion data and feed in the motion PIDs
@@ -1753,29 +1759,14 @@ def go():
 			integration_start = time_now
 
 			#---------------------------------------------------------------------------
-			# Sort out units
+			# Sort out calibration and units
 			#---------------------------------------------------------------------------
-			qgx_integrated *= SCALE_GYRO
-			qgy_integrated *= SCALE_GYRO
-			qgz_integrated *= SCALE_GYRO
-
-			qax_integrated *= SCALE_ACCEL
-			qay_integrated *= SCALE_ACCEL
-			qaz_integrated *= SCALE_ACCEL
-
-			#---------------------------------------------------------------------------
-			# Convert the integrated gyroscope reading back to an averaged gyroscope reading
-			#---------------------------------------------------------------------------
-			qgx = qgx_integrated / integration_period
-			qgy = qgy_integrated / integration_period
-			qgz = qgz_integrated / integration_period
-
-			#---------------------------------------------------------------------------
-			# Convert the integrate accelerometer reading back to an averaged accelerometer reading
-			#---------------------------------------------------------------------------
-			qax = qax_integrated / integration_period
-			qay = qay_integrated / integration_period
-			qaz = qaz_integrated / integration_period
+			qax, qay, qaz, qgx, qgy, qgz = mpu6050.rawCorrection(qax_integrated / integration_period,
+									     qay_integrated / integration_period,
+									     qaz_integrated / integration_period,
+									     qgx_integrated / integration_period,
+									     qgy_integrated / integration_period,
+									     qgz_integrated / integration_period)
 
 			#---------------------------------------------------------------------------
 			# Clear the integration for next time round
@@ -1851,7 +1842,6 @@ def go():
 				if time_now - last_temp_check > 1.0:
 					logger.critical("Flight temperature range exceeded: %foC", temp_now / 340 + 36.53);
 					last_temp_check += 1.0
-#				keep_looping = False
 
 			[p_out, i_out, d_out] = temp_pid.Compute(temp_now, MPU6050_TEMP_TARGET, time_now)
 			temp_diags = "%f, %f, %f" % (p_out, i_out, d_out)
@@ -1877,8 +1867,15 @@ def go():
 			#---------------------------------------------------------------------------
 			# Convert the horizontal velocity PID output i.e. the horizontal acceleration
 			# target in q's into the pitch and roll angle PID targets in radians
+			# - A forward unintentional drift is a positive input and negative output from
+			#   the velocity PID.  This represents corrective acceleration.  To achieve corrective
+                        #   backward acceleration, the negative velocity PID output needs to trigger a
+			#   negative pitch rotation rate
+			# - A left unintentional drift is a positive input and negative output from
+			#   the velocity PID.  To achieve corrective right acceleration, the negative
+			#   velocity PID output needs to trigger a positive roll rotation rate
 			#---------------------------------------------------------------------------
-			pr_target = -qvx_out
+			pr_target = qvx_out
 			rr_target = -qvy_out
 
 			#---------------------------------------------------------------------------
@@ -1940,9 +1937,9 @@ def go():
 				# front blades and subtracted from the back.
 				#-------------------------------------------------------------------
 				if esc.motor_location & MOTOR_LOCATION_BACK:
-					delta_spin -= pr_out
-				else:
 					delta_spin += pr_out
+				else:
+					delta_spin -= pr_out
 
 				#-------------------------------------------------------------------
 				# For CW yaw, the z gyro goes negative, so the PID error is postitive,
