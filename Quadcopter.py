@@ -312,12 +312,12 @@ class MPU6050 :
 			#---------------------------------------------------------------------------
 			# Phoebe's sensor calibration due to using her sensors
 			#---------------------------------------------------------------------------
-			self.ax_offset = 46.28
-			self.ax_gain = 0.99328514
-			self.ay_offset = 78.58
-			self.ay_gain = 0.991557479
-			self.az_offset = -87.04
-			self.az_gain = 1.00327485
+			self.ax_offset = 12.62
+			self.ax_gain = 0.994115641
+			self.ay_offset = 207.48
+			self.ay_gain = 0.991148387
+			self.az_offset = 649.34
+			self.az_gain = 1.001076597
 
 		logger.info('Reseting MPU-6050')
 		#-----------------------------------------------------------------------------------
@@ -530,8 +530,8 @@ class MPU6050 :
 
 ####################################################################################################
 #
-# PID algorithm to take input sensor readings, and target requirements, and
-# as a result feedback new rotor speeds.
+# PID algorithm to take input sensor readings, and target requirements, and output an arbirtrary
+# corrective value.
 #
 ####################################################################################################
 class PID:
@@ -619,6 +619,11 @@ class ESC:
 		self.pulse_width = self.min_pulse_width
 
 		#-----------------------------------------------------------------------------------
+		# Name - for logging purposes only
+		#-----------------------------------------------------------------------------------
+		self.name = name
+
+		#-----------------------------------------------------------------------------------
 		# Initialize the RPIO DMA PWM for this ESC.
 		#-----------------------------------------------------------------------------------
 		PWM.add_channel_pulse(RPIO_DMA_CHANNEL, self.bcm_pin, 0, self.pulse_width)
@@ -637,7 +642,7 @@ class ESC:
 
 ####################################################################################################
 #
-#  Class for managing each blade + motor configuration via its ESC
+#  Class for managing the heating element (a 10ohm resistor) keeping the MPU6050 at 40oC
 #
 ####################################################################################################
 class HEATER:
@@ -985,7 +990,7 @@ def CheckCLI(argv):
 		# Defaults for horizontal velocity PIDs
 		#-----------------------------------------------------------------------------------
 		cli_hvp_gain = 0.6
-		cli_hvi_gain = 0.3
+		cli_hvi_gain = 0.4
 		cli_hvd_gain = 0.0
 
 		#-----------------------------------------------------------------------------------
@@ -1005,8 +1010,8 @@ def CheckCLI(argv):
 		#-----------------------------------------------------------------------------------
 		# Defaults for yaw angle PIDs
 		#-----------------------------------------------------------------------------------
-		cli_yrp_gain = 50.0
-		cli_yri_gain = 25.0
+		cli_yrp_gain = 60.0
+		cli_yri_gain = 30.0
 		cli_yrd_gain = 0.0
 
 
@@ -1019,7 +1024,7 @@ def CheckCLI(argv):
 	cli_motion_frequency = 71
 	cli_rtf_period = 1.0
 	cli_a_tau = 0.5
-	cli_g_tau = 2.0
+	cli_g_tau = 1.0
 
 	hover_target_defaulted = True
 	prp_set = False
@@ -1216,7 +1221,8 @@ def CleanShutdown():
 	#-------------------------------------------------------------------------------------------
 	# Stop the heater
 	#-------------------------------------------------------------------------------------------
-	heater.update(0)
+	if heater is not None:
+		heater.update(0)
 
 	#-------------------------------------------------------------------------------------------
 	# Stop the video if it's running
@@ -1227,18 +1233,21 @@ def CleanShutdown():
 	#-------------------------------------------------------------------------------------------
 	# Dump the data collection loops per second
 	#-------------------------------------------------------------------------------------------
-	logger.critical("data integration lps: %f", loop_count / elapsed_time)
+	if elapsed_time != 0:
+		logger.critical("data integration lps: %f", loop_count / elapsed_time)
 
 	#-------------------------------------------------------------------------------------------
 	# Dump the motion processing loops per second
 	#-------------------------------------------------------------------------------------------
-	logger.critical("motion processing lps: %f", motion_processing_loops / motion_processing_time)
+	if motion_processing_time != 0:
+		logger.critical("motion processing lps: %f", motion_processing_loops / motion_processing_time)
 
 	#-------------------------------------------------------------------------------------------
 	# Record MPU6050 / i2c bus data misses.
 	#-------------------------------------------------------------------------------------------
-	mpu6050_misses, i2c_misses = mpu6050.getMisses()
-	logger.critical("mpu6050 %d misses, i2c %d misses", mpu6050_misses, i2c_misses)
+	if mpu6050 is not None:
+		mpu6050_misses, i2c_misses = mpu6050.getMisses()
+		logger.critical("mpu6050 %d misses, i2c %d misses", mpu6050_misses, i2c_misses)
 
 	#-------------------------------------------------------------------------------------------
 	# Copy logs from /dev/shm (shared / virtual memory) to the Logs directory.
@@ -1249,14 +1258,15 @@ def CleanShutdown():
 	shutil.move("/dev/shm/qclogs", log_file_name)
 
 	#-------------------------------------------------------------------------------------------
-	# Clean up PWM / GPIO
-	#-------------------------------------------------------------------------------------------
-	RpioCleanup()
-
-	#-------------------------------------------------------------------------------------------
 	# Unlock memory we've used from RAM
 	#-------------------------------------------------------------------------------------------
 	munlockall()
+
+	#-------------------------------------------------------------------------------------------
+	# Clean up PWM / GPIO, but pause beforehand to give the ESCs time to stop properly
+	#-------------------------------------------------------------------------------------------
+	time.sleep(1.0)
+	RpioCleanup()
 
 	#-------------------------------------------------------------------------------------------
 	# Reset the signal handler to default
@@ -1290,7 +1300,7 @@ def DataReadySignalHandler(signal, frame):
 	global SIG_DATA_READY
 
 	#-------------------------------------------------------------------------------------------
-	# This does nothing other than way the main thread back up
+	# This does nothing other than wake the main thread up
 	#-------------------------------------------------------------------------------------------
 	woken_by = SIG_DATA_READY
 
@@ -1302,12 +1312,13 @@ def DataReadySignalHandler(signal, frame):
 class FlightPlan:
 
 	#-------------------------------------------------------------------------------------------
-	# The flight plan - move to file at some point
+	# The flight plan - move to file at some point to allow various FP's to be saved, and selected
+	# per flight.
 	#-------------------------------------------------------------------------------------------
 	fp_evx_target  = [0.0,       0.0,       0.0,       0.0,       0.0]
 	fp_evy_target  = [0.0,       0.0,       0.0,       0.0,       0.0]
 	fp_evz_target  = [0.0,       0.5,       0.0,      -0.5,       0.0]
-	fp_time        = [0.0,       1.0,       5.0,       1.0,       0.0]
+	fp_time        = [0.0,       1.0,       3.0,       1.0,       0.0]
 	fp_name        = ["RTF",  "ASCENT",   "HOVER", "DESCENT",    "STOP"]
 	_FP_STEPS = 5
 
@@ -1506,6 +1517,9 @@ def go():
 	ready_to_fly = False
 	keep_looping = False
 
+	heater = None
+	mpu6050 = None
+
 	#-------------------------------------------------------------------------------------------
 	# Enable RPIO for beeper, MPU 6050 interrupts and PWM.  This must be set up prior to adding
 	# the SignalHandler below or it will override what we set thus killing the "Kill Switch"..
@@ -1568,6 +1582,27 @@ def go():
 	logger.warning("calibrate_gravity = %s, fly = %s, hover_target = %d, shoot_video = %s, vvp_gain = %f, vvi_gain = %f, vvd_gain= %f, hvp_gain = %f, hvi_gain = %f, hvd_gain = %f, prp_gain = %f, pri_gain = %f, prd_gain = %f, rrp_gain = %f, rri_gain = %f, rrd_gain = %f, yrp_gain = %f, yri_gain = %f, yrd_gain = %f, test_case = %d, dlpf = %d, motion_frequency = %f, rtf_period = %f, a_tau = %f, g_tau = %f, diagnostics = %s", calibrate_gravity, flying, hover_target, shoot_video, vvp_gain, vvi_gain, vvd_gain, hvp_gain, hvi_gain, hvd_gain, prp_gain, pri_gain, prd_gain, rrp_gain, rri_gain, rrd_gain, yrp_gain, yri_gain, yrd_gain, test_case, dlpf, motion_frequency, rtf_period, a_tau, g_tau, diagnostics)
 
 	#-------------------------------------------------------------------------------------------
+	# START TESTCASE 1 CODE: spin up each blade individually for 10s each and check they all turn
+	#                        the right way
+	#-------------------------------------------------------------------------------------------
+	if test_case == 1:
+		logger.critical("TESTCASE 1: Check props are spinning as expected")
+		for esc in esc_list:
+			logger.critical("%s prop should rotate %s.", esc.name, "anti-clockwise" if esc.motor_rotation == MOTOR_ROTATION_ACW else "clockwise")
+			for count in range(0, hover_target, 10):
+				#-------------------------------------------------------------------
+				# Spin up to user determined (-h) hover speeds ~200
+				#-------------------------------------------------------------------
+				esc.update(count)
+				time.sleep(0.01)
+			time.sleep(5.0)
+			esc.update(0)
+		CleanShutdown()
+	#-------------------------------------------------------------------------------------------
+	# END TESTCASE 1 CODE: spin up each blade individually for 10s each and check they all turn the right way
+	#-------------------------------------------------------------------------------------------
+
+	#-------------------------------------------------------------------------------------------
 	# Initialize the motion processing period
 	#-------------------------------------------------------------------------------------------
 	motion_period = 1 / motion_frequency
@@ -1593,45 +1628,181 @@ def go():
 	#     40oC  =  1180
 	#     50oC  =  4580
 	#
+	# At the same time, wait for sensor stabilization to settle at 0.1% error
+	#
 	#===========================================================================================
 	MPU6050_TEMP_TARGET = 1180
-	mpu6050.readSensorsRaw()
-
-	PID_TEMP_P_GAIN = 0.75
-	PID_TEMP_I_GAIN = 0.01
-	PID_TEMP_D_GAIN = 0.001
+	PID_TEMP_P_GAIN = 0.25
+	PID_TEMP_I_GAIN = 0.0025
+	PID_TEMP_D_GAIN = 0.00
 
 	temp_pid = PID(PID_TEMP_P_GAIN, PID_TEMP_I_GAIN, PID_TEMP_D_GAIN)
 	heater = HEATER(RPIO_THERMOSTAT_PWM)
 
 	#-------------------------------------------------------------------------------------------
-	# Bring the running temperature of the sensors to
-	# a constant 40oC
+	# Set up rolling average arrays, updated every 0.1s; stability is definined by data from 10
+	# samples matching within 0.5% over the period of 1s
 	#-------------------------------------------------------------------------------------------
-	if (temp_now - MPU6050_TEMP_TARGET) > 340:
-		logger.critical("Sorry, too warm to fly (%foC)", temp_now / 340 + 36.53)
-		CleanShutdown()
+	qax_averaged = 0.0
+	qay_averaged = 0.0
+	qaz_averaged = 0.0
+	qgx_averaged = 0.0
+	qgy_averaged = 0.0
+	qgz_averaged = 0.0
 
-	logger.critical("Just warning up...")
+	temp_averaged = 0.0
+
+	eax_array = array("f", [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0])
+	eay_array = array("f", [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0])
+	eaz_array = array("f", [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0])
+	temp_array = array("f", [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0])
+	array_index = 0
+
+	logger.critical("Just warning up and settling down...")
 	mpu6050.readSensorsRaw()
-	last_temp_log = time_now
+	loop_count = 0
+	start_time = time_now
 	last_time = time_now
+	settled = False
 
+	logger.critical("time, temp, temp_err, eax, eax_err, eay, eay_err, eaz, eaz_err, settled")
 	while True:
-		mpu6050.readSensorsRaw()
+		qax, qay, qaz, qgx, qgy, qgz = mpu6050.readSensorsRaw()
+		loop_count += 1
+
 		[p_out, i_out, d_out] = temp_pid.Compute(temp_now, MPU6050_TEMP_TARGET, time_now - last_time)
-		last_time = time_now
 		temp_out = p_out + i_out + d_out
 		heater.update(temp_out)
+		last_time = time_now
+
+		qax_averaged += qax
+		qay_averaged += qay
+		qaz_averaged += qaz
+		qgx_averaged += qgx
+		qgy_averaged += qgy
+		qgz_averaged += qgz
+
+		temp_averaged += temp_now
 
 		#-----------------------------------------------------------------------------------
-		# Loop until temperature  stabilizes at the target 34 = 0.1oC
+		# Every 100 loops (~0.1s), convert the averaged quad frame values to earth frame
+		# and add to the array of values.
 		#-----------------------------------------------------------------------------------
-		if time_now - last_temp_log > 1.0:
-			logger.critical("temp: %f", temp_now / 340 + 36.53)
-			last_temp_log += 1.0
-		if math.fabs(temp_now - MPU6050_TEMP_TARGET) < 34:
-			break
+		if loop_count % 100 == 0:
+			#---------------------------------------------------------------------------
+			# Work out the average acceleration due to gravity in the quad reference frame
+			#---------------------------------------------------------------------------
+			qax, qay, qaz, qgx, qgy, qgz = mpu6050.rawCorrection(qax_averaged / 100,
+									     qay_averaged / 100,
+									     qaz_averaged / 100,
+									     qgx_averaged / 100,
+									     qgy_averaged / 100,
+									     qgz_averaged / 100)
+			temp = temp_averaged / 100
+
+			qax_averaged = 0.0
+			qay_averaged = 0.0
+			qaz_averaged = 0.0
+			qgx_averaged = 0.0
+			qgy_averaged = 0.0
+			qgz_averaged = 0.0
+			temp_averaged = 0.0
+
+			#---------------------------------------------------------------------------
+			# Get the take-off platform slope
+			#---------------------------------------------------------------------------
+			pa, ra = GetEulerAngles(qax, qay, qaz)
+			ya = 0.0
+
+			#---------------------------------------------------------------------------
+			# Convert quad frame gravity to earth frame gravity and store in the sample
+			# arrays
+			#---------------------------------------------------------------------------
+			eax, eay, eaz = Q2EFrame(qax, qay, qaz, pa, ra, ya)
+
+			eax_array[array_index] = eax
+			eay_array[array_index] = eay
+			eaz_array[array_index]= eaz
+			temp_array[array_index] = temp
+
+			array_index += 1
+
+		#----------------------------------------------------------------------------------
+		# Every 1000 loops (~1.0), check that the absolute errors values across the array
+		# are to with 0.1% for the earth gravity (0, 0, 1), and 0.1oC for the temperature
+		#----------------------------------------------------------------------------------
+		if loop_count % 1000 == 0:
+			loop_count = 0
+			array_index = 0
+
+			eax_average = 0.0
+			eay_average = 0.0
+			eaz_average = 0.0
+			temp_average = 0.0
+
+			eax_error = 0.0
+			eay_error = 0.0
+			eaz_error = 0.0
+			temp_error = 0.0
+
+			for ii in range(0, 10):
+				eax_average += eax_array[ii]
+				eay_average += eay_array[ii]
+				eaz_average += eaz_array[ii]
+				temp_average += temp_array[ii]
+
+
+			eax = eax_average / 10
+			eay = eay_average / 10
+			eaz = eaz_average / 10
+			temp = temp_average / 10
+
+			for ii in range(0, 10):
+				eax_error += math.fabs(eax_array[ii]) - eax
+				eay_error += math.fabs(eay_array[ii]) - eay
+				eaz_error += math.fabs(eaz_array[ii]) - eaz
+				temp_error += math.fabs(temp_array[ii]) - temp
+
+			for ii in range(0, 10):
+				eax_array[ii] = 0.0
+				eay_array[ii] = 0.0
+				eaz_array[ii] = 0.0
+				temp_array[ii] = 0.0
+
+			eax_error /= 10
+			eay_error /= 10
+			eaz_error /= 10
+			temp_error /= 10
+
+			if eax_error < 0.001 and eay_error < 0.001 and eaz_error < 0.001 and temp_error < 34 and math.fabs(temp - MPU6050_TEMP_TARGET) < 34:
+				settled = True
+
+			logger.critical("%f, %f, %f, %f, %f, %f, %f, %f, %f, %s", time_now - start_time, temp / 340 + 36.53, temp_error / 340, eax, eax_error, eay, eay_error, eaz, eaz_error, settled)
+
+			if settled:
+				break
+
+	#-------------------------------------------------------------------------------------------
+	# Now rotate the quadframe gravity to earth axes.  This is used later to subtract gravity
+	# from total measured acceleration to get net acceleration associated with movement.  Note
+	# that gravity doesn't yaw when sitting still on the ground!
+	#-------------------------------------------------------------------------------------------
+	logger.critical("pitch %f, roll %f", math.degrees(pa), math.degrees(ra))
+	logger.critical("earth frame gravity: x = %f, y = %f, z: = %f", eax, eay, eaz)
+	logger.critical("temperature: %f", temp / 340 + 36.53)
+
+	#-------------------------------------------------------------------------------------------
+	# Clean up now we have a stable system
+	#-------------------------------------------------------------------------------------------
+	qax_integrated = 0.0
+	qay_integrated = 0.0
+	qaz_integrated = 0.0
+
+	qgx_integrated = 0.0
+	qgy_integrated = 0.0
+	qgz_integrated = 0.0
+
+	loop_count = 0
 
 	#===========================================================================================
 	# From this point on, at every read of the sensors, take the opportunity to maintain the
@@ -1654,82 +1825,6 @@ def go():
 	temp_out = p_out + i_out + d_out
 	heater.update(temp_out)
 
-	qpa = 0.0
-	qra = 0.0
-	qya = 0.0
-
-	#-------------------------------------------------------------------------------------------
-	# Measure average gravity distribution across the quadframe
-	#-------------------------------------------------------------------------------------------
-	qax_integrated = 0.0
-	qay_integrated = 0.0
-	qaz_integrated = 0.0
-
-	qgx_integrated = 0.0
-	qgy_integrated = 0.0
-	qgz_integrated = 0.0
-
-	elapsed_time = 0.0
-	start_time = time_now
-	integration_start = time_now
-
-	for iteration in range(0, 50):
-		qax, qay, qaz, qgx, qgy, qgz = mpu6050.readSensorsRaw()
-		[p_out, i_out, d_out] = temp_pid.Compute(temp_now, MPU6050_TEMP_TARGET, time_now - last_time)
-		last_time = time_now
-		temp_out = p_out + i_out + d_out
-		heater.update(temp_out)
-
-		delta_time = time_now - start_time - elapsed_time
-		elapsed_time = time_now - start_time
-
-		qax_integrated += qax * delta_time
-		qay_integrated += qay * delta_time
-		qaz_integrated += qaz * delta_time
-
-		qgx_integrated += qgx * delta_time
-		qgy_integrated += qgy * delta_time
-		qgz_integrated += qgz * delta_time
-
-
-	#-------------------------------------------------------------------------------------------
-	# Work out the average acceleration due to gravity in the quad reference frame
-	#-------------------------------------------------------------------------------------------
-	qax, qay, qaz, qgx, qgy, qgz = mpu6050.rawCorrection(qax_integrated / elapsed_time,
-							     qay_integrated / elapsed_time,
-							     qaz_integrated / elapsed_time,
-							     qgx_integrated / elapsed_time,
-							     qgy_integrated / elapsed_time,
-							     qgz_integrated / elapsed_time)
-
-	#-------------------------------------------------------------------------------------------
-	# Get the take-off platform slope
-	#-------------------------------------------------------------------------------------------
-	pa, ra = GetEulerAngles(qax, qay, qaz)
-	ya = 0.0
-
-	#-------------------------------------------------------------------------------------------
-	# Now rotate the quadframe gravity to earth axes.  This is used later to subtract gravity
-	# from total measured acceleration to get net acceleration associated with movement.  Note
-	# that gravity doesn't yaw when sitting still on the ground!
-	#-------------------------------------------------------------------------------------------
-	logger.critical("pitch %f, roll %f", math.degrees(pa), math.degrees(ra))
-	logger.critical("quad frame gravity: x = %f, y = %f, z = %f", qax, qay, qaz)
-
-	eax, eay, eaz = Q2EFrame(qax, qay, qaz, pa, ra, ya)
-	logger.critical("earth frame gravity: x = %f, y = %f, z: = %f", eax, eay, eaz)
-
-	#-------------------------------------------------------------------------------------------
-	# Clean up calibration
-	#-------------------------------------------------------------------------------------------
-	qax_integrated = 0.0
-	qay_integrated = 0.0
-	qaz_integrated = 0.0
-
-	qgx_integrated = 0.0
-	qgy_integrated = 0.0
-	qgz_integrated = 0.0
-
 	#-------------------------------------------------------------------------------------------
 	# Start up the video camera if required - this runs from take-off through to shutdown automatically.
 	# Run it in its own process group so that Ctrl-C for QC doesn't get through and stop the video
@@ -1741,25 +1836,6 @@ def go():
 		now = datetime.now()
 		now_string = now.strftime("%y%m%d-%H:%M:%S")
 		video = subprocess.Popen(["raspivid", "-rot", "180", "-w", "1280", "-h", "720", "-o", "/home/pi/Videos/qcvid_" + now_string + ".h264", "-n", "-t", "0", "-fps", "30", "-b", "5000000"], preexec_fn =  Daemonize)
-
-	#-------------------------------------------------------------------------------------------
-	# START TESTCASE 1 CODE: spin up each blade individually for 10s each and check they all turn
-	#                        the right way
-	#-------------------------------------------------------------------------------------------
-	if test_case == 1:
-		for esc in esc_list:
-			for count in range(0, hover_target, 10):
-				#-------------------------------------------------------------------
-				# Spin up to user determined (-h) hover speeds ~200
-				#-------------------------------------------------------------------
-				esc.update(count)
-				time.sleep(0.01)
-			time.sleep(10.0)
-			esc.update(0)
-		CleanShutdown()
-	#-------------------------------------------------------------------------------------------
-	# END TESTCASE 1 CODE: spin up each blade individually for 10s each and check they all turn the right way
-	#-------------------------------------------------------------------------------------------
 
 	#===========================================================================================
 	# Tuning: Set up the PID gains - some are hard coded mathematical approximations, some come
@@ -1964,7 +2040,7 @@ def go():
 		qvz_input += (qaz - gaz) * i_time * GRAV_ACCEL
 
 		#===================================================================================
-		# Temperaure PID: maintain a constant temperature for reading other sensors
+		# Temperature PID: maintain a constant temperature for reading other sensors
 		#===================================================================================
 		last_temp_check += i_time
 		if math.fabs(temperature - MPU6050_TEMP_TARGET) > 340:
@@ -2011,10 +2087,6 @@ def go():
 		#-----------------------------------------------------------------------------------
 		pr_target = math.atan(qvx_out)
 		rr_target = -math.atan(qvy_out)
-		yr_target = 0.0
-
-#		pr_target = 0.0
-#		rr_target = 0.0
 		yr_target = 0.0
 
 		#-----------------------------------------------------------------------------------
@@ -2103,7 +2175,7 @@ def go():
 
 	#-------------------------------------------------------------------------------------------
 	# Time for telly bye byes - can't just 'pass' in the while loop as it locks out the sensor
-        # thread from setting integrator_running to False - i.e. deadlock!
+	# thread from setting integrator_running to False - i.e. deadlock!
 	#-------------------------------------------------------------------------------------------
 	while sensordata.integrator_running:
 		time.sleep(0.001)
