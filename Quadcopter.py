@@ -310,7 +310,17 @@ class MPU6050 :
 
 		elif i_am_zoe:
 			#---------------------------------------------------------------------------
-			# Phoebe's sensor calibration due to using her sensors
+			# Zoe @ dlpf 6, 1180 / 40oC
+			#---------------------------------------------------------------------------
+			self.ax_offset = 12.84
+			self.ax_gain = 0.994249567
+			self.ay_offset = 205.28
+			self.ay_gain = 0.991546677
+			self.az_offset = 722.44
+			self.az_gain = 0.997902359
+		elif i_am_hog:
+			#---------------------------------------------------------------------------
+			# HoG @ dlpf 6, 1180 / 40oC (duplicated storage for previous Zoe calibration ATM)
 			#---------------------------------------------------------------------------
 			self.ax_offset = 12.62
 			self.ax_gain = 0.994115641
@@ -318,6 +328,7 @@ class MPU6050 :
 			self.ay_gain = 0.991148387
 			self.az_offset = 649.34
 			self.az_gain = 1.001076597
+
 
 		logger.info('Reseting MPU-6050')
 		#-----------------------------------------------------------------------------------
@@ -331,7 +342,7 @@ class MPU6050 :
 		logger.debug('Reset all registers')
 		self.i2c.write8(self.__MPU6050_RA_PWR_MGMT_1, 0x80)
 		time.sleep(5.0)
-	
+
 		#-----------------------------------------------------------------------------------
 		# Sets sample rate to 1kHz/(1+0) = 1kHz or 1ms (note 1kHz assumes dlpf is on - setting
 		# dlpf to 0 or 7 changes 1kHz to 8kHz and therefore will require sample rate divider
@@ -453,11 +464,11 @@ class MPU6050 :
 		qay = (ay + self.ay_offset) * self.ay_gain * self.__SCALE_ACCEL
 		qaz = (az + self.az_offset) * self.az_gain * self.__SCALE_ACCEL
 
-		qgx = (gx - self.gx_offset) * self.__SCALE_GYRO
-		qgy = (gy - self.gy_offset) * self.__SCALE_GYRO
-		qgz = (gz - self.gz_offset) * self.__SCALE_GYRO
+		qrx = (gx - self.gx_offset) * self.__SCALE_GYRO
+		qry = (gy - self.gy_offset) * self.__SCALE_GYRO
+		qrz = (gz - self.gz_offset) * self.__SCALE_GYRO
 
-		return qax, qay, qaz, qgx, qgy, qgz
+		return qax, qay, qaz, qrx, qry, qrz
 	
 
 	def calibrateGyros(self):
@@ -704,15 +715,15 @@ def GetEulerAngles(ax, ay, az):
 # Convert a body frame gyro rotation rate to Euler frame rotation
 #
 ####################################################################################################
-def Body2EulerRates(qgy, qgx, qgz, pa, ra):
+def Body2EulerRates(qry, qrx, qrz, pa, ra):
 	#===========================================================================================
 	# Axes: Convert a set of gyro body frame rotation rates into Euler frames
 	#
 	# Matrix
 	# ---------
-	# |err|   | 1 ,  sin(ra) * tan(pa) , cos(ra) * tan(pa) | |qgx|
-	# |epr| = | 0 ,  cos(ra)           ,     -sin(ra)      | |qgy|
-	# |eyr|   | 0 ,  sin(ra) / cos(pa) , cos(ra) / cos(pa) | |qgz|
+	# |err|   | 1 ,  sin(ra) * tan(pa) , cos(ra) * tan(pa) | |qrx|
+	# |epr| = | 0 ,  cos(ra)           ,     -sin(ra)      | |qry|
+	# |eyr|   | 0 ,  sin(ra) / cos(pa) , cos(ra) / cos(pa) | |qrz|
 	#
 	#===========================================================================================
 	c_pa = math.cos(pa)
@@ -720,9 +731,9 @@ def Body2EulerRates(qgy, qgx, qgz, pa, ra):
 	c_ra = math.cos(ra)
 	s_ra = math.sin(ra)
 
-	err = qgx + qgy * s_ra * t_pa + qgz * c_ra * t_pa
-	epr =       qgy * c_ra        - qgz * s_ra
-	eyr =       qgy * s_ra / c_pa + qgz * c_ra / c_pa
+	err = qrx + qry * s_ra * t_pa + qrz * c_ra * t_pa
+	epr =       qry * c_ra        - qrz * s_ra
+	eyr =       qry * s_ra / c_pa + qrz * c_ra / c_pa
 
 	return epr, err, eyr
 
@@ -853,6 +864,99 @@ def Q2EFrame(qvx, qvy, qvz, pa, ra, ya):
 
 	return evx, evy, evz
 
+
+####################################################################################################
+#
+# Butterwork IIR Filter calculator and actor - this is carried out in the earth frame as we are track
+# gravity drift over time from 0, 0, 1 (the primer values for egx, egy and egz)
+#
+####################################################################################################
+class BUTTERWORTH:
+	def __init__(self, sampling, cutoff, order, primer):
+
+		self.n = int(round(order / 2))
+		self.A = array("f", [])
+		self.d1 = array("f", [])
+		self.d2 = array("f", [])
+		self.w0 = array("f", [])
+		self.w1 = array("f", [])
+		self.w2 = array("f", [])
+
+		for ii in range(0, self.n):
+			self.A.append(0.0)
+			self.d1.append(0.0)
+			self.d2.append(0.0)
+			self.w0.append(0.0)
+			self.w1.append(0.0)
+			self.w2.append(0.0)
+
+
+		a = math.tan(math.pi * cutoff / sampling)
+		a2 = math.pow(a, 2.0)
+
+		for ii in range(0, self.n):
+			r = math.sin(math.pi * (2.0 * ii + 1.0) / (4.0 * self.n))
+			s = a2 + 2.0 * a * r + 1.0
+			self.A[ii] = a2 / s
+			self.d1[ii] = 2.0 * (1 - a2) / s
+			self.d2[ii] = -(a2 - 2.0 * a * r + 1.0) / s
+
+	def filter(self, input):
+		for ii in range(0, self.n):
+			self.w0[ii] = self.d1[ii] * self.w1[ii] + self.d2[ii] * self.w2[ii] + input
+			output = self.A[ii] * (self.w0[ii] + 2.0 * self.w1[ii] + self.w2[ii])
+			self.w2[ii] = self.w1[ii]
+			self.w1[ii] = self.w0[ii]
+
+		return output
+
+# class BUTTERWORTH:
+# 	def __init__(self, sampling, cutoff, order, primer):
+# 		n = int(round(order / 2))
+# 		a = math.tan(math.pi * cutoff / sampling)
+# 		self.A = array("f", [])
+# 		self.d1 = array("f", [])
+# 		self.d2 = array("f", [])
+#
+# 		for ii in range(0, n):
+# 			r = math.sin(math.pi * (2.0 * ii + 1.0) / (4.0 * n))
+# 			s = math.pow(a, 2.0) + 2.0 * a * r + 1.0
+# 			self.A.append(math.pow(a, 2.0) / s)
+# 			self.d1.append(2.0 * (1 - math.pow(a, 2.0)) / s)
+# 			self.d2.append(-(math.pow(a, 2.0) - 2.0 * a * r + 1.0) / s)
+#
+# 			logger.critical("gain[%d]: %f", ii, 1/self.A[ii])
+# 			logger.critical("d1[%d]: %f", ii, self.d1[ii])
+# 			logger.critical("d2[%d]: %f", ii, self.d2[ii])
+#
+#
+# # Butterworth: order 2; cutoff 0.5; sampling 71
+# #		self.A = 1 / 2107.285742
+# #		self.d2 = -0.9393418486
+# #		self.d1 =  1.9374436722
+#
+# # Butterworth: order 2; cutoff 0.1; sampling 71
+# # 		self.A = 1 / 51395.95222
+# #               self.d1 = -0.9875628258
+# #               self.d2 = 1.9874849986
+#
+#
+# 		self.inputs = array("f", [])
+# 		self.outputs = array("f", [])
+#
+#
+# 		for ii in range(0, 3):
+# 			self.inputs.append(primer * self.A[0])
+# 			self.outputs.append(primer * self.A[0])
+#
+# 	def filter(self, input):
+# 		self.inputs.pop(0)
+# 		self.inputs.append(input * self.A[0])
+#
+# 		self.outputs.pop(0)
+# 		self.outputs.append(self.inputs[0] + 2 * self.inputs[1] + self.inputs[2] + self.d2[0] * self.outputs[0] + self.d1[0] * self.outputs[1])
+#
+# 		return self.outputs[2]
 
 ####################################################################################################
 #
@@ -991,7 +1095,48 @@ def CheckCLI(argv):
 		#-----------------------------------------------------------------------------------
 		cli_hvp_gain = 0.6
 		cli_hvi_gain = 0.4
-		cli_hvd_gain = 0.0
+		cli_hvd_gain = 0.1
+
+		#-----------------------------------------------------------------------------------
+		# Defaults for pitch angle PIDs
+		#-----------------------------------------------------------------------------------
+		cli_prp_gain = 120.0
+		cli_pri_gain = 60.0
+		cli_prd_gain = 0.0
+
+		#-----------------------------------------------------------------------------------
+		# Defaults for roll angle PIDs
+		#-----------------------------------------------------------------------------------
+		cli_rrp_gain = 110.0
+		cli_rri_gain = 55.0
+		cli_rrd_gain = 0.0
+
+		#-----------------------------------------------------------------------------------
+		# Defaults for yaw angle PIDs
+		#-----------------------------------------------------------------------------------
+		cli_yrp_gain = 60.0
+		cli_yri_gain = 30.0
+		cli_yrd_gain = 0.0
+
+	if i_am_hog:
+		#-----------------------------------------------------------------------------------
+		# Chloe's PID configuration due to using her frame / ESCs / motors / props
+		#-----------------------------------------------------------------------------------
+		cli_hover_target = 500
+
+		#-----------------------------------------------------------------------------------
+		# Defaults for vertical velocity PIDs
+		#-----------------------------------------------------------------------------------
+		cli_vvp_gain = 360.0
+		cli_vvi_gain = 180.0
+		cli_vvd_gain = 0.0
+
+		#-----------------------------------------------------------------------------------
+		# Defaults for horizontal velocity PIDs
+		#-----------------------------------------------------------------------------------
+		cli_hvp_gain = 0.6
+		cli_hvi_gain = 0.4
+		cli_hvd_gain = 0.1
 
 		#-----------------------------------------------------------------------------------
 		# Defaults for pitch angle PIDs
@@ -1019,7 +1164,7 @@ def CheckCLI(argv):
 	# Other configuration defaults
 	#-------------------------------------------------------------------------------------------
 	cli_test_case = 0
-	cli_dlpf = 4
+	cli_dlpf = 3
 	cli_diagnostics = False
 	cli_motion_frequency = 71
 	cli_rtf_period = 1.0
@@ -1318,7 +1463,7 @@ class FlightPlan:
 	fp_evx_target  = [0.0,       0.0,       0.0,       0.0,       0.0]
 	fp_evy_target  = [0.0,       0.0,       0.0,       0.0,       0.0]
 	fp_evz_target  = [0.0,       0.5,       0.0,      -0.5,       0.0]
-	fp_time        = [0.0,       1.0,       3.0,       1.0,       0.0]
+	fp_time        = [0.0,       1.5,       5.0,       1.5,       0.0]
 	fp_name        = ["RTF",  "ASCENT",   "HOVER", "DESCENT",    "STOP"]
 	_FP_STEPS = 5
 
@@ -1373,6 +1518,19 @@ def munlockall():
 #
 # Main
 #
+# Variable naming conventions
+# ---------------------------
+# qa* = quad frame acceleration
+# qg* = quad frame gravity
+# qr* = quad frame rotation
+# ea* = earth frame acceleration
+# eg* = earth frame gravity
+# ua* = euler angles between reference frames
+# ur* = euler rotation between frames
+# ??x = fore / aft acceleration and rotation axis
+# ??y = port / starboard acceleration and rotation axis
+# ??z = up / down acceleration and rotation axis
+#
 ####################################################################################################
 def go():
 
@@ -1390,7 +1548,9 @@ def go():
 	global i_am_phoebe
 	global i_am_chloe
 	global i_am_zoe
+	global i_am_hog
 	global motion_period
+	global next_motion_update
 	global esc_list
 	global heater
 	global shoot_video
@@ -1412,6 +1572,7 @@ def go():
 	i_am_phoebe = False
 	i_am_chloe = False
 	i_am_zoe = False
+	i_am_hog = False
 	my_name = os.uname()[1]
 	if my_name == "phoebe.local":
 		print "Hi, I'm Phoebe. Nice to meet you!"
@@ -1422,6 +1583,9 @@ def go():
 	elif my_name == "zoe.local":
 		print "Hi, I'm Zoe.  Nice to meet you!"
 		i_am_zoe = True
+	elif my_name == "hog.local":
+		print "Hi, I'm HoG.  Nice to meet you!"
+		i_am_hog = True
 	else:
 		print "Sorry, I'm not qualified to fly this quadcopter."
 		sys.exit(0)
@@ -1442,12 +1606,12 @@ def go():
 	elif i_am_chloe:
 		RPIO_DATA_READY_INTERRUPT = 25
 		RPIO_THERMOSTAT_PWM = 26
-	if i_am_zoe:
-		#-----------------------------------------------------------------------------------
-		# Chloe's GPIO pin assignments due to wearing her Beret
-		#-----------------------------------------------------------------------------------
+	elif i_am_zoe:
 		RPIO_DATA_READY_INTERRUPT = 24
 		RPIO_THERMOSTAT_PWM = 26
+	elif i_am_hog:
+		RPIO_DATA_READY_INTERRUPT = 22
+		RPIO_THERMOSTAT_PWM = 18
 
 	#-------------------------------------------------------------------------------------------
 	# Set up the base logging
@@ -1546,9 +1710,11 @@ def go():
 		ESC_BCM_FR = 17
 		ESC_BCM_BR = 22
 	elif i_am_zoe:
-		#-----------------------------------------------------------------------------------
-		# Phoebe's GPIO pins assignment due to wearing her Beret
-		#-----------------------------------------------------------------------------------
+		ESC_BCM_BL = 5
+		ESC_BCM_FL = 27
+		ESC_BCM_FR = 17
+		ESC_BCM_BR = 19
+	elif i_am_hog:
 		ESC_BCM_BL = 5
 		ESC_BCM_FL = 27
 		ESC_BCM_FR = 17
@@ -1603,9 +1769,12 @@ def go():
 	#-------------------------------------------------------------------------------------------
 
 	#-------------------------------------------------------------------------------------------
-	# Initialize the motion processing period
+	# Initialize the butterworth LP filters.
 	#-------------------------------------------------------------------------------------------
 	motion_period = 1 / motion_frequency
+	bfx = BUTTERWORTH(motion_frequency, 0.25, 4, 0.0)
+	bfy = BUTTERWORTH(motion_frequency, 0.25, 4, 0.0)
+	bfz = BUTTERWORTH(motion_frequency, 0.25, 4, 1.0)
 
 	#-------------------------------------------------------------------------------------------
 	# Set up the global constants
@@ -1646,29 +1815,32 @@ def go():
 	qax_averaged = 0.0
 	qay_averaged = 0.0
 	qaz_averaged = 0.0
-	qgx_averaged = 0.0
-	qgy_averaged = 0.0
-	qgz_averaged = 0.0
+	qrx_averaged = 0.0
+	qry_averaged = 0.0
+	qrz_averaged = 0.0
 
 	temp_averaged = 0.0
 
-	eax_array = array("f", [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0])
-	eay_array = array("f", [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0])
-	eaz_array = array("f", [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0])
+	egx_array = array("f", [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0])
+	egy_array = array("f", [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0])
+	egz_array = array("f", [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0])
 	temp_array = array("f", [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0])
 	array_index = 0
 
 	logger.critical("Just warning up and settling down...")
+	logger.critical("time, temp, egx, egy, egz, bax, bay, baz, settled")
 	mpu6050.readSensorsRaw()
-	loop_count = 0
+	averaging_loops = 0
+	next_motion_update = time_now + motion_period
+	next_log_time = time_now + 1.0
 	start_time = time_now
 	last_time = time_now
 	settled = False
+	keep_looping = True
 
-	logger.critical("time, temp, temp_err, eax, eax_err, eay, eay_err, eaz, eaz_err, settled")
-	while True:
-		qax, qay, qaz, qgx, qgy, qgz = mpu6050.readSensorsRaw()
-		loop_count += 1
+	while keep_looping:
+		qax, qay, qaz, qrx, qry, qrz = mpu6050.readSensorsRaw()
+		averaging_loops += 1
 
 		[p_out, i_out, d_out] = temp_pid.Compute(temp_now, MPU6050_TEMP_TARGET, time_now - last_time)
 		temp_out = p_out + i_out + d_out
@@ -1678,35 +1850,28 @@ def go():
 		qax_averaged += qax
 		qay_averaged += qay
 		qaz_averaged += qaz
-		qgx_averaged += qgx
-		qgy_averaged += qgy
-		qgz_averaged += qgz
+		qrx_averaged += qrx
+		qry_averaged += qry
+		qrz_averaged += qrz
 
 		temp_averaged += temp_now
 
 		#-----------------------------------------------------------------------------------
-		# Every 100 loops (~0.1s), convert the averaged quad frame values to earth frame
-		# and add to the array of values.
+		# Every 'motion period' convert the averaged quad frame values to earth frame
+		# and add to the array of values.  Run butterworth each time to ensure it's well
+		# primed.
 		#-----------------------------------------------------------------------------------
-		if loop_count % 100 == 0:
+		if time_now >= next_motion_update:
 			#---------------------------------------------------------------------------
 			# Work out the average acceleration due to gravity in the quad reference frame
 			#---------------------------------------------------------------------------
-			qax, qay, qaz, qgx, qgy, qgz = mpu6050.rawCorrection(qax_averaged / 100,
-									     qay_averaged / 100,
-									     qaz_averaged / 100,
-									     qgx_averaged / 100,
-									     qgy_averaged / 100,
-									     qgz_averaged / 100)
-			temp = temp_averaged / 100
-
-			qax_averaged = 0.0
-			qay_averaged = 0.0
-			qaz_averaged = 0.0
-			qgx_averaged = 0.0
-			qgy_averaged = 0.0
-			qgz_averaged = 0.0
-			temp_averaged = 0.0
+			qax, qay, qaz, qrx, qry, qrz = mpu6050.rawCorrection(qax_averaged / averaging_loops,
+									     qay_averaged / averaging_loops,
+									     qaz_averaged / averaging_loops,
+									     qrx_averaged / averaging_loops,
+									     qry_averaged / averaging_loops,
+									     qrz_averaged / averaging_loops)
+			temp = temp_averaged / averaging_loops
 
 			#---------------------------------------------------------------------------
 			# Get the take-off platform slope
@@ -1715,69 +1880,91 @@ def go():
 			ya = 0.0
 
 			#---------------------------------------------------------------------------
-			# Convert quad frame gravity to earth frame gravity and store in the sample
-			# arrays
-			#---------------------------------------------------------------------------
+			# Get angles in radians for Euler and quad frame: rotate the accelerometer
+			# readings to earth frame, pass them through the butterworth filter, rotate
+			# the new gravity back to the quad frame, and get the revised angles.
+			#--------------------------------------------------------------------------
 			eax, eay, eaz = Q2EFrame(qax, qay, qaz, pa, ra, ya)
+			egx = bfx.filter(eax)
+			egy = bfy.filter(eay)
+			egz = bfz.filter(eaz)
+			qgx, qgy, qgz = E2QFrame(egx, egy, egz, pa, ra, ya)
+			pa, ra = GetEulerAngles(qgx, qgy, qgz)
 
-			eax_array[array_index] = eax
-			eay_array[array_index] = eay
-			eaz_array[array_index]= eaz
+			#--------------------------------------------------------------------------
+			# Store the result in the filtered earth gravity array
+			#--------------------------------------------------------------------------
+			egx_array[array_index] = egx
+			egy_array[array_index] = egy
+			egz_array[array_index] = egz
 			temp_array[array_index] = temp
-
 			array_index += 1
 
+			#---------------------------------------------------------------------------
+			# Reset the motion loop parameters
+			#---------------------------------------------------------------------------
+			next_motion_update += motion_period
+			averaging_loops = 0
+			qax_averaged = 0.0
+			qay_averaged = 0.0
+			qaz_averaged = 0.0
+			qrx_averaged = 0.0
+			qry_averaged = 0.0
+			qrz_averaged = 0.0
+			temp_averaged = 0.0
+
 		#----------------------------------------------------------------------------------
-		# Every 1000 loops (~1.0), check that the absolute errors values across the array
-		# are to with 0.1% for the earth gravity (0, 0, 1), and 0.1oC for the temperature
+		# Every time the arrays fill up, check that the absolute errors values across the array
+		# are to with 0.1% for the earth gravity, and 0.1oC for the temperature
 		#----------------------------------------------------------------------------------
-		if loop_count % 1000 == 0:
-			loop_count = 0
+		if array_index == 10:
 			array_index = 0
 
-			eax_average = 0.0
-			eay_average = 0.0
-			eaz_average = 0.0
+			egx_average = 0.0
+			egy_average = 0.0
+			egz_average = 0.0
 			temp_average = 0.0
 
-			eax_error = 0.0
-			eay_error = 0.0
-			eaz_error = 0.0
+			egx_error = 0.0
+			egy_error = 0.0
+			egz_error = 0.0
 			temp_error = 0.0
 
 			for ii in range(0, 10):
-				eax_average += eax_array[ii]
-				eay_average += eay_array[ii]
-				eaz_average += eaz_array[ii]
+				egx_average += egx_array[ii]
+				egy_average += egy_array[ii]
+				egz_average += egz_array[ii]
 				temp_average += temp_array[ii]
 
 
-			eax = eax_average / 10
-			eay = eay_average / 10
-			eaz = eaz_average / 10
+			egx = egx_average / 10
+			egy = egy_average / 10
+			egz = egz_average / 10
 			temp = temp_average / 10
 
 			for ii in range(0, 10):
-				eax_error += math.fabs(eax_array[ii]) - eax
-				eay_error += math.fabs(eay_array[ii]) - eay
-				eaz_error += math.fabs(eaz_array[ii]) - eaz
+				egx_error += math.fabs(egx_array[ii]) - egx
+				egy_error += math.fabs(egy_array[ii]) - egy
+				egz_error += math.fabs(egz_array[ii]) - egz
 				temp_error += math.fabs(temp_array[ii]) - temp
 
 			for ii in range(0, 10):
-				eax_array[ii] = 0.0
-				eay_array[ii] = 0.0
-				eaz_array[ii] = 0.0
+				egx_array[ii] = 0.0
+				egy_array[ii] = 0.0
+				egz_array[ii] = 0.0
 				temp_array[ii] = 0.0
 
-			eax_error /= 10
-			eay_error /= 10
-			eaz_error /= 10
+			egx_error /= 10
+			egy_error /= 10
+			egz_error /= 10
 			temp_error /= 10
 
-			if eax_error < 0.001 and eay_error < 0.001 and eaz_error < 0.001 and temp_error < 34 and math.fabs(temp - MPU6050_TEMP_TARGET) < 34:
+			if egx_error < 0.001 and egy_error < 0.001 and egz_error < 0.001 and temp_error < 34 and math.fabs(temp - MPU6050_TEMP_TARGET) < 34:
 				settled = True
 
-			logger.critical("%f, %f, %f, %f, %f, %f, %f, %f, %f, %s", time_now - start_time, temp / 340 + 36.53, temp_error / 340, eax, eax_error, eay, eay_error, eaz, eaz_error, settled)
+			if time_now >= next_log_time:
+				next_log_time += 1.0
+				logger.critical("%f, %f, %f, %f, %f, %f, %f, %f, %s", time_now - start_time, temp / 340 + 36.53, eax, eay, eaz, egx, egy, egz, settled)
 
 			if settled:
 				break
@@ -1788,7 +1975,7 @@ def go():
 	# that gravity doesn't yaw when sitting still on the ground!
 	#-------------------------------------------------------------------------------------------
 	logger.critical("pitch %f, roll %f", math.degrees(pa), math.degrees(ra))
-	logger.critical("earth frame gravity: x = %f, y = %f, z: = %f", eax, eay, eaz)
+	logger.critical("earth frame gravity: x = %f, y = %f, z: = %f", egx, egy, egz)
 	logger.critical("temperature: %f", temp / 340 + 36.53)
 
 	#-------------------------------------------------------------------------------------------
@@ -1798,11 +1985,18 @@ def go():
 	qay_integrated = 0.0
 	qaz_integrated = 0.0
 
-	qgx_integrated = 0.0
-	qgy_integrated = 0.0
-	qgz_integrated = 0.0
+	qrx_integrated = 0.0
+	qry_integrated = 0.0
+	qrz_integrated = 0.0
 
 	loop_count = 0
+	keep_looping = False
+
+	#-------------------------------------------------------------------------------------------
+	# If the warming up period was ctrl-C'd, stop now!
+	#-------------------------------------------------------------------------------------------
+	if woken_by == SIG_SHUTDOWN:
+		CleanShutdown()
 
 	#===========================================================================================
 	# From this point on, at every read of the sensors, take the opportunity to maintain the
@@ -1898,7 +2092,7 @@ def go():
 	# Diagnostic log header
 	#-------------------------------------------------------------------------------------------
 	if diagnostics:
-		logger.warning('time, dt, loop, temp, temp_raw, tpp, tpi, tpd, qgx, qgy, qgz, qax, qay, qaz, efrgv_x, efrgv_y, efrgv_z, qfrgv_x, qfrgv_y, qfrgv_z, qvx_input, qvy_input, qvz_input, pitch, roll, yaw, evx_target, qvx_target, qxp, qxi, qxd, pr_target, prp, pri, prd, pr_out, evy_yarget, qvy_target, qyp, qyi, qyd, rr_target, rrp, rri, rrd, rr_out, evz_target, qvz_target, qzp, qzi, qzd, qvz_out, yr_target, yrp, yri, yrd, yr_out, FL spin, FR spin, BL spin, BR spin')
+		logger.warning('time, dt, loop, temp, temp_raw, tpp, tpi, tpd, qrx, qry, qrz, qax, qay, qaz, efrgv_x, efrgv_y, efrgv_z, qfrgv_x, qfrgv_y, qfrgv_z, qvx_input, qvy_input, qvz_input, pitch, roll, yaw, evx_target, qvx_target, qxp, qxi, qxd, pr_target, prp, pri, prd, pr_out, evy_yarget, qvy_target, qyp, qyi, qyd, rr_target, rrp, rri, rrd, rr_out, evz_target, qvz_target, qzp, qzi, qzd, qvz_out, yr_target, yrp, yri, yrd, yr_out, FL spin, FR spin, BL spin, BR spin')
 
 	#===========================================================================================
 	# Initialize critical timing immediately before starting the PIDs.  This is done by reading
@@ -1929,6 +2123,20 @@ def go():
 	#-------------------------------------------------------------------------------------------
 	sensordata = SENSORDATA()
 
+	#===========================================================================================
+	#
+	# Motion and PID processing loop
+	#
+	# qa? = quad frame acceleration
+	# qg? = quad frame gravity
+	# qr? = quad frame rotation
+	# ea? = earth frame acceleration
+	# eg? = earth frame gravity
+	# ua? = euler angles between reference frames
+	# ur? = euler rotation between frames
+	#
+	#===========================================================================================
+
 	keep_looping = True
 	while keep_looping:
 		#-----------------------------------------------------------------------------------
@@ -1944,7 +2152,7 @@ def go():
 		#-----------------------------------------------------------------------------------
 		# Copy the latest data into the local copy and run with it
 		#-----------------------------------------------------------------------------------
-		i_qax, i_qay, i_qaz, i_qgx, i_qgy, i_qgz, i_time, temperature = sensordata.collect()
+		i_qax, i_qay, i_qaz, i_qrx, i_qry, i_qrz, i_time, temperature = sensordata.collect()
 
 		motion_processing_loops += 1
 		motion_processing_time += i_time
@@ -1955,42 +2163,49 @@ def go():
 		qax = i_qax / i_time
 		qay = i_qay / i_time
 		qaz = i_qaz / i_time
-		qgx = i_qgx / i_time
-		qgy = i_qgy / i_time
-		qgz = i_qgz / i_time
+		qrx = i_qrx / i_time
+		qry = i_qry / i_time
+		qrz = i_qrz / i_time
 
 		#-----------------------------------------------------------------------------------
 		# Sort out units and calibration for the incoming data
 		#-----------------------------------------------------------------------------------
-		qax, qay, qaz, qgx, qgy, qgz = mpu6050.rawCorrection(qax,
+		qax, qay, qaz, qrx, qry, qrz = mpu6050.rawCorrection(qax,
 								     qay,
 								     qaz,
-								     qgx,
-								     qgy,
-								     qgz)
+								     qrx,
+								     qry,
+								     qrz)
 
-		i_qgx = qgx * i_time
-		i_qgy = qgy * i_time
-		i_qgz = qgz * i_time
+		i_qrx = qrx * i_time
+		i_qry = qry * i_time
+		i_qrz = qrz * i_time
 
-		#===================================================================================
-		# Angles: Get angles in radians for Euler and quad frame
-		#===================================================================================
-		epa, era = GetEulerAngles(qax, qay, qaz)
+		#-----------------------------------------------------------------------------------
+		# Get angles in radians for Euler and quad frame: rotate the accelerometer
+		# readings to earth frame, pass them through the butterworth filter, rotate the new
+		# gravity back to the quad frame, and get the revised angles.
+		#-----------------------------------------------------------------------------------
+		eax, eay, eaz = Q2EFrame(qax, qay, qaz, pa, ra, ya)
+		egx = bfx.filter(eax)
+		egy = bfy.filter(eay)
+		egz = bfz.filter(eaz)
+		qgx, qgy, qgz = E2QFrame(egx, egy, egz, pa, ra, ya)
+		uap, uar = GetEulerAngles(qgx, qgy, qgz)
 
 		#-----------------------------------------------------------------------------------
 		# Convert the gyro quad-frame rotation rates into the Euler frames rotation
-		# rates
+		# rates using the revised angles from the Butterworth filter
 		#-----------------------------------------------------------------------------------
-		epr, err, eyr = Body2EulerRates(qgy, qgx, qgz, pa, ra)
+		urp, urr, ury = Body2EulerRates(qry, qrx, qrz, uap, uar)
 
 		#-----------------------------------------------------------------------------------
 		# Merge rotation frames angles with a complementary filter and fill in the blanks
 		#-----------------------------------------------------------------------------------
 		a_tau_fraction = a_tau / (a_tau + i_time)
-		pa = a_tau_fraction * (pa + epr * i_time) + (1 - a_tau_fraction) * epa
-		ra = a_tau_fraction * (ra + err * i_time) + (1 - a_tau_fraction) * era
-		ya += i_qgz
+		pa = a_tau_fraction * (pa + urp * i_time) + (1 - a_tau_fraction) * uap
+		ra = a_tau_fraction * (ra + urr * i_time) + (1 - a_tau_fraction) * uar
+		ya += i_qrz
 
 		#-----------------------------------------------------------------------------------
 		# Get the curent flight plan targets
@@ -2019,25 +2234,15 @@ def go():
 		#-----------------------------------------------------------------------------------
 		# Redistribute gravity around the new orientation of the quad
 		#-----------------------------------------------------------------------------------
-		gax, gay, gaz = E2QFrame(eax, eay, eaz, pa, ra, ya)
-
-		#-----------------------------------------------------------------------------------
-		# Update earth frame gravity to allow for sensor drift, while omiting short term
-		# sensor spikes due to acceleration.
-		#-----------------------------------------------------------------------------------
-		g_tau_fraction = g_tau / (g_tau + i_time)
-		gax = g_tau_fraction * gax + (1 - g_tau_fraction) * qax
-		gay = g_tau_fraction * gay + (1 - g_tau_fraction) * qay
-		gaz = g_tau_fraction * gaz + (1 - g_tau_fraction) * qaz
-		eax, eay, eaz = Q2EFrame(gax, gay, gaz, pa, ra, ya)
+		qgx, qgy, qgz = E2QFrame(egx, egy, egz, pa, ra, ya)
 
 		#-----------------------------------------------------------------------------------
 		# Delete reorientated gravity from raw accelerometer readings and sum to make
 		# velocity all in quad frame
 		#-----------------------------------------------------------------------------------
-		qvx_input += (qax - gax) * i_time * GRAV_ACCEL
-		qvy_input += (qay - gay) * i_time * GRAV_ACCEL
-		qvz_input += (qaz - gaz) * i_time * GRAV_ACCEL
+		qvx_input += (qax - qgx) * i_time * GRAV_ACCEL
+		qvy_input += (qay - qgy) * i_time * GRAV_ACCEL
+		qvz_input += (qaz - qgz) * i_time * GRAV_ACCEL
 
 		#===================================================================================
 		# Temperature PID: maintain a constant temperature for reading other sensors
@@ -2098,15 +2303,15 @@ def go():
 		# Attitude PIDs: Run the rotation rate PIDs each rotation axis to determine
 		# overall PWM output.
 		#===================================================================================
-		[p_out, i_out, d_out] = pr_pid.Compute(qgy, pr_target, i_time)
+		[p_out, i_out, d_out] = pr_pid.Compute(qry, pr_target, i_time)
 		pr_diags = "%f, %f, %f" % (p_out, i_out, d_out)
 		pr_out = p_out + i_out + d_out
 
-		[p_out, i_out, d_out] = rr_pid.Compute(qgx, rr_target, i_time)
+		[p_out, i_out, d_out] = rr_pid.Compute(qrx, rr_target, i_time)
 		rr_diags = "%f, %f, %f" % (p_out, i_out, d_out)
 		rr_out = p_out + i_out + d_out
 
-		[p_out, i_out, d_out] = yr_pid.Compute(qgz, yr_target, i_time)
+		[p_out, i_out, d_out] = yr_pid.Compute(qrz, yr_target, i_time)
 		yr_diags = "%f, %f, %f" % (p_out, i_out, d_out)
 		yr_out = p_out + i_out + d_out
 
@@ -2170,7 +2375,7 @@ def go():
 		#-----------------------------------------------------------------------------------
 		if diagnostics:
 			logger.warning('%f, %f, %d, %f, %d, %s, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %s, %f, %s, %d, %f, %f, %s, %f, %s, %d, %f, %f, %s, %d, %f, %s, %d, %d, %d, %d, %d',
-				       motion_processing_time, i_time, motion_processing_loops, temperature / 340 + 36.53, temperature, temp_diags, qgx, qgy, qgz, qax, qay, qaz, eax, eay, eaz, gax, gay, gaz, qvx_input, qvy_input, qvz_input, math.degrees(pa), math.degrees(ra), math.degrees(ya), evx_target, qvx_target, qvx_diags, math.degrees(pr_target), pr_diags, pr_out, evy_target, qvy_target, qvy_diags, math.degrees(rr_target), rr_diags, rr_out, evz_target, qvz_target, qvz_diags, qvz_out, math.degrees(yr_target), yr_diags, yr_out, esc_list[0].pulse_width, esc_list[1].pulse_width, esc_list[2].pulse_width, esc_list[3].pulse_width)
+				       motion_processing_time, i_time, motion_processing_loops, temperature / 340 + 36.53, temperature, temp_diags, qrx, qry, qrz, qax, qay, qaz, egx, egy, egz, qgx, qgy, qgz, qvx_input, qvy_input, qvz_input, math.degrees(pa), math.degrees(ra), math.degrees(ya), evx_target, qvx_target, qvx_diags, math.degrees(pr_target), pr_diags, pr_out, evy_target, qvy_target, qvy_diags, math.degrees(rr_target), rr_diags, rr_out, evz_target, qvz_target, qvz_diags, qvz_out, math.degrees(yr_target), yr_diags, yr_out, esc_list[0].pulse_width, esc_list[1].pulse_width, esc_list[2].pulse_width, esc_list[3].pulse_width)
 
 
 	#-------------------------------------------------------------------------------------------
@@ -2199,9 +2404,9 @@ class SENSORDATA():
 		self.i_qax = 0
 		self.i_qay = 0
 		self.i_qaz = 0
-		self.i_qgx = 0
-		self.i_qgy = 0
-		self.i_qgz = 0
+		self.i_qrx = 0
+		self.i_qry = 0
+		self.i_qrz = 0
 		self.i_time = 0.0
 		self.temperature = 0
 
@@ -2213,7 +2418,7 @@ class SENSORDATA():
 		#-----------------------------------------------------------------------------------
 		# Main thread
 		#-----------------------------------------------------------------------------------
-		return self.i_qax, self.i_qay, self.i_qaz, self.i_qgx, self.i_qgy, self.i_qgz, self.i_time, self.temperature
+		return self.i_qax, self.i_qay, self.i_qaz, self.i_qrx, self.i_qry, self.i_qrz, self.i_time, self.temperature
 
 	def integrator(self):
 		#-----------------------------------------------------------------------------------
@@ -2223,6 +2428,7 @@ class SENSORDATA():
 		global loop_count
 		global elapsed_time
 		global motion_period
+		global next_motion_update
 
 		ax_integrated = 0.0
 		ay_integrated = 0.0
@@ -2239,7 +2445,6 @@ class SENSORDATA():
 		mpu6050.readSensorsRaw()
 		elapsed_time = 0.0
 		start_time = time_now
-		last_motion_update = time_now
 		integration_start = time_now
 		last_temp_check = time_now
 
@@ -2282,8 +2487,8 @@ class SENSORDATA():
 			# Motion Processing:  Use the recorded data to produce motion data and feed
 			# in the motion PIDs
 			#===========================================================================
-			if time_now - last_motion_update >= motion_period:
-				last_motion_update += motion_period
+			if time_now >= next_motion_update:
+				next_motion_update += motion_period
 
 				#-------------------------------------------------------------------
 				# Work out the average acceleration and rotation rate
@@ -2294,9 +2499,9 @@ class SENSORDATA():
 				self.i_qax = ax_integrated
 				self.i_qay = ay_integrated
 				self.i_qaz = az_integrated
-				self.i_qgx = gx_integrated
-				self.i_qgy = gy_integrated
-				self.i_qgz = gz_integrated
+				self.i_qrx = gx_integrated
+				self.i_qry = gy_integrated
+				self.i_qrz = gz_integrated
 				self.i_time = integration_period
 				self.temperature = temp_now
 
