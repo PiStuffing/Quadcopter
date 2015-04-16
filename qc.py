@@ -7,12 +7,18 @@
 ## PiStuffing/Quadcopter under GPL for non-commercial application.  Any code derived from    ##
 ## this should retain this copyright comment.                                                ##
 ##                                                                                           ##
-## Copyright 2014 Andy Baker (Hove) - andy@pistuffing.co.uk                                  ##
+## Copyright 2014 - 2015 Andy Baker (Hove) - andy@pistuffing.co.uk                           ##
 ##                                                                                           ##
 ###############################################################################################
 ###############################################################################################
 
 import Quadcopter
+import os
+
+os.nice(-10)
 
 if __name__ == '__main__':
-	Quadcopter.go()
+	#-------------------------------------------------------------------------------------
+	# Off we go!
+	#-------------------------------------------------------------------------------------
+	Quadcopter.go("phoebe")
