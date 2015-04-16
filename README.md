@@ -6,7 +6,7 @@ Python project for Phoebe the Raspberry Pi Autonomous Quadcopter
 Index
 -----
 <ul>
-<li>beret.brd     - Eagle layput the Raspberry Pi B+ breadboard replacement PCB</li>
+<li>beret.brd     - Eagle layout the Raspberry Pi A+/B+/B2 breadboard replacement PCB</li>
 <li>GPIO.tgz      - Performance enhanced Python RPi.GPIO edge detection</li>
 <li>LICENCE       - Usage definition</li>
 <li>PhoebePresentationCamJamSept14 - LibreOffice presentation for ...</li>
