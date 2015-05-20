@@ -288,14 +288,23 @@ class MPU6050 :
         self.gz_offset = 0.0
 
         if i_am_phoebe:
-            self.ax_offset = -31.0
-            self.ay_offset =  65.0
-            self.az_offset = -131.0
+            self.ax_offset = -81.0
+            self.ay_offset =  77.0
+            self.az_offset = -221.0
+
+            self.ax_offset = 0.0
+            self.ay_offset = 0.0
+            self.az_offset = 0.0
 
         elif i_am_chloe:
             self.ax_offset = 25.0
             self.ay_offset = 125.0
             self.az_offset = 175.0
+
+            self.ax_offset = 0.0
+            self.ay_offset = 0.0
+            self.az_offset = 0.0
+
 
         logger.info('Reseting MPU-6050')
 
@@ -945,22 +954,22 @@ def CheckCLI(argv):
         #-------------------------------------------------------------------------------------------
         # Defaults for horizontal velocity PIDs
         #-------------------------------------------------------------------------------------------
-        cli_hvp_gain = 0.66
-        cli_hvi_gain = 0.3
-        cli_hvd_gain = 0.1
+        cli_hvp_gain = 1.0
+        cli_hvi_gain = 0.03
+        cli_hvd_gain = 0.0
 
         #-------------------------------------------------------------------------------------------
         # Defaults for pitch angle PIDs
         #-------------------------------------------------------------------------------------------
-        cli_prp_gain = 120.0
-        cli_pri_gain = 60.0
+        cli_prp_gain = 100.0
+        cli_pri_gain = 50.0
         cli_prd_gain = 0.0
 
         #-------------------------------------------------------------------------------------------
         # Defaults for roll angle PIDs
         #-------------------------------------------------------------------------------------------
-        cli_rrp_gain = 110.0
-        cli_rri_gain = 55.0
+        cli_rrp_gain = 96.00
+        cli_rri_gain = 48.0
         cli_rrd_gain = 0.0
 
         #-------------------------------------------------------------------------------------------
@@ -971,9 +980,9 @@ def CheckCLI(argv):
         cli_yrd_gain = 0.0
 
         #-------------------------------------------------------------------------------------------
-        # Due to Phoebe's hard frame she can only tolerate accelerometer low pass filter of 3
+        # Due to Phoebe's silicone dampers she can tolerate accelerometer low pass filter of 2
         #-------------------------------------------------------------------------------------------
-        cli_alpf = 3
+        cli_alpf = 2
 
     elif i_am_chloe:
         #-------------------------------------------------------------------------------------------
@@ -991,9 +1000,9 @@ def CheckCLI(argv):
         #-------------------------------------------------------------------------------------------
         # Defaults for horizontal velocity PIDs
         #-------------------------------------------------------------------------------------------
-        cli_hvp_gain = 0.66
-        cli_hvi_gain = 0.3
-        cli_hvd_gain = 0.1
+        cli_hvp_gain = 1.0
+        cli_hvi_gain = 0.03
+        cli_hvd_gain = 0.0
 
         #-------------------------------------------------------------------------------------------
         # Defaults for pitch angle PIDs
@@ -1156,7 +1165,6 @@ def CheckCLI(argv):
 
     elif cli_test_case == 0 and cli_calibrate_gravity:
         logger.critical('Calibrate gravity is it, sir!')
-        cli_alpf = 6
 
     elif cli_test_case == 0:
         logger.critical('You must specify flight (-f) or gravity calibration (-g)')
@@ -1605,7 +1613,7 @@ def go(name):
     # iterative increasingly accurate measure of the tilt of the take-off surface and hence gravity.
     #-----------------------------------------------------------------------------------------------
     ya = 0.0
-    for ii in range(20):
+    for ii in range(20000):
         qax, qay, qaz, qrx, qry, qrz = mpu6050.readSensors()
 	qax, qay, qaz, qrx, qry, qrz = mpu6050.scaleSensors(qax, qay, qaz, qrx, qry, qrz)
 	pa, ra = GetRotationAngles(qax, qay, qaz)
@@ -1614,7 +1622,7 @@ def go(name):
         egy = bfy.filter(eay)
         egz = bfz.filter(eaz)
         if ii % 1000 == 0:
-          logger.critical("%d...", 20 - ii)
+          logger.critical("%d...", 20 - int(ii / 1000))
 
     #-----------------------------------------------------------------------------------------------
     # Log the critical parameters from this warm-up: the take-off surface tilt, and gravity. Note
@@ -1793,32 +1801,28 @@ def go(name):
         i_qry = qry * i_time
         i_qrz = qrz * i_time
 
+        #-------------------------------------------------------------------------------------------
+        # Update the previous pitch, roll and yaw angles with the latest gyro output
+        #-------------------------------------------------------------------------------------------
+        urp, urr, ury = Body2EulerRates(qry, qrx, qrz, pa, ra)
+        pa += urp * i_time
+        ra += urr * i_time
+        ya += ury * i_time
 
         #-------------------------------------------------------------------------------------------
-        # Get angles in radians for Euler and quad frame: rotate the accelerometer readings to earth
-        # frame, pass them through the butterworth filter, rotate the new gravity back to the quad
-        # frame, and get the revised angles.
+        # Based upon the revised angles, rotate the latest accelerometer readings to earth frame.
+        # Next, run the earth frame acceleration through the Butterworth LPF to extract gravity.
+        # Next, rotate and revise gravity back to the quad frame.
+        # Finally, based upon the new distribution of gravity around the quad frame, update the Euler
+        # angles.
         #-------------------------------------------------------------------------------------------
         eax, eay, eaz = RotateQ2E(qax, qay, qaz, pa, ra, ya)
+
         egx = bfx.filter(eax)
         egy = bfy.filter(eay)
         egz = bfz.filter(eaz)
+
         qgx, qgy, qgz = RotateE2Q(egx, egy, egz, pa, ra, ya)
-        uap, uar = GetRotationAngles(qgx, qgy, qgz)
-
-        #-------------------------------------------------------------------------------------------
-        # Convert the gyro quad-frame rotation rates into the Euler frames rotation rates using the
-        # revised angles from the Butterworth filter
-        #-------------------------------------------------------------------------------------------
-        urp, urr, ury = Body2EulerRates(qry, qrx, qrz, uap, uar)
-
-        #-------------------------------------------------------------------------------------------
-        # Merge rotation frames angles with a complementary filter and fill in the blanks
-        #-------------------------------------------------------------------------------------------
-        tau_fraction = tau / (tau + i_time)
-        pa = tau_fraction * (pa + urp * i_time) + (1 - tau_fraction) * uap
-        ra = tau_fraction * (ra + urr * i_time) + (1 - tau_fraction) * uar
-        ya += i_qrz
 
         #-------------------------------------------------------------------------------------------
         # Get the curent flight plan targets
