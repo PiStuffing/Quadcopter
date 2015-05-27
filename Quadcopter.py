@@ -287,25 +287,6 @@ class MPU6050 :
         self.gy_offset = 0.0
         self.gz_offset = 0.0
 
-        if i_am_phoebe:
-            self.ax_offset = -81.0
-            self.ay_offset =  77.0
-            self.az_offset = -221.0
-
-            self.ax_offset = 0.0
-            self.ay_offset = 0.0
-            self.az_offset = 0.0
-
-        elif i_am_chloe:
-            self.ax_offset = 25.0
-            self.ay_offset = 125.0
-            self.az_offset = 175.0
-
-            self.ax_offset = 0.0
-            self.ay_offset = 0.0
-            self.az_offset = 0.0
-
-
         logger.info('Reseting MPU-6050')
 
         #-------------------------------------------------------------------------------------------
@@ -439,9 +420,9 @@ class MPU6050 :
         return ax, ay, az, gx, gy, gz
 
     def scaleSensors(self, ax, ay, az, gx, gy, gz):
-        qax = (ax - self.ax_offset) * self.__SCALE_ACCEL
-        qay = (ay - self.ay_offset) * self.__SCALE_ACCEL
-        qaz = (az - self.az_offset) * self.__SCALE_ACCEL
+        qax = ax * self.__SCALE_ACCEL
+        qay = ay * self.__SCALE_ACCEL
+        qaz = az * self.__SCALE_ACCEL
 
         qrx = (gx - self.gx_offset) * self.__SCALE_GYRO
         qry = (gy - self.gy_offset) * self.__SCALE_GYRO
@@ -931,7 +912,8 @@ def CheckCLI(argv):
     # Other configuration defaults
     #-----------------------------------------------------------------------------------------------
     cli_test_case = 0
-    cli_glpf = 1
+    cli_alpf = 3
+    cli_glpf = 2
     cli_diagnostics = False
     cli_rtf_period = 1.0
     cli_tau = 0.5
@@ -954,8 +936,8 @@ def CheckCLI(argv):
         #-------------------------------------------------------------------------------------------
         # Defaults for horizontal velocity PIDs
         #-------------------------------------------------------------------------------------------
-        cli_hvp_gain = 1.0
-        cli_hvi_gain = 0.03
+        cli_hvp_gain = 1.25
+        cli_hvi_gain = 0.01
         cli_hvd_gain = 0.0
 
         #-------------------------------------------------------------------------------------------
@@ -979,11 +961,6 @@ def CheckCLI(argv):
         cli_yri_gain = 30.0
         cli_yrd_gain = 0.0
 
-        #-------------------------------------------------------------------------------------------
-        # Due to Phoebe's silicone dampers she can tolerate accelerometer low pass filter of 2
-        #-------------------------------------------------------------------------------------------
-        cli_alpf = 2
-
     elif i_am_chloe:
         #-------------------------------------------------------------------------------------------
         # Chloe's PID configuration due to using her frame / ESCs / motors / props
@@ -1000,22 +977,22 @@ def CheckCLI(argv):
         #-------------------------------------------------------------------------------------------
         # Defaults for horizontal velocity PIDs
         #-------------------------------------------------------------------------------------------
-        cli_hvp_gain = 1.0
-        cli_hvi_gain = 0.03
+        cli_hvp_gain = 1.25
+        cli_hvi_gain = 0.01
         cli_hvd_gain = 0.0
 
         #-------------------------------------------------------------------------------------------
         # Defaults for pitch angle PIDs
         #-------------------------------------------------------------------------------------------
-        cli_prp_gain = 80.0
-        cli_pri_gain = 40.0
+        cli_prp_gain = 88.0
+        cli_pri_gain = 44.0
         cli_prd_gain = 0.0
 
         #-------------------------------------------------------------------------------------------
         # Defaults for roll angle PIDs
         #-------------------------------------------------------------------------------------------
-        cli_rrp_gain = 76.0
-        cli_rri_gain = 38.0
+        cli_rrp_gain = 84.0
+        cli_rri_gain = 42.0
         cli_rrd_gain = 0.0
 
         #-------------------------------------------------------------------------------------------
@@ -1024,11 +1001,6 @@ def CheckCLI(argv):
         cli_yrp_gain = 50.0
         cli_yri_gain = 25.0
         cli_yrd_gain = 0.0
-
-        #-------------------------------------------------------------------------------------------
-        # Due to Chloe's silicone dampers she can tolerate accelerometer low pass filter of 1
-        #-------------------------------------------------------------------------------------------
-        cli_alpf = 1
 
     #-----------------------------------------------------------------------------------------------
     # Right, let's get on with reading the command line and checking consistency
@@ -1292,7 +1264,7 @@ class FlightPlan:
     fp_evx_target  = [0.0,       0.0,       0.0,       0.0,       0.0]
     fp_evy_target  = [0.0,       0.0,       0.0,       0.0,       0.0]
     fp_evz_target  = [0.0,       0.5,       0.0,      -0.5,       0.0]
-    fp_time        = [0.0,       1.0,       4.0,       1.0,       0.0]
+    fp_time        = [0.0,       1.0,       5.0,       1.0,       0.0]
     fp_name        = ["RTF",  "ASCENT",   "HOVER", "DESCENT",    "STOP"]
     _FP_STEPS = 5
 
@@ -1612,15 +1584,24 @@ def go(name):
     # 20 seconds of loops here to fill up the butterworth filter with valid values, and get an
     # iterative increasingly accurate measure of the tilt of the take-off surface and hence gravity.
     #-----------------------------------------------------------------------------------------------
+    pa = 0.0
+    ra = 0.0
     ya = 0.0
+
     for ii in range(20000):
         qax, qay, qaz, qrx, qry, qrz = mpu6050.readSensors()
 	qax, qay, qaz, qrx, qry, qrz = mpu6050.scaleSensors(qax, qay, qaz, qrx, qry, qrz)
-	pa, ra = GetRotationAngles(qax, qay, qaz)
-        eax, eay, eaz = RotateQ2E(qax, qay, qaz, pa, ra, ya)
+
+	bpa, bra = GetRotationAngles(qax, qay, qaz)
+
+        eax, eay, eaz = RotateQ2E(qax, qay, qaz, bpa, bra, ya)
         egx = bfx.filter(eax)
         egy = bfy.filter(eay)
         egz = bfz.filter(eaz)
+
+        pa = 0.1 * bpa + 0.9 * pa
+        ra = 0.1 * bra + 0.9 * ra
+
         if ii % 1000 == 0:
           logger.critical("%d...", 20 - int(ii / 1000))
 
@@ -1809,6 +1790,7 @@ def go(name):
         ra += urr * i_time
         ya += ury * i_time
 
+
         #-------------------------------------------------------------------------------------------
         # Based upon the revised angles, rotate the latest accelerometer readings to earth frame.
         # Next, run the earth frame acceleration through the Butterworth LPF to extract gravity.
@@ -1823,6 +1805,14 @@ def go(name):
         egz = bfz.filter(eaz)
 
         qgx, qgy, qgz = RotateE2Q(egx, egy, egz, pa, ra, ya)
+
+        #-------------------------------------------------------------------------------------------
+        # Merge the short-term noise free gyro angles with the long-term accurate acclerometer angles
+        #-------------------------------------------------------------------------------------------
+        uap, uar = GetRotationAngles(qgx, qgy, qgz)
+        tau_fraction = tau / (tau + i_time)
+        pa = tau_fraction * pa + (1 - tau_fraction) * uap
+        ra = tau_fraction * ra + (1 - tau_fraction) * uar
 
         #-------------------------------------------------------------------------------------------
         # Get the curent flight plan targets
