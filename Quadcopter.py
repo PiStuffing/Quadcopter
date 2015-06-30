@@ -28,7 +28,7 @@ import os
 import struct
 import logging
 
-import RPi.GPIO as RPIO
+import GPIO as RPIO
 from RPIO import PWM
 
 import subprocess
@@ -380,9 +380,10 @@ class MPU6050 :
     def readSensors(self):
         #-------------------------------------------------------------------------------------------
         # For the sake of always getting good date wrap the interrupt and the register read in a try
-        # except loop.
+        # except loop. dt is the time taken to get a good reading in ms.
         #-------------------------------------------------------------------------------------------
         while True:
+            dt = 1
             try:
                 #-----------------------------------------------------------------------------------
                 # Wait for the data ready interrupt
@@ -397,6 +398,7 @@ class MPU6050 :
                 sensor_data = self.i2c.readList(self.__MPU6050_RA_ACCEL_XOUT_H, 14)
             except:
                 self.num_i2c_errs += 1
+                dt += 1
                 continue
 
             #---------------------------------------------------------------------------------------
@@ -410,14 +412,21 @@ class MPU6050 :
             #-------------------------------------------------------------------------------------------
             # +/- 4g * 16 bit range for the accelerometer
             # +/- 250 degrees per second * 16 bit range for the gyroscope
+            #
+            # If the code is a bit slow reacting the the data ready interrupt to read the data, it is
+            # possible that the data has already been overwritten.  This shows as field set to -1,
+            # starting at the gyroscope values.  Hence if the gyro values read -1, it is likely we've
+            # missed the train.  We could just check gz, but because we don't do much with yaw, we can
+            # safely include pitch which is critical; this reduces the number of false positives.
             #-------------------------------------------------------------------------------------------
             [ax, ay, az, temp, gx, gy, gz] = self.result_array
-            if gz == -1 and gy == -1 and gx == -1 and temp == -1 and az == -1:
+            if gz == -1 and gy == -1:
                self.num_data_errs += 1
+               dt += 1
                continue
             break
 
-        return ax, ay, az, gx, gy, gz
+        return ax, ay, az, gx, gy, gz, dt
 
     def scaleSensors(self, ax, ay, az, gx, gy, gz):
         qax = ax * self.__SCALE_ACCEL
@@ -437,7 +446,7 @@ class MPU6050 :
         gz_offset = 0.0
 
         for iteration in range(0, self.__CALIBRATION_ITERATIONS):
-            [ax, ay, az, gx, gy, gz] = self.readSensors()
+            [ax, ay, az, gx, gy, gz, dt] = self.readSensors()
 
             gx_offset += gx
             gy_offset += gy
@@ -446,38 +455,6 @@ class MPU6050 :
         self.gx_offset = gx_offset / self.__CALIBRATION_ITERATIONS
         self.gy_offset = gy_offset / self.__CALIBRATION_ITERATIONS
         self.gz_offset = gz_offset / self.__CALIBRATION_ITERATIONS
-
-    def calibrateGravity(self, file_name):
-        gravity_x = 0.0
-        gravity_y = 0.0
-        gravity_z = 0.0
-        cfg_rc = True
-
-        #-------------------------------------------------------------------------------------------
-        # Open the ofset file for this run
-        #-------------------------------------------------------------------------------------------
-        try:
-            with open(file_name, 'a') as cfg_file:
-                while True:
-                    try:
-                        command = raw_input("Test environment? ")
-                        for iteration in range(0, self.__CALIBRATION_ITERATIONS):
-                            [ax, ay, az, gx, gy, gz] = self.readSensors()
-                            gravity_x += ax
-                            gravity_y += ay
-                            gravity_z += az
-
-                        gravity_x /= self.__CALIBRATION_ITERATIONS
-                        gravity_y /= self.__CALIBRATION_ITERATIONS
-                        gravity_z /= self.__CALIBRATION_ITERATIONS
-
-                        cfg_file.write(command + ", %f, %f, %f\n" % (gravity_x, gravity_y, gravity_z, ))
-                    except KeyboardInterrupt:
-                        break
-        except EnvironmentError:
-            logger.critical("OFFS")
-
-        return cfg_rc
 
 
     def getMisses(self):
@@ -875,7 +852,7 @@ def RpioSetup():
     # input up when data is ready, and reading the data drives it down.
     #-----------------------------------------------------------------------------------------------
     logger.info('Setup MPU6050 interrupt input %s', RPIO_DATA_READY_INTERRUPT)
-    RPIO.setup(RPIO_DATA_READY_INTERRUPT, RPIO.IN)
+    RPIO.setup(RPIO_DATA_READY_INTERRUPT, RPIO.IN, RPIO.PUD_OFF)
     RPIO.edge_detect_init(RPIO_DATA_READY_INTERRUPT, RPIO.RISING)
 
     #-----------------------------------------------------------------------------------------------
@@ -904,7 +881,6 @@ def RpioCleanup():
 def CheckCLI(argv):
 
     cli_fly = False
-    cli_calibrate_gravity = False
     cli_video = False
     cli_hover_target = 0
 
@@ -936,8 +912,8 @@ def CheckCLI(argv):
         #-------------------------------------------------------------------------------------------
         # Defaults for horizontal velocity PIDs
         #-------------------------------------------------------------------------------------------
-        cli_hvp_gain = 1.25
-        cli_hvi_gain = 0.01
+        cli_hvp_gain = 1.2
+        cli_hvi_gain = 0.1
         cli_hvd_gain = 0.0
 
         #-------------------------------------------------------------------------------------------
@@ -977,8 +953,8 @@ def CheckCLI(argv):
         #-------------------------------------------------------------------------------------------
         # Defaults for horizontal velocity PIDs
         #-------------------------------------------------------------------------------------------
-        cli_hvp_gain = 1.25
-        cli_hvi_gain = 0.01
+        cli_hvp_gain = 1.2
+        cli_hvi_gain = 0.1
         cli_hvd_gain = 0.0
 
         #-------------------------------------------------------------------------------------------
@@ -1006,13 +982,12 @@ def CheckCLI(argv):
     # Right, let's get on with reading the command line and checking consistency
     #-----------------------------------------------------------------------------------------------
     try:
-        opts, args = getopt.getopt(argv,'dfgvh:r:', ['tc=', 'tau=', 'vvp=', 'vvi=', 'vvd=', 'hvp=', 'hvi=', 'hvd=', 'prp=', 'pri=', 'prd=', 'rrp=', 'rri=', 'rrd=', 'tau=', 'yrp=', 'yri=', 'yrd=', 'alpf=', 'glpf='])
+        opts, args = getopt.getopt(argv,'dfvh:r:', ['tc=', 'tau=', 'vvp=', 'vvi=', 'vvd=', 'hvp=', 'hvi=', 'hvd=', 'prp=', 'pri=', 'prd=', 'rrp=', 'rri=', 'rrd=', 'tau=', 'yrp=', 'yri=', 'yrd=', 'alpf=', 'glpf='])
     except getopt.GetoptError:
         logger.critical('Must specify one of -f or -g or --tc')
         logger.critical('  qcpi.py')
         logger.critical('  -f set whether to fly')
         logger.critical('  -h set the hover speed for manual testing')
-        logger.critical('  -g calibrate gravity against temperature, save and end')
         logger.critical('  -d enable diagnostics')
         logger.critical('  -v video the flight')
         logger.critical('  -r ??  set the ready-to-fly period')
@@ -1047,9 +1022,6 @@ def CheckCLI(argv):
 
         elif opt in '-v':
             cli_video = True
-
-        elif opt in '-g':
-            cli_calibrate_gravity = True
 
         elif opt in '-d':
             cli_diagnostics = True
@@ -1123,7 +1095,7 @@ def CheckCLI(argv):
         elif opt in '--glpf':
             cli_glpf = int(arg)
 
-    if not cli_fly and not cli_calibrate_gravity and cli_test_case == 0:
+    if not cli_fly and cli_test_case == 0:
         logger.critical('Must specify one of -f or --tc')
         sys.exit(2)
 
@@ -1135,16 +1107,6 @@ def CheckCLI(argv):
     elif cli_test_case == 0 and cli_fly:
         logger.critical('Pre-flight checks passed, enjoy your flight, sir!')
 
-    elif cli_test_case == 0 and cli_calibrate_gravity:
-        logger.critical('Calibrate gravity is it, sir!')
-
-    elif cli_test_case == 0:
-        logger.critical('You must specify flight (-f) or gravity calibration (-g)')
-        sys.exit(2)
-
-    elif cli_fly or cli_calibrate_gravity:
-        logger.critical('Choose a specific test case (--tc) or fly (-f) or calibrate gravity (-g)')
-        sys.exit(2)
 
     elif cli_test_case != 1 and cli_test_case != 2:
         logger.critical('Only 1 or 2 are valid testcases')
@@ -1155,7 +1117,7 @@ def CheckCLI(argv):
         sys.exit(2)
 
 
-    return cli_calibrate_gravity, cli_fly, cli_hover_target, cli_video, cli_vvp_gain, cli_vvi_gain, cli_vvd_gain, cli_hvp_gain, cli_hvi_gain, cli_hvd_gain, cli_prp_gain, cli_pri_gain, cli_prd_gain, cli_rrp_gain, cli_rri_gain, cli_rrd_gain, cli_yrp_gain, cli_yri_gain, cli_yrd_gain, cli_test_case, cli_alpf, cli_glpf, cli_rtf_period, cli_tau, cli_diagnostics
+    return cli_fly, cli_hover_target, cli_video, cli_vvp_gain, cli_vvi_gain, cli_vvd_gain, cli_hvp_gain, cli_hvi_gain, cli_hvd_gain, cli_prp_gain, cli_pri_gain, cli_prd_gain, cli_rrp_gain, cli_rri_gain, cli_rrd_gain, cli_yrp_gain, cli_yri_gain, cli_yrd_gain, cli_test_case, cli_alpf, cli_glpf, cli_rtf_period, cli_tau, cli_diagnostics
 
 ####################################################################################################
 #
@@ -1185,7 +1147,7 @@ def CleanShutdown():
     # If the sensor data acquisition is running, then stop it
     #-----------------------------------------------------------------------------------------------
     if sensordata is not None:
-        logger.critical("lps: %f", sensordata.elapsed_loop_count / sensordata.elapsed_loop_time)
+        logger.critical("lps: %f", sensordata.total_loops / sensordata.elapsed_time)
         sensordata.go = False;
 
     #-----------------------------------------------------------------------------------------------
@@ -1418,9 +1380,9 @@ def go(name):
     #-----------------------------------------------------------------------------------------------
     # Check the command line for calibration or flight parameters
     #-----------------------------------------------------------------------------------------------
-    calibrate_gravity, flying, hover_target, shoot_video, vvp_gain, vvi_gain, vvd_gain, hvp_gain, hvi_gain, hvd_gain, prp_gain, pri_gain, prd_gain, rrp_gain, rri_gain, rrd_gain, yrp_gain, yri_gain, yrd_gain, test_case, alpf, glpf, rtf_period, tau, diagnostics = CheckCLI(sys.argv[1:])
-    logger.warning("calibrate_gravity = %s, fly = %s, hover_target = %d, shoot_video = %s, vvp_gain = %f, vvi_gain = %f, vvd_gain= %f, hvp_gain = %f, hvi_gain = %f, hvd_gain = %f, prp_gain = %f, pri_gain = %f, prd_gain = %f, rrp_gain = %f, rri_gain = %f, rrd_gain = %f, yrp_gain = %f, yri_gain = %f, yrd_gain = %f, test_case = %d, alpf = %d, glpf = %d, rtf_period = %f, tau = %f, diagnostics = %s",
-            calibrate_gravity, flying, hover_target, shoot_video, vvp_gain, vvi_gain, vvd_gain, hvp_gain, hvi_gain, hvd_gain, prp_gain, pri_gain, prd_gain, rrp_gain, rri_gain, rrd_gain, yrp_gain, yri_gain, yrd_gain, test_case, alpf, glpf, rtf_period, tau, diagnostics)
+    flying, hover_target, shoot_video, vvp_gain, vvi_gain, vvd_gain, hvp_gain, hvi_gain, hvd_gain, prp_gain, pri_gain, prd_gain, rrp_gain, rri_gain, rrd_gain, yrp_gain, yri_gain, yrd_gain, test_case, alpf, glpf, rtf_period, tau, diagnostics = CheckCLI(sys.argv[1:])
+    logger.warning("fly = %s, hover_target = %d, shoot_video = %s, vvp_gain = %f, vvi_gain = %f, vvd_gain= %f, hvp_gain = %f, hvi_gain = %f, hvd_gain = %f, prp_gain = %f, pri_gain = %f, prd_gain = %f, rrp_gain = %f, rri_gain = %f, rrd_gain = %f, yrp_gain = %f, yri_gain = %f, yrd_gain = %f, test_case = %d, alpf = %d, glpf = %d, rtf_period = %f, tau = %f, diagnostics = %s",
+            flying, hover_target, shoot_video, vvp_gain, vvi_gain, vvd_gain, hvp_gain, hvi_gain, hvd_gain, prp_gain, pri_gain, prd_gain, rrp_gain, rri_gain, rrd_gain, yrp_gain, yri_gain, yrd_gain, test_case, alpf, glpf, rtf_period, tau, diagnostics)
 
     #-----------------------------------------------------------------------------------------------
     # Initialize the numeric globals
@@ -1569,13 +1531,6 @@ def go(name):
     ms5611 = MS5611(0x77)
 
     #-----------------------------------------------------------------------------------------------
-    # Calibrate 0g gravity offsets now.
-    #-----------------------------------------------------------------------------------------------
-    if calibrate_gravity:
-        mpu6050.calibrateGravity("qcoffsets.csv")
-        CleanShutdown()
-
-    #-----------------------------------------------------------------------------------------------
     # Calibrate gyros - this is a one-off
     #-----------------------------------------------------------------------------------------------
     mpu6050.calibrateGyros()
@@ -1589,7 +1544,7 @@ def go(name):
     ya = 0.0
 
     for ii in range(20000):
-        qax, qay, qaz, qrx, qry, qrz = mpu6050.readSensors()
+        qax, qay, qaz, qrx, qry, qrz, dt = mpu6050.readSensors()
 	qax, qay, qaz, qrx, qry, qrz = mpu6050.scaleSensors(qax, qay, qaz, qrx, qry, qrz)
 
 	bpa, bra = GetRotationAngles(qax, qay, qaz)
@@ -1612,6 +1567,8 @@ def go(name):
     #-----------------------------------------------------------------------------------------------
     logger.critical("pitch %f, roll %f", math.degrees(pa), math.degrees(ra))
     logger.critical("egx %f, egy %f, egz %f", egx, egy, egz)
+    data_errors, i2c_errors = mpu6050.getMisses()
+    logger.critical("data errors: %d; i2c errors: %d", data_errors, i2c_errors)
 
     #-----------------------------------------------------------------------------------------------
     # Start up the video camera if required - this runs from take-off through to shutdown
@@ -2013,7 +1970,7 @@ def go(name):
         #-------------------------------------------------------------------------------------------
         if diagnostics:
             logger.warning('%f, %f, %d, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %s, %f, %s, %d, %f, %f, %s, %f, %s, %d, %f, %f, %s, %d, %f, %s, %d, %d, %d, %d, %d',
-                            sensordata.elapsed_loop_time, i_time, sensordata.elapsed_loop_count, qrx, qry, qrz, qax, qay, qaz, egx, egy, egz, qgx, qgy, qgz, qvx_input, qvy_input, qvz_input, math.degrees(pa), math.degrees(ra), math.degrees(ya), evx_target, qvx_target, qvx_diags, math.degrees(pr_target), pr_diags, pr_out, evy_target, qvy_target, qvy_diags, math.degrees(rr_target), rr_diags, rr_out, evz_target, qvz_target, qvz_diags, qvz_out, math.degrees(yr_target), yr_diags, yr_out, esc_list[0].pulse_width, esc_list[1].pulse_width, esc_list[2].pulse_width, esc_list[3].pulse_width)
+                            sensordata.elapsed_time, i_time, sensordata.total_loops, qrx, qry, qrz, qax, qay, qaz, egx, egy, egz, qgx, qgy, qgz, qvx_input, qvy_input, qvz_input, math.degrees(pa), math.degrees(ra), math.degrees(ya), evx_target, qvx_target, qvx_diags, math.degrees(pr_target), pr_diags, pr_out, evy_target, qvy_target, qvy_diags, math.degrees(rr_target), rr_diags, rr_out, evz_target, qvz_target, qvz_diags, qvz_out, math.degrees(yr_target), yr_diags, yr_out, esc_list[0].pulse_width, esc_list[1].pulse_width, esc_list[2].pulse_width, esc_list[3].pulse_width)
 
 
     #-----------------------------------------------------------------------------------------------
@@ -2047,8 +2004,8 @@ class SENSORDATA():
         #-------------------------------------------------------------------------------------------
         # Set up performance tracking.
         #-------------------------------------------------------------------------------------------
-        self.elapsed_loop_time = 0.0
-        self.elapsed_loop_count = 0
+        self.elapsed_time = 0.0
+        self.total_loops = 0
 
         #-------------------------------------------------------------------------------------------
         # Get a snapshot of the starting time and initialize the variables
@@ -2067,16 +2024,16 @@ class SENSORDATA():
         #-------------------------------------------------------------------------------------------
         # Data collection + integration thread
         #-------------------------------------------------------------------------------------------
-        ax_integrated = 0.0
-        ay_integrated = 0.0
-        az_integrated = 0.0
-        gx_integrated = 0.0
-        gy_integrated = 0.0
-        gz_integrated = 0.0
+        ax_total = 0.0
+        ay_total = 0.0
+        az_total = 0.0
+        gx_total = 0.0
+        gy_total = 0.0
+        gz_total = 0.0
 
-        loops_start = time.time()
-        loops_count = 0
-        loops_period = 0.0
+        loop_count = 0
+        sampling_period = 0
+        sampling_rate = 1000
 
         self.go = True
         while self.go:
@@ -2084,13 +2041,14 @@ class SENSORDATA():
             # Sensors: Read the sensor values; note that this also sets the time_now to be as
             # accurate a time stamp for the sensor data as possible.
             #=======================================================================================
-            ax, ay, az, gx, gy, gz = mpu6050.readSensors()
+            ax, ay, az, gx, gy, gz, dt = mpu6050.readSensors()
 
             #---------------------------------------------------------------------------------------
             # Now we have the sensor snapshot, tidy up the rest of the variable so that
             # processing takes zero time.
             #---------------------------------------------------------------------------------------
-            loops_count += 1
+            loop_count += 1
+            sampling_period += dt
 
             #=======================================================================================
             # Integration: Sensor data is integrated over time, and later averaged to produce
@@ -2100,58 +2058,52 @@ class SENSORDATA():
             #---------------------------------------------------------------------------------------
             # Integrate the accelerometer readings.
             #---------------------------------------------------------------------------------------
-            ax_integrated += ax
-            ay_integrated += ay
-            az_integrated += az
+            ax_total += ax
+            ay_total += ay
+            az_total += az
 
             #---------------------------------------------------------------------------------------
             # Integrate the gyros readings.
             #---------------------------------------------------------------------------------------
-            gx_integrated += gx
-            gy_integrated += gy
-            gz_integrated += gz
+            gx_total += gx
+            gy_total += gy
+            gz_total += gz
 
             #=======================================================================================
             # Motion Processing:  Use the recorded data to produce motion data and feed in the
-            # motion PIDs
+            # motion PIDs every 10 successful sensor reads.
             #=======================================================================================
-            if loops_count == 10:
-
-                time_now = time.time()
-                loops_period = time_now - loops_start
-                loops_start = time_now
-
+            if loop_count == 10:
 
                 #-----------------------------------------------------------------------------------
                 # Maintained for diagnostic purposes only
                 #-----------------------------------------------------------------------------------
-                self.elapsed_loop_time += loops_period
-                self.elapsed_loop_count += loops_count
+                self.elapsed_time += sampling_period / sampling_rate
+                self.total_loops += loop_count
 
-                self.i_qax = ax_integrated / loops_count
-                self.i_qay = ay_integrated / loops_count
-                self.i_qaz = az_integrated / loops_count
-                self.i_qrx = gx_integrated / loops_count
-                self.i_qry = gy_integrated / loops_count
-                self.i_qrz = gz_integrated / loops_count
-                self.i_time = loops_period
+                self.i_qax = ax_total / loop_count
+                self.i_qay = ay_total / loop_count
+                self.i_qaz = az_total / loop_count
+                self.i_qrx = gx_total / loop_count
+                self.i_qry = gy_total / loop_count
+                self.i_qrz = gz_total / loop_count
+                self.i_time = sampling_period / sampling_rate
 
                 #-----------------------------------------------------------------------------------
                 # Clear the integration for next time round
                 #-----------------------------------------------------------------------------------
-                ax_integrated = 0.0
-                ay_integrated = 0.0
-                az_integrated = 0.0
-                gx_integrated = 0.0
-                gy_integrated = 0.0
-                gz_integrated = 0.0
+                ax_total = 0.0
+                ay_total = 0.0
+                az_total = 0.0
+                gx_total = 0.0
+                gy_total = 0.0
+                gz_total = 0.0
 
                 #-----------------------------------------------------------------------------------
                 # Reset the timings for the next run around if we are running multithreaded
                 #-----------------------------------------------------------------------------------
-                loops_start = time_now
-                loops_count = 0
-                loops_period = 0.0
+                loop_count = 0
+                sampling_period = 0
 
                 #-----------------------------------------------------------------------------------
                 # If we are multithreaded, we need to kick motion processing thread.  If single
@@ -2163,3 +2115,6 @@ class SENSORDATA():
                 else:
                     self.go = False
 
+if __name__ == '__main__':
+    print "Quadcopter.py must be run via qc.py.  For example:"
+    print "  sudo python ./qc.py -f"
