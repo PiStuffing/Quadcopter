@@ -38,7 +38,9 @@ import ctypes
 from ctypes.util import find_library
 import random
 
-sampling_rate = 0
+
+dri_frequency = 0
+adc_frequency = 0
 samples_per_motion = 0
 
 ####################################################################################################
@@ -152,7 +154,13 @@ class I2C:
 
 ####################################################################################################
 #
-#  Gyroscope / Accelerometer class for reading position / movement
+#  Gyroscope / Accelerometer class for reading position / movement.  Works with the Invensense IMUs:
+#
+#  - MPU-6050
+#  - MPU-9150
+#  - MPU-9250
+#
+#  The compass / magnetometer of the MPU-9250 is not used
 #
 ####################################################################################################
 class MPU6050 :
@@ -277,7 +285,7 @@ class MPU6050 :
     __SCALE_ACCEL = 8.0 / 65536
 
     def __init__(self, address=0x68, alpf=1, glpf=1):
-        global sampling_rate
+        global adc_frequency
 
         self.i2c = I2C(address)
         self.address = address
@@ -305,7 +313,7 @@ class MPU6050 :
         # dlpf to 0 or 7 changes 1kHz to 8kHz and therefore will require sample rate divider
         # to be changed to 7 to obtain the same 1kHz sample rate.
         #-------------------------------------------------------------------------------------------
-        self.i2c.write8(self.__MPU6050_RA_SMPLRT_DIV, int(1000 / sampling_rate) - 1)
+        self.i2c.write8(self.__MPU6050_RA_SMPLRT_DIV, math.trunc(1000 / adc_frequency) - 1)
         time.sleep(0.1)
 
         #-------------------------------------------------------------------------------------------
@@ -420,12 +428,13 @@ class MPU6050 :
             #
             # If the code is a bit slow reacting the the data ready interrupt to read the data, it is
             # possible that the data has already been overwritten.  This shows as field set to -1,
-            # starting at the gyroscope values.  Hence if the gyro values read -1, it is likely we've
-            # missed the train.  We could just check gz, but because we don't do much with yaw, we can
-            # safely include pitch which is critical; this reduces the number of false positives.
+            # starting at the gyroscope values.  However, -1 values in gyro readings have no long term
+            # effect, and miniscule short term effect.  In comparison, a -1 for z-axis acceleration is
+            # effectively free-fall in a vacuum, and therefore is definitely actually a duff data read.
+            # Hence this is the check we use for duff data.
             #-------------------------------------------------------------------------------------------
             [ax, ay, az, temp, gx, gy, gz] = self.result_array
-            if gz == -1 and gy == -1:
+            if az == -1:
                self.num_data_errs += 1
                dt += 1
                continue
@@ -464,7 +473,7 @@ class MPU6050 :
 
     def getMisses(self):
         self.num_i2c_errs += self.i2c.getMisses()
-        return self.num_data_errs, self.num_i2c_errs
+        return (self.num_data_errs, self.num_i2c_errs)
 
 ####################################################################################################
 #
@@ -857,7 +866,7 @@ def RpioSetup():
     # input up when data is ready, and reading the data drives it down.
     #-----------------------------------------------------------------------------------------------
     logger.info('Setup MPU6050 interrupt input %s', RPIO_DATA_READY_INTERRUPT)
-    RPIO.setup(RPIO_DATA_READY_INTERRUPT, RPIO.IN, RPIO.PUD_OFF)
+    RPIO.setup(RPIO_DATA_READY_INTERRUPT, RPIO.IN, RPIO.PUD_DOWN)
     RPIO.edge_detect_init(RPIO_DATA_READY_INTERRUPT, RPIO.RISING)
 
     #-----------------------------------------------------------------------------------------------
@@ -884,11 +893,20 @@ def RpioCleanup():
 #
 ####################################################################################################
 def CheckCLI(argv):
-    global sampling_rate
+    global adc_frequency
+    global dri_frequency
     global samples_per_motion
 
-    sampling_rate = 500
-    samples_per_motion = 5
+    #===============================================================================================
+    # adc_frequency      - the value programmed into the IMU to sample the ADC sampling of the sensors
+    # dri_frequency      - the rate the data ready interrupt fires for those samples to be read
+    # samples_per_motion - the number of dri triggered samples are to be batched before invoking
+    #                      motion processing.  This is about 1/100 of the dri_frequency so that
+    #                      motion processing is invoked roughly every 10ms
+    #===============================================================================================
+    adc_frequency = 500
+    dri_frequency = 500
+    samples_per_motion = 10
 
     cli_fly = False
     cli_video = False
@@ -898,10 +916,10 @@ def CheckCLI(argv):
     # Other configuration defaults
     #-----------------------------------------------------------------------------------------------
     cli_test_case = 0
-    cli_alpf = 3                             #AB: 42Hz DLPF << 1/2 100Hz averaged sampling frequency
+    cli_alpf = 3
     cli_glpf = 2
     cli_diagnostics = False
-    cli_rtf_period = 1.0
+    cli_rtf_period = 1.5
     cli_tau = 0.5
 
     hover_target_defaulted = True
@@ -929,15 +947,15 @@ def CheckCLI(argv):
         #-------------------------------------------------------------------------------------------
         # Defaults for pitch angle PIDs
         #-------------------------------------------------------------------------------------------
-        cli_prp_gain = 100.0
-        cli_pri_gain = 25.0
+        cli_prp_gain = 90.0
+        cli_pri_gain = 20.0
         cli_prd_gain = 0.0
 
         #-------------------------------------------------------------------------------------------
         # Defaults for roll angle PIDs
         #-------------------------------------------------------------------------------------------
-        cli_rrp_gain = 96.00
-        cli_rri_gain = 24.0
+        cli_rrp_gain = 90.0
+        cli_rri_gain = 20.0
         cli_rrd_gain = 0.0
 
         #-------------------------------------------------------------------------------------------
@@ -970,15 +988,15 @@ def CheckCLI(argv):
         #-------------------------------------------------------------------------------------------
         # Defaults for pitch angle PIDs
         #-------------------------------------------------------------------------------------------
-        cli_prp_gain = 100.0
-        cli_pri_gain = 25.0
+        cli_prp_gain = 140.0
+        cli_pri_gain = 16.0
         cli_prd_gain = 0.0
 
         #-------------------------------------------------------------------------------------------
         # Defaults for roll angle PIDs
         #-------------------------------------------------------------------------------------------
-        cli_rrp_gain = 96.0
-        cli_rri_gain = 24.0
+        cli_rrp_gain = 140.0
+        cli_rri_gain = 16.0
         cli_rrd_gain = 0.0
 
         #-------------------------------------------------------------------------------------------
@@ -1156,8 +1174,8 @@ def CleanShutdown():
     #-----------------------------------------------------------------------------------------------
     # If the sensor data acquisition is running, then stop it
     #-----------------------------------------------------------------------------------------------
-    if sensordata is not None:
-        sensordata.go = False;
+    if sampling is not None:
+        sampling.go = False;
 
     #-----------------------------------------------------------------------------------------------
     # Copy logs from /dev/shm (shared / virtual memory) to the Logs directory.
@@ -1202,7 +1220,7 @@ def ShutdownSignalHandler(signal, frame):
 
 ####################################################################################################
 #
-# Signal handler for new data ready to process
+# Signal handler for new data ready to process in multi-threaded operation
 #
 ####################################################################################################
 def DataReadySignalHandler(signal, frame):
@@ -1306,14 +1324,15 @@ def go(name):
     global mpu6050
     global woken_by
     global threading
-    global sensordata
+    global sampling
     global keep_looping
     global i_am_phoebe
     global i_am_chloe
     global esc_list
     global shoot_video
 
-    global sample_rate
+    global adc_frequency
+    global dri_frequency
     global samples_per_motion
 
     #-----------------------------------------------------------------------------------------------
@@ -1432,7 +1451,18 @@ def go(name):
 
     mpu6050 = None
     ms5611 = None
-    sensordata = None
+    sampling = None
+
+    #-----------------------------------------------------------------------------------------------
+    # Initialize the gyroscope / accelerometer I2C object - this must be done before the data ready
+    # interrupt handler so the handler doesn't block
+    #-----------------------------------------------------------------------------------------------
+    mpu6050 = MPU6050(0x68, alpf, glpf)
+
+    #-----------------------------------------------------------------------------------------------
+    # Initialize the barometer / altimeter I2C object
+    #-----------------------------------------------------------------------------------------------
+    ms5611 = MS5611(0x77)
 
     #-----------------------------------------------------------------------------------------------
     # Enable RPIO for beeper, MPU 6050 interrupts and PWM.  This must be set up prior to adding
@@ -1513,10 +1543,14 @@ def go(name):
     # 100Hz = 1kHz pulses / 10 loops = sampling freqency
     # 0.1 = Cut-off frequency
     # 4 = order of filter
+    #
+    # " + 1" is required for motion processing at sampling frequencies <= 500Hz.  Sampling at >500Hz
+    # leads to a less predicable set of lost data samples which can't be accounted for in the same
+    # predictable way.
     #-----------------------------------------------------------------------------------------------
-    bfx = BUTTERWORTH(sampling_rate / samples_per_motion, 0.1, 4)
-    bfy = BUTTERWORTH(sampling_rate / samples_per_motion, 0.1, 4)
-    bfz = BUTTERWORTH(sampling_rate / samples_per_motion, 0.1, 4)
+    bfx = BUTTERWORTH(dri_frequency / samples_per_motion, 0.05, 6)
+    bfy = BUTTERWORTH(dri_frequency / samples_per_motion, 0.05, 6)
+    bfz = BUTTERWORTH(dri_frequency / samples_per_motion, 0.05, 6)
 
     #-----------------------------------------------------------------------------------------------
     # Set up the global constants
@@ -1529,12 +1563,12 @@ def go(name):
     #-----------------------------------------------------------------------------------------------
     # Initialize the gyroscope / accelerometer I2C object
     #-----------------------------------------------------------------------------------------------
-    mpu6050 = MPU6050(0x68, alpf, glpf)
+    # mpu6050 = MPU6050(0x68, alpf, glpf)
 
     #-----------------------------------------------------------------------------------------------
     # Initialize the barometer / altimeter I2C object
     #-----------------------------------------------------------------------------------------------
-    ms5611 = MS5611(0x77)
+    # ms5611 = MS5611(0x77)
 
     #-----------------------------------------------------------------------------------------------
     # Calibrate gyros - this is a one-off
@@ -1549,7 +1583,7 @@ def go(name):
     ra = 0.0
     ya = 0.0
 
-    for ii in range(20 * sampling_rate):
+    for ii in range(20 * dri_frequency):
         qax, qay, qaz, qrx, qry, qrz, dt = mpu6050.readSensors()
 	qax, qay, qaz, qrx, qry, qrz = mpu6050.scaleSensors(qax, qay, qaz, qrx, qry, qrz)
 
@@ -1563,8 +1597,8 @@ def go(name):
         pa = 0.1 * bpa + 0.9 * pa
         ra = 0.1 * bra + 0.9 * ra
 
-        if ii % sampling_rate == 0:
-          logger.critical("%d...", 20 - int(ii / sampling_rate))
+        if ii % dri_frequency == 0:
+          logger.critical("%d...", 20 - int(ii / dri_frequency))
 
     #-----------------------------------------------------------------------------------------------
     # Log the critical parameters from this warm-up: the take-off surface tilt, and gravity. Note
@@ -1648,6 +1682,7 @@ def go(name):
     PID_YR_I_GAIN = yri_gain
     PID_YR_D_GAIN = yrd_gain
 
+    print "%d data errors; %d i2c errors" % mpu6050.getMisses()
     logger.critical('Thunderbirds are go!')
 
     #-----------------------------------------------------------------------------------------------
@@ -1692,7 +1727,7 @@ def go(name):
     #-----------------------------------------------------------------------------------------------
     # Set up the sensor data retrieval thread
     #-----------------------------------------------------------------------------------------------
-    sensordata = SENSORDATA()
+    sampling = SAMPLING()
 
     #===============================================================================================
     #
@@ -1725,15 +1760,15 @@ def go(name):
                 break
             woken_by = SIG_NONE
         else:
-            sensordata.integrator()
+            sampling.integrator()
 
         #-------------------------------------------------------------------------------------------
         # Copy the latest data into the local copy and run with it
         #-------------------------------------------------------------------------------------------
-        qax, qay, qaz, qrx, qry, qrz, i_time = sensordata.collect()
+        qax, qay, qaz, qrx, qry, qrz, i_time = sampling.collect()
 
         motion_loops += 1
-        sampling_loops += i_time * sampling_rate
+        sampling_loops += i_time * dri_frequency
 
         #-------------------------------------------------------------------------------------------
         # Sort out units and calibration for the incoming data
@@ -1979,18 +2014,19 @@ def go(name):
         #-------------------------------------------------------------------------------------------
         if diagnostics:
             logger.warning('%f, %f, %d, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %s, %f, %s, %d, %f, %f, %s, %f, %s, %d, %f, %f, %s, %d, %f, %s, %d, %d, %d, %d, %d',
-                            sampling_loops / sampling_rate, i_time, sensordata.total_loops, qrx, qry, qrz, qax, qay, qaz, egx, egy, egz, qgx, qgy, qgz, qvx_input, qvy_input, qvz_input, math.degrees(pa), math.degrees(ra), math.degrees(ya), evx_target, qvx_target, qvx_diags, math.degrees(pr_target), pr_diags, pr_out, evy_target, qvy_target, qvy_diags, math.degrees(rr_target), rr_diags, rr_out, evz_target, qvz_target, qvz_diags, qvz_out, math.degrees(yr_target), yr_diags, yr_out, esc_list[0].pulse_width, esc_list[1].pulse_width, esc_list[2].pulse_width, esc_list[3].pulse_width)
+                            sampling_loops / dri_frequency, i_time, sampling.total_loops, qrx, qry, qrz, qax, qay, qaz, egx, egy, egz, qgx, qgy, qgz, qvx_input, qvy_input, qvz_input, math.degrees(pa), math.degrees(ra), math.degrees(ya), evx_target, qvx_target, qvx_diags, math.degrees(pr_target), pr_diags, pr_out, evy_target, qvy_target, qvy_diags, math.degrees(rr_target), rr_diags, rr_out, evz_target, qvz_target, qvz_diags, qvz_out, math.degrees(yr_target), yr_diags, yr_out, esc_list[0].pulse_width, esc_list[1].pulse_width, esc_list[2].pulse_width, esc_list[3].pulse_width)
 
 
     #-----------------------------------------------------------------------------------------------
     # Time for telly bye byes - can't just 'pass' in the while loop as it locks out the sensor
     # thread from setting integrator_running to False - i.e. deadlock!
     #-----------------------------------------------------------------------------------------------
-    sensordata.go = False
+    sampling.go = False
 
     print "motion_loops %d" % motion_loops
     print "sampling_loops %d" % sampling_loops
     print "flight time %f" % (time.time() - start_flight)
+    print "%d data errors; %d i2c errors" % mpu6050.getMisses()
 
     CleanShutdown()
 
@@ -2000,18 +2036,18 @@ def go(name):
 # Class for managing sensor data collection / integration / transfer thread.
 #
 ####################################################################################################
-class SENSORDATA():
+class SAMPLING():
 
     def __init__(self):
         #-------------------------------------------------------------------------------------------
         # Main thread
         #-------------------------------------------------------------------------------------------
-        self.i_qax = 0
-        self.i_qay = 0
-        self.i_qaz = 0
-        self.i_qrx = 0
-        self.i_qry = 0
-        self.i_qrz = 0
+        self.i_qax = 0.0
+        self.i_qay = 0.0
+        self.i_qaz = 0.0
+        self.i_qrx = 0.0
+        self.i_qry = 0.0
+        self.i_qrz = 0.0
         self.i_time = 0.0
 
         #-------------------------------------------------------------------------------------------
@@ -2037,12 +2073,12 @@ class SENSORDATA():
         #-------------------------------------------------------------------------------------------
         # Data collection + integration thread
         #-------------------------------------------------------------------------------------------
-        iax = 0.0
-        iay = 0.0
-        iaz = 0.0
-        igx = 0.0
-        igy = 0.0
-        igz = 0.0
+        iax = 0
+        iay = 0
+        iaz = 0
+        igx = 0
+        igy = 0
+        igz = 0
 
         sampling_period = 0
         sampling_loops = 0
@@ -2090,12 +2126,12 @@ class SENSORDATA():
                 #-----------------------------------------------------------------------------------
                 # Maintained for diagnostic purposes only
                 #-----------------------------------------------------------------------------------
-                self.elapsed_time += sampling_period / sampling_rate
+                self.elapsed_time += sampling_period / dri_frequency
                 self.total_loops += samples_per_motion
 
                 #-----------------------------------------------------------------------------------
-                # Take the average of the last ten valid samples but allow for missed reads, and motion
-                # processing time for the period over which that average is taken.
+                # Take the average of the last "samples per motion" valid samples allowing for missed
+                # reads, and average.
                 #-----------------------------------------------------------------------------------
                 self.i_qax = iax / sampling_loops
                 self.i_qay = iay / sampling_loops
@@ -2103,17 +2139,17 @@ class SENSORDATA():
                 self.i_qrx = igx / sampling_loops
                 self.i_qry = igy / sampling_loops
                 self.i_qrz = igz / sampling_loops
-                self.i_time = sampling_period / sampling_rate
+                self.i_time = sampling_period / dri_frequency
 
                 #-----------------------------------------------------------------------------------
                 # Clear the integration for next time round
                 #-----------------------------------------------------------------------------------
-                iax = 0.0
-                iay = 0.0
-                iaz = 0.0
-                igx = 0.0
-                igy = 0.0
-                igz = 0.0
+                iax = 0
+                iay = 0
+                iaz = 0
+                igx = 0
+                igy = 0
+                igz = 0
 
                 #-----------------------------------------------------------------------------------
                 # Reset the timings for the next run around if we are running multithreaded
