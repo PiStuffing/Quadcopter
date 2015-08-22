@@ -13,6 +13,7 @@
 ####################################################################################################
 
 from __future__ import division
+from __future__ import with_statement
 import signal
 import socket
 import time
@@ -27,6 +28,7 @@ import select
 import os
 import struct
 import logging
+import csv
 
 from RPIO import PWM
 import GPIO.GPIO as RPIO
@@ -295,6 +297,7 @@ class MPU6050 :
 
         self.num_i2c_errs = 0
         self.num_data_errs = 0
+        self.num_4g_hits = 0
 
         self.gx_offset = 0.0
         self.gy_offset = 0.0
@@ -440,6 +443,9 @@ class MPU6050 :
                continue
             break
 
+        if az > 65536 / 2:   # +4g
+            self.num_4g_hits += 1
+
         return ax, ay, az, gx, gy, gz, dt
 
     def scaleSensors(self, ax, ay, az, gx, gy, gz):
@@ -473,7 +479,7 @@ class MPU6050 :
 
     def getMisses(self):
         self.num_i2c_errs += self.i2c.getMisses()
-        return (self.num_data_errs, self.num_i2c_errs)
+        return (self.num_data_errs, self.num_i2c_errs, self.num_4g_hits)
 
 ####################################################################################################
 #
@@ -947,15 +953,15 @@ def CheckCLI(argv):
         #-------------------------------------------------------------------------------------------
         # Defaults for pitch angle PIDs
         #-------------------------------------------------------------------------------------------
-        cli_prp_gain = 90.0
-        cli_pri_gain = 20.0
+        cli_prp_gain = 100.0
+        cli_pri_gain = 10.0
         cli_prd_gain = 0.0
 
         #-------------------------------------------------------------------------------------------
         # Defaults for roll angle PIDs
         #-------------------------------------------------------------------------------------------
-        cli_rrp_gain = 90.0
-        cli_rri_gain = 20.0
+        cli_rrp_gain = 100.0
+        cli_rri_gain = 10.0
         cli_rrd_gain = 0.0
 
         #-------------------------------------------------------------------------------------------
@@ -988,15 +994,15 @@ def CheckCLI(argv):
         #-------------------------------------------------------------------------------------------
         # Defaults for pitch angle PIDs
         #-------------------------------------------------------------------------------------------
-        cli_prp_gain = 140.0
-        cli_pri_gain = 16.0
+        cli_prp_gain = 120.0
+        cli_pri_gain = 9.0
         cli_prd_gain = 0.0
 
         #-------------------------------------------------------------------------------------------
         # Defaults for roll angle PIDs
         #-------------------------------------------------------------------------------------------
-        cli_rrp_gain = 140.0
-        cli_rri_gain = 16.0
+        cli_rrp_gain = 120.0
+        cli_rri_gain = 9.0
         cli_rrd_gain = 0.0
 
         #-------------------------------------------------------------------------------------------
@@ -1010,11 +1016,11 @@ def CheckCLI(argv):
     # Right, let's get on with reading the command line and checking consistency
     #-----------------------------------------------------------------------------------------------
     try:
-        opts, args = getopt.getopt(argv,'dfvh:r:', ['tc=', 'tau=', 'vvp=', 'vvi=', 'vvd=', 'hvp=', 'hvi=', 'hvd=', 'prp=', 'pri=', 'prd=', 'rrp=', 'rri=', 'rrd=', 'tau=', 'yrp=', 'yri=', 'yrd=', 'alpf=', 'glpf='])
+        opts, args = getopt.getopt(argv,'df:vh:r:', ['tc=', 'tau=', 'vvp=', 'vvi=', 'vvd=', 'hvp=', 'hvi=', 'hvd=', 'prp=', 'pri=', 'prd=', 'rrp=', 'rri=', 'rrd=', 'tau=', 'yrp=', 'yri=', 'yrd=', 'alpf=', 'glpf='])
     except getopt.GetoptError:
         logger.critical('Must specify one of -f or -g or --tc')
         logger.critical('  qcpi.py')
-        logger.critical('  -f set whether to fly')
+        logger.critical('  -f set the flight plan CSV file')
         logger.critical('  -h set the hover speed for manual testing')
         logger.critical('  -d enable diagnostics')
         logger.critical('  -v video the flight')
@@ -1043,6 +1049,7 @@ def CheckCLI(argv):
     for opt, arg in opts:
         if opt == '-f':
             cli_fly = True
+            cli_flight_plan = arg
 
         elif opt in '-h':
             cli_hover_target = int(arg)
@@ -1145,7 +1152,7 @@ def CheckCLI(argv):
         sys.exit(2)
 
 
-    return cli_fly, cli_hover_target, cli_video, cli_vvp_gain, cli_vvi_gain, cli_vvd_gain, cli_hvp_gain, cli_hvi_gain, cli_hvd_gain, cli_prp_gain, cli_pri_gain, cli_prd_gain, cli_rrp_gain, cli_rri_gain, cli_rrd_gain, cli_yrp_gain, cli_yri_gain, cli_yrd_gain, cli_test_case, cli_alpf, cli_glpf, cli_rtf_period, cli_tau, cli_diagnostics
+    return cli_fly, cli_flight_plan, cli_hover_target, cli_video, cli_vvp_gain, cli_vvi_gain, cli_vvd_gain, cli_hvp_gain, cli_hvi_gain, cli_hvd_gain, cli_prp_gain, cli_pri_gain, cli_prd_gain, cli_rrp_gain, cli_rri_gain, cli_rrd_gain, cli_yrp_gain, cli_yri_gain, cli_yrd_gain, cli_test_case, cli_alpf, cli_glpf, cli_rtf_period, cli_tau, cli_diagnostics
 
 ####################################################################################################
 #
@@ -1239,22 +1246,49 @@ def DataReadySignalHandler(signal, frame):
 ####################################################################################################
 class FlightPlan:
 
-    #-----------------------------------------------------------------------------------------------
-    # The flight plan - move to file at some point to allow various FP's to be saved, and selected
-    # per flight.
-    #-----------------------------------------------------------------------------------------------
-    fp_evx_target  = [0.0,       0.0,       0.0,       0.0,       0.0]
-    fp_evy_target  = [0.0,       0.0,       0.0,       0.0,       0.0]
-    fp_evz_target  = [0.0,       0.5,       0.0,      -0.5,       0.0]
-    fp_time        = [0.0,       2.0,       4.0,       2.0,       0.0]
-    fp_name        = ["RTF",  "ASCENT",   "HOVER", "DESCENT",    "STOP"]
-    _FP_STEPS = 5
-
-    def __init__(self):
+    def __init__(self, fp_filename):
 
         self.fp_index = 0
         self.fp_prev_index = 0
         self.elapsed_time = 0.0
+        self.fp_steps = 2
+
+        self.fp_evx_target = array('f', [])
+        self.fp_evy_target = array('f', [])
+        self.fp_evz_target = array('f', [])
+        self.fp_time       = array('f', [])
+        self.fp_name = []
+
+        self.fp_evx_target.append(0.0)
+        self.fp_evy_target.append(0.0)
+        self.fp_evz_target.append(0.0)
+        self.fp_time.append(0.0)
+        self.fp_name.append("RTF")
+
+        with open(fp_filename, 'rb') as fp_csv:
+            fp_reader = csv.reader(fp_csv)
+            for fp_row in fp_reader:
+
+                if len(fp_row) == 0 or (fp_row[0] != '' and fp_row[0][0] == '#'):
+                    continue
+                if len(fp_row) != 5:
+                    break
+
+                self.fp_evx_target.append(float(fp_row[0]))
+                self.fp_evy_target.append(float(fp_row[1]))
+                self.fp_evz_target.append(float(fp_row[2]))
+                self.fp_time.append(float(fp_row[3]))
+                self.fp_name.append(fp_row[4].strip())
+                self.fp_steps += 1
+            else:
+                self.fp_evx_target.append(0.0)
+                self.fp_evy_target.append(0.0)
+                self.fp_evz_target.append(0.0)
+                self.fp_time.append(0.0)
+                self.fp_name.append("STOP")
+                return
+
+        raise ValueError("Error in CSV file; '%s'" % fp_row)
 
 
     def getTargets(self, delta_time):
@@ -1263,7 +1297,7 @@ class FlightPlan:
         self.elapsed_time += delta_time
 
         fp_total_time = 0.0
-        for fp_index in range(0, self._FP_STEPS):
+        for fp_index in range(0, self.fp_steps):
             fp_total_time += self.fp_time[fp_index]
             if self.elapsed_time < fp_total_time:
                 break
@@ -1404,9 +1438,9 @@ def go(name):
     #-----------------------------------------------------------------------------------------------
     # Check the command line for calibration or flight parameters
     #-----------------------------------------------------------------------------------------------
-    flying, hover_target, shoot_video, vvp_gain, vvi_gain, vvd_gain, hvp_gain, hvi_gain, hvd_gain, prp_gain, pri_gain, prd_gain, rrp_gain, rri_gain, rrd_gain, yrp_gain, yri_gain, yrd_gain, test_case, alpf, glpf, rtf_period, tau, diagnostics = CheckCLI(sys.argv[1:])
-    logger.warning("fly = %s, hover_target = %d, shoot_video = %s, vvp_gain = %f, vvi_gain = %f, vvd_gain= %f, hvp_gain = %f, hvi_gain = %f, hvd_gain = %f, prp_gain = %f, pri_gain = %f, prd_gain = %f, rrp_gain = %f, rri_gain = %f, rrd_gain = %f, yrp_gain = %f, yri_gain = %f, yrd_gain = %f, test_case = %d, alpf = %d, glpf = %d, rtf_period = %f, tau = %f, diagnostics = %s",
-            flying, hover_target, shoot_video, vvp_gain, vvi_gain, vvd_gain, hvp_gain, hvi_gain, hvd_gain, prp_gain, pri_gain, prd_gain, rrp_gain, rri_gain, rrd_gain, yrp_gain, yri_gain, yrd_gain, test_case, alpf, glpf, rtf_period, tau, diagnostics)
+    flying, flight_plan, hover_target, shoot_video, vvp_gain, vvi_gain, vvd_gain, hvp_gain, hvi_gain, hvd_gain, prp_gain, pri_gain, prd_gain, rrp_gain, rri_gain, rrd_gain, yrp_gain, yri_gain, yrd_gain, test_case, alpf, glpf, rtf_period, tau, diagnostics = CheckCLI(sys.argv[1:])
+    logger.warning("fly = %s, flight plan = %s, hover_target = %d, shoot_video = %s, vvp_gain = %f, vvi_gain = %f, vvd_gain= %f, hvp_gain = %f, hvi_gain = %f, hvd_gain = %f, prp_gain = %f, pri_gain = %f, prd_gain = %f, rrp_gain = %f, rri_gain = %f, rrd_gain = %f, yrp_gain = %f, yri_gain = %f, yrd_gain = %f, test_case = %d, alpf = %d, glpf = %d, rtf_period = %f, tau = %f, diagnostics = %s",
+            flying, flight_plan, hover_target, shoot_video, vvp_gain, vvi_gain, vvd_gain, hvp_gain, hvi_gain, hvd_gain, prp_gain, pri_gain, prd_gain, rrp_gain, rri_gain, rrd_gain, yrp_gain, yri_gain, yrd_gain, test_case, alpf, glpf, rtf_period, tau, diagnostics)
 
     #-----------------------------------------------------------------------------------------------
     # Initialize the numeric globals
@@ -1539,6 +1573,15 @@ def go(name):
     #===============================================================================================
 
     #-----------------------------------------------------------------------------------------------
+    # Register the flight plan with the authorities
+    #-----------------------------------------------------------------------------------------------
+    try:
+        fp = FlightPlan(flight_plan)
+    except Exception, err:
+        logger.critical("%s error: %s", flight_plan, err)
+        CleanShutdown()
+
+    #-----------------------------------------------------------------------------------------------
     # Initialize the butterworth LP filters.
     # 100Hz = 1kHz pulses / 10 loops = sampling freqency
     # 0.1 = Cut-off frequency
@@ -1559,16 +1602,6 @@ def go(name):
     # - gyroscope in radians per second
     #-----------------------------------------------------------------------------------------------
     GRAV_ACCEL = 9.80665
-
-    #-----------------------------------------------------------------------------------------------
-    # Initialize the gyroscope / accelerometer I2C object
-    #-----------------------------------------------------------------------------------------------
-    # mpu6050 = MPU6050(0x68, alpf, glpf)
-
-    #-----------------------------------------------------------------------------------------------
-    # Initialize the barometer / altimeter I2C object
-    #-----------------------------------------------------------------------------------------------
-    # ms5611 = MS5611(0x77)
 
     #-----------------------------------------------------------------------------------------------
     # Calibrate gyros - this is a one-off
@@ -1682,7 +1715,7 @@ def go(name):
     PID_YR_I_GAIN = yri_gain
     PID_YR_D_GAIN = yrd_gain
 
-    print "%d data errors; %d i2c errors" % mpu6050.getMisses()
+    print "%d data errors; %d i2c errors; %d 4g hits" % mpu6050.getMisses()
     logger.critical('Thunderbirds are go!')
 
     #-----------------------------------------------------------------------------------------------
@@ -1822,12 +1855,6 @@ def go(name):
             if hover_speed >= hover_target:
                 hover_speed = hover_target
                 ready_to_fly = True
-
-                #-----------------------------------------------------------------------------------
-                # Register the flight plan with the authorities
-                #-----------------------------------------------------------------------------------
-                fp = FlightPlan()
-
             else:
                 hover_speed += int(hover_target * i_time / rtf_period)
 
@@ -2026,7 +2053,7 @@ def go(name):
     print "motion_loops %d" % motion_loops
     print "sampling_loops %d" % sampling_loops
     print "flight time %f" % (time.time() - start_flight)
-    print "%d data errors; %d i2c errors" % mpu6050.getMisses()
+    print "%d data errors; %d i2c errors; %d 4g hits" % mpu6050.getMisses()
 
     CleanShutdown()
 
