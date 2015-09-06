@@ -1618,20 +1618,20 @@ def go(name):
 
     for ii in range(20 * dri_frequency):
         qax, qay, qaz, qrx, qry, qrz, dt = mpu6050.readSensors()
-	qax, qay, qaz, qrx, qry, qrz = mpu6050.scaleSensors(qax, qay, qaz, qrx, qry, qrz)
+        qax, qay, qaz, qrx, qry, qrz = mpu6050.scaleSensors(qax, qay, qaz, qrx, qry, qrz)
 
-	bpa, bra = GetRotationAngles(qax, qay, qaz)
+        bpa, bra = GetRotationAngles(qax, qay, qaz)
 
         eax, eay, eaz = RotateQ2E(qax, qay, qaz, bpa, bra, ya)
         egx = bfx.filter(eax)
         egy = bfy.filter(eay)
         egz = bfz.filter(eaz)
 
-        pa = 0.1 * bpa + 0.9 * pa
-        ra = 0.1 * bra + 0.9 * ra
+        pa = 0.01 * bpa + 0.99 * pa
+        ra = 0.01 * bra + 0.99 * ra
 
         if ii % dri_frequency == 0:
-          logger.critical("%d...", 20 - int(ii / dri_frequency))
+            logger.critical("%d...", 20 - int(ii / dri_frequency))
 
     #-----------------------------------------------------------------------------------------------
     # Log the critical parameters from this warm-up: the take-off surface tilt, and gravity. Note
