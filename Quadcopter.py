@@ -40,9 +40,7 @@ import ctypes
 from ctypes.util import find_library
 import random
 
-
 dri_frequency = 0
-adc_frequency = 0
 samples_per_motion = 0
 
 ####################################################################################################
@@ -287,7 +285,7 @@ class MPU6050 :
     __SCALE_ACCEL = 8.0 / 65536
 
     def __init__(self, address=0x68, alpf=1, glpf=1):
-        global adc_frequency
+        global dri_frequency
 
         self.i2c = I2C(address)
         self.address = address
@@ -298,6 +296,10 @@ class MPU6050 :
         self.num_i2c_errs = 0
         self.num_data_errs = 0
         self.num_4g_hits = 0
+
+        self.ax_offset = 0.0
+        self.ay_offset = 0.0
+        self.az_offset = 0.0
 
         self.gx_offset = 0.0
         self.gy_offset = 0.0
@@ -316,7 +318,7 @@ class MPU6050 :
         # dlpf to 0 or 7 changes 1kHz to 8kHz and therefore will require sample rate divider
         # to be changed to 7 to obtain the same 1kHz sample rate.
         #-------------------------------------------------------------------------------------------
-        self.i2c.write8(self.__MPU6050_RA_SMPLRT_DIV, math.trunc(1000 / adc_frequency) - 1)
+        self.i2c.write8(self.__MPU6050_RA_SMPLRT_DIV, math.trunc(1000 / dri_frequency) - 1)
         time.sleep(0.1)
 
         #-------------------------------------------------------------------------------------------
@@ -449,9 +451,9 @@ class MPU6050 :
         return ax, ay, az, gx, gy, gz, dt
 
     def scaleSensors(self, ax, ay, az, gx, gy, gz):
-        qax = ax * self.__SCALE_ACCEL
-        qay = ay * self.__SCALE_ACCEL
-        qaz = az * self.__SCALE_ACCEL
+        qax = (ax - self.ax_offset) * self.__SCALE_ACCEL
+        qay = (ay - self.ay_offset) * self.__SCALE_ACCEL
+        qaz = (az - self.az_offset) * self.__SCALE_ACCEL
 
         qrx = (gx - self.gx_offset) * self.__SCALE_GYRO
         qry = (gy - self.gy_offset) * self.__SCALE_GYRO
@@ -461,9 +463,9 @@ class MPU6050 :
 
 
     def calibrateGyros(self):
-        gx_offset = 0.0
-        gy_offset = 0.0
-        gz_offset = 0.0
+        gx_offset = 0
+        gy_offset = 0
+        gz_offset = 0
 
         for iteration in range(0, self.__CALIBRATION_ITERATIONS):
             [ax, ay, az, gx, gy, gz, dt] = self.readSensors()
@@ -475,6 +477,51 @@ class MPU6050 :
         self.gx_offset = gx_offset / self.__CALIBRATION_ITERATIONS
         self.gy_offset = gy_offset / self.__CALIBRATION_ITERATIONS
         self.gz_offset = gz_offset / self.__CALIBRATION_ITERATIONS
+
+
+    def calibrate0g(self):
+        ax_offset = 0
+        ay_offset = 0
+        az_offset = 0
+        offs_rc = True
+
+        #-------------------------------------------------------------------------------------------
+        # Open the ofset file for this run
+        #-------------------------------------------------------------------------------------------
+        try:
+            with open('0goffsets', 'wb') as offs_file:
+                raw_input("Rest me on my props and press enter.")
+                for iteration in range(0, self.__CALIBRATION_ITERATIONS):
+                    [ax, ay, az, gx, gy, gz, dt] = self.readSensors()
+
+                    ax_offset += ax
+                    ay_offset += ay
+                    az_offset += az
+
+                ax_offset /= self.__CALIBRATION_ITERATIONS
+                ay_offset /= self.__CALIBRATION_ITERATIONS
+                az_offset /= self.__CALIBRATION_ITERATIONS
+
+                offs_file.write("%f %f %f" % (ax_offset, ay_offset, az_offset))
+
+        except EnvironmentError:
+            offs_rc = False
+        return offs_rc
+
+
+    def load0gCalibration(self):
+        offs_rc = True
+        try:
+            with open('0goffsets', 'rb') as offs_file:
+                for line in offs_file:
+                    ax_offset, ay_offset, az_offset = line.split()
+            self.ax_offset = float(ax_offset)
+            self.ay_offset = float(ay_offset)
+            self.az_offset = 0.0 # float(az_offset)
+        except EnvironmentError:
+            offs_rc = False
+        print "%f, %f, %f" % (self.ax_offset, self.ay_offset, self.az_offset)
+        return offs_rc
 
 
     def getMisses(self):
@@ -685,7 +732,6 @@ def Body2EulerRates(qry, qrx, qrz, pa, ra):
     eyr =       qry * s_ra / c_pa + qrz * c_ra / c_pa
 
     return epr, err, eyr
-
 
 
 ####################################################################################################
@@ -899,20 +945,16 @@ def RpioCleanup():
 #
 ####################################################################################################
 def CheckCLI(argv):
-    global adc_frequency
     global dri_frequency
     global samples_per_motion
 
     #===============================================================================================
-    # adc_frequency      - the value programmed into the IMU to sample the ADC sampling of the sensors
-    # dri_frequency      - the rate the data ready interrupt fires for those samples to be read
-    # samples_per_motion - the number of dri triggered samples are to be batched before invoking
-    #                      motion processing.  This is about 1/100 of the dri_frequency so that
-    #                      motion processing is invoked roughly every 10ms
+    # dri_frequency      - the data sampling rate and thus data ready interrupt rate
+    # samples_per_motion - the number of dri triggered samples to be batched before invoking
+    #                      motion processing.  
     #===============================================================================================
-    adc_frequency = 500
-    dri_frequency = 500
-    samples_per_motion = 10
+    dri_frequency = 250
+    samples_per_motion = 5
 
     cli_fly = False
     cli_video = False
@@ -927,6 +969,8 @@ def CheckCLI(argv):
     cli_diagnostics = False
     cli_rtf_period = 1.5
     cli_tau = 0.5
+    cli_calibrate_0g = False
+    cli_flight_plan = ''
 
     hover_target_defaulted = True
 
@@ -953,15 +997,15 @@ def CheckCLI(argv):
         #-------------------------------------------------------------------------------------------
         # Defaults for pitch angle PIDs
         #-------------------------------------------------------------------------------------------
-        cli_prp_gain = 100.0
-        cli_pri_gain = 10.0
+        cli_prp_gain = 90.0
+        cli_pri_gain = 9.0
         cli_prd_gain = 0.0
 
         #-------------------------------------------------------------------------------------------
         # Defaults for roll angle PIDs
         #-------------------------------------------------------------------------------------------
-        cli_rrp_gain = 100.0
-        cli_rri_gain = 10.0
+        cli_rrp_gain = 90.0
+        cli_rri_gain = 9.0
         cli_rrd_gain = 0.0
 
         #-------------------------------------------------------------------------------------------
@@ -994,14 +1038,14 @@ def CheckCLI(argv):
         #-------------------------------------------------------------------------------------------
         # Defaults for pitch angle PIDs
         #-------------------------------------------------------------------------------------------
-        cli_prp_gain = 120.0
+        cli_prp_gain = 100.0
         cli_pri_gain = 9.0
         cli_prd_gain = 0.0
 
         #-------------------------------------------------------------------------------------------
         # Defaults for roll angle PIDs
         #-------------------------------------------------------------------------------------------
-        cli_rrp_gain = 120.0
+        cli_rrp_gain = 100.0
         cli_rri_gain = 9.0
         cli_rrd_gain = 0.0
 
@@ -1016,13 +1060,14 @@ def CheckCLI(argv):
     # Right, let's get on with reading the command line and checking consistency
     #-----------------------------------------------------------------------------------------------
     try:
-        opts, args = getopt.getopt(argv,'df:vh:r:', ['tc=', 'tau=', 'vvp=', 'vvi=', 'vvd=', 'hvp=', 'hvi=', 'hvd=', 'prp=', 'pri=', 'prd=', 'rrp=', 'rri=', 'rrd=', 'tau=', 'yrp=', 'yri=', 'yrd=', 'alpf=', 'glpf='])
+        opts, args = getopt.getopt(argv,'df:gvh:r:', ['tc=', 'tau=', 'vvp=', 'vvi=', 'vvd=', 'hvp=', 'hvi=', 'hvd=', 'prp=', 'pri=', 'prd=', 'rrp=', 'rri=', 'rrd=', 'tau=', 'yrp=', 'yri=', 'yrd=', 'alpf=', 'glpf='])
     except getopt.GetoptError:
         logger.critical('Must specify one of -f or -g or --tc')
         logger.critical('  qcpi.py')
         logger.critical('  -f set the flight plan CSV file')
         logger.critical('  -h set the hover speed for manual testing')
         logger.critical('  -d enable diagnostics')
+        logger.critical('  -g calibrate X, Y axis 0g')
         logger.critical('  -v video the flight')
         logger.critical('  -r ??  set the ready-to-fly period')
         logger.critical('  --tc   select which testcase to run')
@@ -1060,6 +1105,9 @@ def CheckCLI(argv):
 
         elif opt in '-d':
             cli_diagnostics = True
+
+        elif opt in '-g':
+            cli_calibrate_0g = True
 
         elif opt in '-r':
             cli_rtf_period = float(arg)
@@ -1130,7 +1178,7 @@ def CheckCLI(argv):
         elif opt in '--glpf':
             cli_glpf = int(arg)
 
-    if not cli_fly and cli_test_case == 0:
+    if not cli_fly and cli_test_case == 0 and not cli_calibrate_0g:
         logger.critical('Must specify one of -f or --tc')
         sys.exit(2)
 
@@ -1142,6 +1190,9 @@ def CheckCLI(argv):
     elif cli_test_case == 0 and cli_fly:
         logger.critical('Pre-flight checks passed, enjoy your flight, sir!')
 
+    elif cli_test_case == 0 and cli_calibrate_0g:
+        logger.critical ('Proceeding with 0g calibration')
+
 
     elif cli_test_case != 1 and cli_test_case != 2:
         logger.critical('Only 1 or 2 are valid testcases')
@@ -1152,7 +1203,7 @@ def CheckCLI(argv):
         sys.exit(2)
 
 
-    return cli_fly, cli_flight_plan, cli_hover_target, cli_video, cli_vvp_gain, cli_vvi_gain, cli_vvd_gain, cli_hvp_gain, cli_hvi_gain, cli_hvd_gain, cli_prp_gain, cli_pri_gain, cli_prd_gain, cli_rrp_gain, cli_rri_gain, cli_rrd_gain, cli_yrp_gain, cli_yri_gain, cli_yrd_gain, cli_test_case, cli_alpf, cli_glpf, cli_rtf_period, cli_tau, cli_diagnostics
+    return cli_fly, cli_flight_plan, cli_calibrate_0g, cli_hover_target, cli_video, cli_vvp_gain, cli_vvi_gain, cli_vvd_gain, cli_hvp_gain, cli_hvi_gain, cli_hvd_gain, cli_prp_gain, cli_pri_gain, cli_prd_gain, cli_rrp_gain, cli_rri_gain, cli_rrd_gain, cli_yrp_gain, cli_yri_gain, cli_yrd_gain, cli_test_case, cli_alpf, cli_glpf, cli_rtf_period, cli_tau, cli_diagnostics
 
 ####################################################################################################
 #
@@ -1365,7 +1416,6 @@ def go(name):
     global esc_list
     global shoot_video
 
-    global adc_frequency
     global dri_frequency
     global samples_per_motion
 
@@ -1438,9 +1488,9 @@ def go(name):
     #-----------------------------------------------------------------------------------------------
     # Check the command line for calibration or flight parameters
     #-----------------------------------------------------------------------------------------------
-    flying, flight_plan, hover_target, shoot_video, vvp_gain, vvi_gain, vvd_gain, hvp_gain, hvi_gain, hvd_gain, prp_gain, pri_gain, prd_gain, rrp_gain, rri_gain, rrd_gain, yrp_gain, yri_gain, yrd_gain, test_case, alpf, glpf, rtf_period, tau, diagnostics = CheckCLI(sys.argv[1:])
-    logger.warning("fly = %s, flight plan = %s, hover_target = %d, shoot_video = %s, vvp_gain = %f, vvi_gain = %f, vvd_gain= %f, hvp_gain = %f, hvi_gain = %f, hvd_gain = %f, prp_gain = %f, pri_gain = %f, prd_gain = %f, rrp_gain = %f, rri_gain = %f, rrd_gain = %f, yrp_gain = %f, yri_gain = %f, yrd_gain = %f, test_case = %d, alpf = %d, glpf = %d, rtf_period = %f, tau = %f, diagnostics = %s",
-            flying, flight_plan, hover_target, shoot_video, vvp_gain, vvi_gain, vvd_gain, hvp_gain, hvi_gain, hvd_gain, prp_gain, pri_gain, prd_gain, rrp_gain, rri_gain, rrd_gain, yrp_gain, yri_gain, yrd_gain, test_case, alpf, glpf, rtf_period, tau, diagnostics)
+    flying, flight_plan, calibrate_0g, hover_target, shoot_video, vvp_gain, vvi_gain, vvd_gain, hvp_gain, hvi_gain, hvd_gain, prp_gain, pri_gain, prd_gain, rrp_gain, rri_gain, rrd_gain, yrp_gain, yri_gain, yrd_gain, test_case, alpf, glpf, rtf_period, tau, diagnostics = CheckCLI(sys.argv[1:])
+    logger.warning("fly = %s, flight plan = %s, calibrate_0g = %d, hover_target = %d, shoot_video = %s, vvp_gain = %f, vvi_gain = %f, vvd_gain= %f, hvp_gain = %f, hvi_gain = %f, hvd_gain = %f, prp_gain = %f, pri_gain = %f, prd_gain = %f, rrp_gain = %f, rri_gain = %f, rrd_gain = %f, yrp_gain = %f, yri_gain = %f, yrd_gain = %f, test_case = %d, alpf = %d, glpf = %d, rtf_period = %f, tau = %f, diagnostics = %s",
+            flying, flight_plan, calibrate_0g, hover_target, shoot_video, vvp_gain, vvi_gain, vvd_gain, hvp_gain, hvi_gain, hvd_gain, prp_gain, pri_gain, prd_gain, rrp_gain, rri_gain, rrd_gain, yrp_gain, yri_gain, yrd_gain, test_case, alpf, glpf, rtf_period, tau, diagnostics)
 
     #-----------------------------------------------------------------------------------------------
     # Initialize the numeric globals
@@ -1503,6 +1553,17 @@ def go(name):
     # the SignalHandler below or it will override what we set thus killing the "Kill Switch"..
     #-----------------------------------------------------------------------------------------------
     RpioSetup()
+
+    #-----------------------------------------------------------------------------------------------
+    # Calibrate gravity or use previous settings
+    #-----------------------------------------------------------------------------------------------
+    if calibrate_0g:
+        if not mpu6050.calibrate0g():
+            logger.critical("0g calibration error, abort")
+        return
+    elif not mpu6050.load0gCalibration():
+        logger.critical("0g calibration not found.")
+        return
 
     #-----------------------------------------------------------------------------------------------
     # Set the signal handler here so the core processing loop can be stopped (or not started) by
@@ -1796,7 +1857,15 @@ def go(name):
             sampling.integrator()
 
         #-------------------------------------------------------------------------------------------
-        # Copy the latest data into the local copy and run with it
+        # Angular prediction, stage 1:
+        #
+        # Before collecting samples, using the previous best guess of Euler angles to reorientate
+        # the gyro rates to the quad frame
+        #-------------------------------------------------------------------------------------------
+#        urp, urr, ury = Body2EulerRates(qry, qrx, qrz, pa, ra)
+
+        #-------------------------------------------------------------------------------------------
+        # Collect the latest batch of data from the sensors, and update the motion processing stats
         #-------------------------------------------------------------------------------------------
         qax, qay, qaz, qrx, qry, qrz, i_time = sampling.collect()
 
@@ -1804,7 +1873,7 @@ def go(name):
         sampling_loops += i_time * dri_frequency
 
         #-------------------------------------------------------------------------------------------
-        # Sort out units and calibration for the incoming data
+        # Sort out units and calibration for the new sensor data
         #-------------------------------------------------------------------------------------------
         qax, qay, qaz, qrx, qry, qrz = mpu6050.scaleSensors(qax,
                                                             qay,
@@ -1813,12 +1882,11 @@ def go(name):
                                                             qry,
                                                             qrz)
 
-        i_qrx = qrx * i_time
-        i_qry = qry * i_time
-        i_qrz = qrz * i_time
-
         #-------------------------------------------------------------------------------------------
-        # Update the previous pitch, roll and yaw angles with the latest gyro output
+        # Angular predication, stage 2:
+        #
+        # Now knowing the time since the last set of angles, update the previous set with the integrated
+        # previous reorientated gyro rates
         #-------------------------------------------------------------------------------------------
         urp, urr, ury = Body2EulerRates(qry, qrx, qrz, pa, ra)
         pa += urp * i_time
@@ -1826,11 +1894,10 @@ def go(name):
         ya += ury * i_time
 
         #-------------------------------------------------------------------------------------------
-        # Based upon the revised angles, rotate the latest accelerometer readings to earth frame.
+        # First, based upon the predicted angles, rotate the new accelerometer data to earth frame.
         # Next, run the earth frame acceleration through the Butterworth LPF to extract gravity.
-        # Next, rotate and revise gravity back to the quad frame.
-        # Finally, based upon the new distribution of gravity around the quad frame, update the Euler
-        # angles.
+        # Next, rotate revised gravity back to the quad frame.
+        # Finally, based upon the new gravity in the quad frame, update the Euler angles.
         #-------------------------------------------------------------------------------------------
         eax, eay, eaz = RotateQ2E(qax, qay, qaz, pa, ra, ya)
 
@@ -1840,13 +1907,17 @@ def go(name):
 
         qgx, qgy, qgz = RotateE2Q(egx, egy, egz, pa, ra, ya)
 
+        upa, ura = GetRotationAngles(qgx, qgy, qgz)
+
         #-------------------------------------------------------------------------------------------
         # Merge the short-term noise free gyro angles with the long-term accurate acclerometer angles
         #-------------------------------------------------------------------------------------------
-        uap, uar = GetRotationAngles(qgx, qgy, qgz)
         tau_fraction = tau / (tau + i_time)
-        pa = tau_fraction * pa + (1 - tau_fraction) * uap
-        ra = tau_fraction * ra + (1 - tau_fraction) * uar
+        pa = tau_fraction * pa + (1 - tau_fraction) * upa
+        ra = tau_fraction * ra + (1 - tau_fraction) * ura
+
+#        pa = upa
+#        ra = ura
 
         #-------------------------------------------------------------------------------------------
         # Get the curent flight plan targets
