@@ -40,9 +40,6 @@ import ctypes
 from ctypes.util import find_library
 import random
 
-dri_frequency = 0
-samples_per_motion = 0
-
 ####################################################################################################
 #
 #  Adafruit i2c interface enhanced with performance / error handling enhancements
@@ -285,6 +282,7 @@ class MPU6050 :
     __SCALE_ACCEL = 8.0 / 65536
 
     def __init__(self, address=0x68, alpf=1, glpf=1):
+        global adc_frequency
         global dri_frequency
 
         self.i2c = I2C(address)
@@ -318,7 +316,7 @@ class MPU6050 :
         # dlpf to 0 or 7 changes 1kHz to 8kHz and therefore will require sample rate divider
         # to be changed to 7 to obtain the same 1kHz sample rate.
         #-------------------------------------------------------------------------------------------
-        self.i2c.write8(self.__MPU6050_RA_SMPLRT_DIV, math.trunc(1000 / dri_frequency) - 1)
+        self.i2c.write8(self.__MPU6050_RA_SMPLRT_DIV, math.trunc(adc_frequency / dri_frequency) - 1)
         time.sleep(0.1)
 
         #-------------------------------------------------------------------------------------------
@@ -395,6 +393,12 @@ class MPU6050 :
         self.i2c.write8(self.__MPU6050_RA_INT_ENABLE, 0x01)
         time.sleep(0.1)
 
+        #-------------------------------------------------------------------------------------------
+        # Read ambient temperature
+        #-------------------------------------------------------------------------------------------
+        temp = self.i2c.readS16(self.__MPU6050_RA_TEMP_OUT_H)
+        logger.critical("IMU temp: %f", temp / 333.86 + 21.0) 
+
     def readSensors(self):
         #-------------------------------------------------------------------------------------------
         # For the sake of always getting good date wrap the interrupt and the register read in a try
@@ -448,7 +452,7 @@ class MPU6050 :
         if az > 65536 / 2:   # +4g
             self.num_4g_hits += 1
 
-        return ax, ay, az, gx, gy, gz, dt
+        return ax, ay, az, gx, gy, gz, dt, temp
 
     def scaleSensors(self, ax, ay, az, gx, gy, gz):
         qax = (ax - self.ax_offset) * self.__SCALE_ACCEL
@@ -468,7 +472,7 @@ class MPU6050 :
         gz_offset = 0
 
         for iteration in range(0, self.__CALIBRATION_ITERATIONS):
-            [ax, ay, az, gx, gy, gz, dt] = self.readSensors()
+            [ax, ay, az, gx, gy, gz, dt, temp] = self.readSensors()
 
             gx_offset += gx
             gy_offset += gy
@@ -492,7 +496,7 @@ class MPU6050 :
             with open('0goffsets', 'wb') as offs_file:
                 raw_input("Rest me on my props and press enter.")
                 for iteration in range(0, self.__CALIBRATION_ITERATIONS):
-                    [ax, ay, az, gx, gy, gz, dt] = self.readSensors()
+                    [ax, ay, az, gx, gy, gz, dt, temp] = self.readSensors()
 
                     ax_offset += ax
                     ay_offset += ay
@@ -945,16 +949,9 @@ def RpioCleanup():
 #
 ####################################################################################################
 def CheckCLI(argv):
+    global adc_frequency
     global dri_frequency
     global samples_per_motion
-
-    #===============================================================================================
-    # dri_frequency      - the data sampling rate and thus data ready interrupt rate
-    # samples_per_motion - the number of dri triggered samples to be batched before invoking
-    #                      motion processing.  
-    #===============================================================================================
-    dri_frequency = 250
-    samples_per_motion = 5
 
     cli_fly = False
     cli_video = False
@@ -964,11 +961,11 @@ def CheckCLI(argv):
     # Other configuration defaults
     #-----------------------------------------------------------------------------------------------
     cli_test_case = 0
-    cli_alpf = 3
-    cli_glpf = 2
+    cli_alpf = 2
+    cli_glpf = 1
     cli_diagnostics = False
     cli_rtf_period = 1.5
-    cli_tau = 0.5
+    cli_tau = 5
     cli_calibrate_0g = False
     cli_flight_plan = ''
 
@@ -997,14 +994,14 @@ def CheckCLI(argv):
         #-------------------------------------------------------------------------------------------
         # Defaults for pitch angle PIDs
         #-------------------------------------------------------------------------------------------
-        cli_prp_gain = 90.0
+        cli_prp_gain = 100.0
         cli_pri_gain = 9.0
         cli_prd_gain = 0.0
 
         #-------------------------------------------------------------------------------------------
         # Defaults for roll angle PIDs
         #-------------------------------------------------------------------------------------------
-        cli_rrp_gain = 90.0
+        cli_rrp_gain = 100.0
         cli_rri_gain = 9.0
         cli_rrd_gain = 0.0
 
@@ -1202,6 +1199,19 @@ def CheckCLI(argv):
         logger.critical('You must choose a specific hover speed (-h) for test case 1 - try 200')
         sys.exit(2)
 
+    #===============================================================================================
+    # adc_frequency      - the sampling rate of the ADC
+    # dri_frequency      - the data sampling rate and thus data ready interrupt rate
+    # samples_per_motion - the number of dri triggered samples to be batched before invoking
+    #                      motion processing.
+    #===============================================================================================
+    if cli_glpf == 0:
+        adc_frequency = 8000
+    else:
+        adc_frequency = 1000
+
+    samples_per_motion = 2
+    dri_frequency = 250
 
     return cli_fly, cli_flight_plan, cli_calibrate_0g, cli_hover_target, cli_video, cli_vvp_gain, cli_vvi_gain, cli_vvd_gain, cli_hvp_gain, cli_hvi_gain, cli_hvd_gain, cli_prp_gain, cli_pri_gain, cli_prd_gain, cli_rrp_gain, cli_rri_gain, cli_rrd_gain, cli_yrp_gain, cli_yri_gain, cli_yrd_gain, cli_test_case, cli_alpf, cli_glpf, cli_rtf_period, cli_tau, cli_diagnostics
 
@@ -1416,6 +1426,7 @@ def go(name):
     global esc_list
     global shoot_video
 
+    global adc_frequency
     global dri_frequency
     global samples_per_motion
 
@@ -1644,17 +1655,10 @@ def go(name):
 
     #-----------------------------------------------------------------------------------------------
     # Initialize the butterworth LP filters.
-    # 100Hz = 1kHz pulses / 10 loops = sampling freqency
-    # 0.1 = Cut-off frequency
-    # 4 = order of filter
-    #
-    # " + 1" is required for motion processing at sampling frequencies <= 500Hz.  Sampling at >500Hz
-    # leads to a less predicable set of lost data samples which can't be accounted for in the same
-    # predictable way.
     #-----------------------------------------------------------------------------------------------
-    bfx = BUTTERWORTH(dri_frequency / samples_per_motion, 0.05, 6)
-    bfy = BUTTERWORTH(dri_frequency / samples_per_motion, 0.05, 6)
-    bfz = BUTTERWORTH(dri_frequency / samples_per_motion, 0.05, 6)
+    bfx = BUTTERWORTH(dri_frequency / samples_per_motion, 0.05, 8)
+    bfy = BUTTERWORTH(dri_frequency / samples_per_motion, 0.05, 8)
+    bfz = BUTTERWORTH(dri_frequency / samples_per_motion, 0.05, 8)
 
     #-----------------------------------------------------------------------------------------------
     # Set up the global constants
@@ -1678,7 +1682,7 @@ def go(name):
     ya = 0.0
 
     for ii in range(20 * dri_frequency):
-        qax, qay, qaz, qrx, qry, qrz, dt = mpu6050.readSensors()
+        qax, qay, qaz, qrx, qry, qrz, dt, temp = mpu6050.readSensors()
         qax, qay, qaz, qrx, qry, qrz = mpu6050.scaleSensors(qax, qay, qaz, qrx, qry, qrz)
 
         bpa, bra = GetRotationAngles(qax, qay, qaz)
@@ -1783,7 +1787,7 @@ def go(name):
     # Diagnostic log header
     #-----------------------------------------------------------------------------------------------
     if diagnostics:
-        logger.warning('time, dt, loop, qrx, qry, qrz, qax, qay, qaz, efrgv_x, efrgv_y, efrgv_z, qfrgv_x, qfrgv_y, qfrgv_z, qvx_input, qvy_input, qvz_input, pitch, roll, yaw, evx_target, qvx_target, qxp, qxi, qxd, pr_target, prp, pri, prd, pr_out, evy_yarget, qvy_target, qyp, qyi, qyd, rr_target, rrp, rri, rrd, rr_out, evz_target, qvz_target, qzp, qzi, qzd, qvz_out, yr_target, yrp, yri, yrd, yr_out, FL spin, FR spin, BL spin, BR spin')
+        logger.warning('time, dt, loops, temp, qrx, qry, qrz, qax, qay, qaz, efrgv_x, efrgv_y, efrgv_z, qfrgv_x, qfrgv_y, qfrgv_z, qvx_input, qvy_input, qvz_input, pitch, roll, yaw, evx_target, qvx_target, qxp, qxi, qxd, pr_target, prp, pri, prd, pr_out, evy_yarget, qvy_target, qyp, qyi, qyd, rr_target, rrp, rri, rrd, rr_out, evz_target, qvz_target, qzp, qzi, qzd, qvz_out, yr_target, yrp, yri, yrd, yr_out, FL spin, FR spin, BL spin, BR spin')
 
     #===============================================================================================
     # Initialize critical timing immediately before starting the PIDs.  This is done by reading the
@@ -1857,24 +1861,9 @@ def go(name):
             sampling.integrator()
 
         #-------------------------------------------------------------------------------------------
-        # Angular prediction, stage 1:
-        #
-        # Before collecting samples, using the previous best guess of Euler angles to reorientate
-        # the gyro rates to the quad frame
+        # Collect the latest batch of data from the sensors, and sort out units and calibration
         #-------------------------------------------------------------------------------------------
-#        urp, urr, ury = Body2EulerRates(qry, qrx, qrz, pa, ra)
-
-        #-------------------------------------------------------------------------------------------
-        # Collect the latest batch of data from the sensors, and update the motion processing stats
-        #-------------------------------------------------------------------------------------------
-        qax, qay, qaz, qrx, qry, qrz, i_time = sampling.collect()
-
-        motion_loops += 1
-        sampling_loops += i_time * dri_frequency
-
-        #-------------------------------------------------------------------------------------------
-        # Sort out units and calibration for the new sensor data
-        #-------------------------------------------------------------------------------------------
+        qax, qay, qaz, qrx, qry, qrz, i_time, temp = sampling.collect()
         qax, qay, qaz, qrx, qry, qrz = mpu6050.scaleSensors(qax,
                                                             qay,
                                                             qaz,
@@ -1882,11 +1871,17 @@ def go(name):
                                                             qry,
                                                             qrz)
 
+
+        #------------------------------------------------------------------------------------------
+        # Track the number of motion loops and sampling loops; any discrepancy between these are the
+        # missed samples or sampling errors.
+        #------------------------------------------------------------------------------------------
+        motion_loops += 1
+        sampling_loops += i_time * dri_frequency
+
         #-------------------------------------------------------------------------------------------
-        # Angular predication, stage 2:
-        #
-        # Now knowing the time since the last set of angles, update the previous set with the integrated
-        # previous reorientated gyro rates
+        # Angular predication: Now we know the time since the last batch of samples, update the
+        # previous angles with the 'integral' of the previous euler rotation rates.
         #-------------------------------------------------------------------------------------------
         urp, urr, ury = Body2EulerRates(qry, qrx, qrz, pa, ra)
         pa += urp * i_time
@@ -1894,10 +1889,10 @@ def go(name):
         ya += ury * i_time
 
         #-------------------------------------------------------------------------------------------
-        # First, based upon the predicted angles, rotate the new accelerometer data to earth frame.
+        # Based upon the predicted angles, rotate the new accelerometer data to earth frame.
         # Next, run the earth frame acceleration through the Butterworth LPF to extract gravity.
-        # Next, rotate revised gravity back to the quad frame.
-        # Finally, based upon the new gravity in the quad frame, update the Euler angles.
+        # Finally, rotate revised gravity back to the quad frame.
+        # This provides the best guestimation of current gravity orientation and value.
         #-------------------------------------------------------------------------------------------
         eax, eay, eaz = RotateQ2E(qax, qay, qaz, pa, ra, ya)
 
@@ -1907,17 +1902,18 @@ def go(name):
 
         qgx, qgy, qgz = RotateE2Q(egx, egy, egz, pa, ra, ya)
 
-        upa, ura = GetRotationAngles(qgx, qgy, qgz)
-
         #-------------------------------------------------------------------------------------------
-        # Merge the short-term noise free gyro angles with the long-term accurate acclerometer angles
+        # To stop integration drift from the gyros, merge the short-term noise free predicted angles
+        # with the long-term accurate acclerometer which short term are tainted with acceleration as
+        # well as gravity. tau is the period during which we expect acceleration to average out leading
+        # only the net gravity value. tau can be small if acceleration is short and sharp.  There is
+        # a balance here between the period to trust the integrated, reorientated gyro readings and
+        # the period where accelerometer spikes average out.
         #-------------------------------------------------------------------------------------------
+        upa, ura = GetRotationAngles(qax, qay, qaz)
         tau_fraction = tau / (tau + i_time)
         pa = tau_fraction * pa + (1 - tau_fraction) * upa
         ra = tau_fraction * ra + (1 - tau_fraction) * ura
-
-#        pa = upa
-#        ra = ura
 
         #-------------------------------------------------------------------------------------------
         # Get the curent flight plan targets
@@ -2111,8 +2107,8 @@ def go(name):
         # Diagnostic log - every motion loop
         #-------------------------------------------------------------------------------------------
         if diagnostics:
-            logger.warning('%f, %f, %d, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %s, %f, %s, %d, %f, %f, %s, %f, %s, %d, %f, %f, %s, %d, %f, %s, %d, %d, %d, %d, %d',
-                            sampling_loops / dri_frequency, i_time, sampling.total_loops, qrx, qry, qrz, qax, qay, qaz, egx, egy, egz, qgx, qgy, qgz, qvx_input, qvy_input, qvz_input, math.degrees(pa), math.degrees(ra), math.degrees(ya), evx_target, qvx_target, qvx_diags, math.degrees(pr_target), pr_diags, pr_out, evy_target, qvy_target, qvy_diags, math.degrees(rr_target), rr_diags, rr_out, evz_target, qvz_target, qvz_diags, qvz_out, math.degrees(yr_target), yr_diags, yr_out, esc_list[0].pulse_width, esc_list[1].pulse_width, esc_list[2].pulse_width, esc_list[3].pulse_width)
+            logger.warning('%f, %f, %d, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %s, %f, %s, %d, %f, %f, %s, %f, %s, %d, %f, %f, %s, %d, %f, %s, %d, %d, %d, %d, %d',
+                            sampling_loops / dri_frequency, i_time, sampling.total_loops, temp / 333.86 + 21, qrx, qry, qrz, qax, qay, qaz, egx, egy, egz, qgx, qgy, qgz, qvx_input, qvy_input, qvz_input, math.degrees(pa), math.degrees(ra), math.degrees(ya), evx_target, qvx_target, qvx_diags, math.degrees(pr_target), pr_diags, pr_out, evy_target, qvy_target, qvy_diags, math.degrees(rr_target), rr_diags, rr_out, evz_target, qvz_target, qvz_diags, qvz_out, math.degrees(yr_target), yr_diags, yr_out, esc_list[0].pulse_width, esc_list[1].pulse_width, esc_list[2].pulse_width, esc_list[3].pulse_width)
 
 
     #-----------------------------------------------------------------------------------------------
@@ -2120,7 +2116,8 @@ def go(name):
     # thread from setting integrator_running to False - i.e. deadlock!
     #-----------------------------------------------------------------------------------------------
     sampling.go = False
-
+ 
+    print "IMU core temp: %f" % (temp / 333.86 + 21.0)
     print "motion_loops %d" % motion_loops
     print "sampling_loops %d" % sampling_loops
     print "flight time %f" % (time.time() - start_flight)
@@ -2147,6 +2144,7 @@ class SAMPLING():
         self.i_qry = 0.0
         self.i_qrz = 0.0
         self.i_time = 0.0
+        self.i_temp = 0
 
         #-------------------------------------------------------------------------------------------
         # Set up performance tracking.
@@ -2165,7 +2163,7 @@ class SAMPLING():
         #-------------------------------------------------------------------------------------------
         # Main thread
         #-------------------------------------------------------------------------------------------
-        return self.i_qax, self.i_qay, self.i_qaz, self.i_qrx, self.i_qry, self.i_qrz, self.i_time
+        return self.i_qax, self.i_qay, self.i_qaz, self.i_qrx, self.i_qry, self.i_qrz, self.i_time, self.i_temp
 
     def integrator(self):
         #-------------------------------------------------------------------------------------------
@@ -2187,7 +2185,7 @@ class SAMPLING():
             # Sensors: Read the sensor values; note that this also sets the time_now to be as
             # accurate a time stamp for the sensor data as possible.
             #=======================================================================================
-            ax, ay, az, gx, gy, gz, dt = mpu6050.readSensors()
+            ax, ay, az, gx, gy, gz, dt, temp = mpu6050.readSensors()
 
             #---------------------------------------------------------------------------------------
             # Now we have the sensor snapshot, tidy up the rest of the variable so that
@@ -2238,6 +2236,7 @@ class SAMPLING():
                 self.i_qry = igy / sampling_loops
                 self.i_qrz = igz / sampling_loops
                 self.i_time = sampling_period / dri_frequency
+                self.i_temp = temp
 
                 #-----------------------------------------------------------------------------------
                 # Clear the integration for next time round
