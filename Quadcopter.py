@@ -316,7 +316,9 @@ class MPU6050 :
         # dlpf to 0 or 7 changes 1kHz to 8kHz and therefore will require sample rate divider
         # to be changed to 7 to obtain the same 1kHz sample rate.
         #-------------------------------------------------------------------------------------------
-        self.i2c.write8(self.__MPU6050_RA_SMPLRT_DIV, math.trunc(adc_frequency / dri_frequency) - 1)
+        sample_rate_divisor = int(math.trunc(adc_frequency / dri_frequency))
+        logger.warning("SRD:, %d", sample_rate_divisor)
+        self.i2c.write8(self.__MPU6050_RA_SMPLRT_DIV, sample_rate_divisor - 1)
         time.sleep(0.1)
 
         #-------------------------------------------------------------------------------------------
@@ -397,7 +399,7 @@ class MPU6050 :
         # Read ambient temperature
         #-------------------------------------------------------------------------------------------
         temp = self.i2c.readS16(self.__MPU6050_RA_TEMP_OUT_H)
-        logger.critical("IMU temp: %f", temp / 333.86 + 21.0) 
+        logger.warning("IMU temp:, %f", temp / 333.86 + 21.0)
 
     def readSensors(self):
         #-------------------------------------------------------------------------------------------
@@ -524,7 +526,7 @@ class MPU6050 :
             self.az_offset = 0.0 # float(az_offset)
         except EnvironmentError:
             offs_rc = False
-        print "%f, %f, %f" % (self.ax_offset, self.ay_offset, self.az_offset)
+        logger.warning("0g Offsets:, %f, %f, %f", self.ax_offset, self.ay_offset, self.az_offset)
         return offs_rc
 
 
@@ -1204,6 +1206,13 @@ def CheckCLI(argv):
     # dri_frequency      - the data sampling rate and thus data ready interrupt rate
     # samples_per_motion - the number of dri triggered samples to be batched before invoking
     #                      motion processing.
+    #
+    # The maximum DRI frequency seems to be 250Hz even if SMPLRT_DIV is set to 0 (1kHz) or 1 (500Hz)
+    # Since the DRI's are used as the software clock, dri_frequency must never be set to > 250.
+    # In addition, setting it to 250 means there are 4 milliseconds allowed per samples for motion
+    # processing; if the on-screen numbers don't add up (flight time vs sample loops @ dri_frequency)
+    # this most likely means samples are being missed during motion processing, and dri_frequency
+    # should be dropped to 200, 166, 143, 125, 111, 100 until all is well.
     #===============================================================================================
     if cli_glpf == 0:
         adc_frequency = 8000
@@ -1366,7 +1375,7 @@ class FlightPlan:
             keep_looping = False
 
         if fp_index != self.fp_prev_index:
-            logger.critical("%s", self.fp_name[fp_index])
+            print "%s" % self.fp_name[fp_index]
             self.fp_prev_index = fp_index
 
         return self.fp_evx_target[fp_index], self.fp_evy_target[fp_index], self.fp_evz_target[fp_index]
@@ -1541,6 +1550,7 @@ def go(name):
     yr_diags = "0.0, 0.0, 0.0"
 
     hover_speed = 0
+    hsf = 0.0
     ready_to_fly = False
     keep_looping = False
 
@@ -1570,10 +1580,10 @@ def go(name):
     #-----------------------------------------------------------------------------------------------
     if calibrate_0g:
         if not mpu6050.calibrate0g():
-            logger.critical("0g calibration error, abort")
+            print "0g calibration error, abort"
         return
     elif not mpu6050.load0gCalibration():
-        logger.critical("0g calibration not found.")
+        print "0g calibration data not found."
         return
 
     #-----------------------------------------------------------------------------------------------
@@ -1620,16 +1630,16 @@ def go(name):
     #-----------------------------------------------------------------------------------------------
     # Give the PWM 5s to allow the ESCs to synchronize.
     #-----------------------------------------------------------------------------------------------
-    logger.critical("Just warming up and chilling out.  Gimme 20s or so...")
+    print "Just warming up and chilling out.  Gimme 20s or so..."
 
     #===============================================================================================
     # START TESTCASE 1 CODE: spin up each blade individually for 10s each and check they all turn
     #                        the right way
     #===============================================================================================
     if test_case == 1:
-        logger.critical("TESTCASE 1: Check props are spinning as expected")
+        print "TESTCASE 1: Check props are spinning as expected"
         for esc in esc_list:
-            logger.critical("%s prop should rotate %s.", esc.name, "anti-clockwise" if esc.motor_rotation == MOTOR_ROTATION_ACW else "clockwise")
+            print "%s prop should rotate %s." % (esc.name, "anti-clockwise" if esc.motor_rotation == MOTOR_ROTATION_ACW else "clockwise")
             for count in range(0, hover_target, 10):
                 #-----------------------------------------------------------------------------------
                 # Spin up to user determined (-h) hover speeds ~200
@@ -1650,7 +1660,7 @@ def go(name):
     try:
         fp = FlightPlan(flight_plan)
     except Exception, err:
-        logger.critical("%s error: %s", flight_plan, err)
+        print "%s error: %s" % (flight_plan, err)
         CleanShutdown()
 
     #-----------------------------------------------------------------------------------------------
@@ -1696,15 +1706,15 @@ def go(name):
         ra = 0.01 * bra + 0.99 * ra
 
         if ii % dri_frequency == 0:
-            logger.critical("%d...", 20 - int(ii / dri_frequency))
+            print "%d..." % (20 - int(ii / dri_frequency))
 
     #-----------------------------------------------------------------------------------------------
     # Log the critical parameters from this warm-up: the take-off surface tilt, and gravity. Note
     # that some of the variables used above are used in the main processing loop.  Messing with the
     # above code can have very unexpected effects in flight.
     #-----------------------------------------------------------------------------------------------
-    logger.critical("pitch %f, roll %f", math.degrees(pa), math.degrees(ra))
-    logger.critical("egx %f, egy %f, egz %f", egx, egy, egz)
+    logger.warning("pitch %f, roll %f", math.degrees(pa), math.degrees(ra))
+    logger.warning("egx %f, egy %f, egz %f", egx, egy, egz)
 
     #-----------------------------------------------------------------------------------------------
     # Start up the video camera if required - this runs from take-off through to shutdown
@@ -1780,14 +1790,15 @@ def go(name):
     PID_YR_I_GAIN = yri_gain
     PID_YR_D_GAIN = yrd_gain
 
-    print "%d data errors; %d i2c errors; %d 4g hits" % mpu6050.getMisses()
-    logger.critical('Thunderbirds are go!')
+    (data_errors, i2c_errors, num_4g_hits) = mpu6050.getMisses() 
+    logger.warning("%d data errors; %d i2c errors; %d 4g hits", data_errors, i2c_errors, num_4g_hits)
+    print "Thunderbirds are go!"
 
     #-----------------------------------------------------------------------------------------------
     # Diagnostic log header
     #-----------------------------------------------------------------------------------------------
     if diagnostics:
-        logger.warning('time, dt, loops, temp, qrx, qry, qrz, qax, qay, qaz, efrgv_x, efrgv_y, efrgv_z, qfrgv_x, qfrgv_y, qfrgv_z, qvx_input, qvy_input, qvz_input, pitch, roll, yaw, evx_target, qvx_target, qxp, qxi, qxd, pr_target, prp, pri, prd, pr_out, evy_yarget, qvy_target, qyp, qyi, qyd, rr_target, rrp, rri, rrd, rr_out, evz_target, qvz_target, qzp, qzi, qzd, qvz_out, yr_target, yrp, yri, yrd, yr_out, FL spin, FR spin, BL spin, BR spin')
+        logger.warning('time, dt, loops, germs, temp, qrx, qry, qrz, qax, qay, qaz, efrgv_x, efrgv_y, efrgv_z, qfrgv_x, qfrgv_y, qfrgv_z, qvx_input, qvy_input, qvz_input, pitch, roll, yaw, evx_target, qvx_target, qxp, qxi, qxd, pr_target, prp, pri, prd, pr_out, evy_yarget, qvy_target, qyp, qyi, qyd, rr_target, rrp, rri, rrd, rr_out, evz_target, qvz_target, qzp, qzi, qzd, qvz_out, yr_target, yrp, yri, yrd, yr_out, FL spin, FR spin, BL spin, BR spin')
 
     #===============================================================================================
     # Initialize critical timing immediately before starting the PIDs.  This is done by reading the
@@ -1911,10 +1922,27 @@ def go(name):
         # the period where accelerometer spikes average out.
         #-------------------------------------------------------------------------------------------
         upa, ura = GetRotationAngles(qax, qay, qaz)
+
+        #-------------------------------------------------------------------------------------------
+        # Now do the fusion based upon the germs fractions
+        # germs      - Gravity Error Root Mean Square - the absolute difference between predicted and
+        #              accelerometer gravity readings as a fraction of gravity
+        # germs_bias = the ratio of prediction and accelerometer gravity to fuse; large bias favours
+        #              prediction over acceleration
+        #-------------------------------------------------------------------------------------------
         tau_fraction = tau / (tau + i_time)
         pa = tau_fraction * pa + (1 - tau_fraction) * upa
         ra = tau_fraction * ra + (1 - tau_fraction) * ura
 
+#       gv_predict = math.pow(math.pow(qgx,2) + math.pow(qgy,2) + math.pow(qgz,2),0.5)
+#       gv_measure = math.pow(math.pow(qax,2) + math.pow(qay,2) + math.pow(qaz,2),0.5)
+#       germs = math.fabs(gv_predict - gv_measure)/gv_predict
+#       germs_bias = 80.0
+
+#       fusion_fraction = germs_bias / (germs_bias + germs)
+#       pa = (1 - fusion_fraction) * pa + fusion_fraction * upa
+#       ra = (1 - fusion_fraction) * ra + fusion_fraction * ura
+ 
         #-------------------------------------------------------------------------------------------
         # Get the curent flight plan targets
         #-------------------------------------------------------------------------------------------
@@ -1922,8 +1950,11 @@ def go(name):
             if hover_speed >= hover_target:
                 hover_speed = hover_target
                 ready_to_fly = True
+                print "RTF @ %fs" % (time.time() - start_flight)
+
             else:
-                hover_speed += int(hover_target * i_time / rtf_period)
+                hsf += hover_target * i_time / rtf_period
+                hover_speed = int(math.trunc(hsf))
 
         else:
             evx_target, evy_target, evz_target = fp.getTargets(i_time)
@@ -2012,7 +2043,8 @@ def go(name):
 
         #-------------------------------------------------------------------------------------------
         # For the moment, we just want yaw to not exist.  It's only required if we want the front of
-        # the quad to face the direction it's travelling.
+        # the quad to face the direction it's travelling.  This only really becomes important if
+        # videoing a flight.
         #-------------------------------------------------------------------------------------------
         ya_target = 0.0
         [p_out, i_out, d_out] = ya_pid.Compute(ya, ya_target, i_time)
@@ -2107,8 +2139,8 @@ def go(name):
         # Diagnostic log - every motion loop
         #-------------------------------------------------------------------------------------------
         if diagnostics:
-            logger.warning('%f, %f, %d, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %s, %f, %s, %d, %f, %f, %s, %f, %s, %d, %f, %f, %s, %d, %f, %s, %d, %d, %d, %d, %d',
-                            sampling_loops / dri_frequency, i_time, sampling.total_loops, temp / 333.86 + 21, qrx, qry, qrz, qax, qay, qaz, egx, egy, egz, qgx, qgy, qgz, qvx_input, qvy_input, qvz_input, math.degrees(pa), math.degrees(ra), math.degrees(ya), evx_target, qvx_target, qvx_diags, math.degrees(pr_target), pr_diags, pr_out, evy_target, qvy_target, qvy_diags, math.degrees(rr_target), rr_diags, rr_out, evz_target, qvz_target, qvz_diags, qvz_out, math.degrees(yr_target), yr_diags, yr_out, esc_list[0].pulse_width, esc_list[1].pulse_width, esc_list[2].pulse_width, esc_list[3].pulse_width)
+            logger.warning('%f, %f, %d, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %s, %f, %s, %d, %f, %f, %s, %f, %s, %d, %f, %f, %s, %d, %f, %s, %d, %d, %d, %d, %d',
+                            sampling_loops / dri_frequency, i_time, sampling.total_loops, germs, temp / 333.86 + 21, qrx, qry, qrz, qax, qay, qaz, egx, egy, egz, qgx, qgy, qgz, qvx_input, qvy_input, qvz_input, math.degrees(pa), math.degrees(ra), math.degrees(ya), evx_target, qvx_target, qvx_diags, math.degrees(pr_target), pr_diags, pr_out, evy_target, qvy_target, qvy_diags, math.degrees(rr_target), rr_diags, rr_out, evz_target, qvz_target, qvz_diags, qvz_out, math.degrees(yr_target), yr_diags, yr_out, esc_list[0].pulse_width, esc_list[1].pulse_width, esc_list[2].pulse_width, esc_list[3].pulse_width)
 
 
     #-----------------------------------------------------------------------------------------------
@@ -2116,12 +2148,14 @@ def go(name):
     # thread from setting integrator_running to False - i.e. deadlock!
     #-----------------------------------------------------------------------------------------------
     sampling.go = False
- 
-    print "IMU core temp: %f" % (temp / 333.86 + 21.0)
-    print "motion_loops %d" % motion_loops
-    print "sampling_loops %d" % sampling_loops
+
     print "flight time %f" % (time.time() - start_flight)
-    print "%d data errors; %d i2c errors; %d 4g hits" % mpu6050.getMisses()
+
+    logger.warning("IMU core temp: %f", temp / 333.86 + 21.0)
+    logger.warning("motion_loops %d", motion_loops)
+    logger.warning("sampling_loops %d", sampling_loops)
+    (data_errors, i2c_errors, num_4g_hits) = mpu6050.getMisses()
+    logger.warning("%d data errors; %d i2c errors; %d 4g hits", data_errors, i2c_errors, num_4g_hits)
 
     CleanShutdown()
 
@@ -2266,4 +2300,4 @@ class SAMPLING():
 
 if __name__ == '__main__':
     print "Quadcopter.py must be run via qc.py.  For example:"
-    print "  sudo python ./qc.py -f"
+    print "  sudo python ./qc.py -f fp.csv"
