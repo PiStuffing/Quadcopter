@@ -977,7 +977,7 @@ def CheckCLI(argv):
         #-------------------------------------------------------------------------------------------
         # Phoebe's PID configuration due to using her ESCs / motors / props
         #-------------------------------------------------------------------------------------------
-        cli_hover_target = 500
+        cli_hover_target = 400
 
         #-------------------------------------------------------------------------------------------
         # Defaults for vertical velocity PIDs
@@ -996,14 +996,14 @@ def CheckCLI(argv):
         #-------------------------------------------------------------------------------------------
         # Defaults for pitch angle PIDs
         #-------------------------------------------------------------------------------------------
-        cli_prp_gain = 100.0
+        cli_prp_gain = 105.0
         cli_pri_gain = 9.0
         cli_prd_gain = 0.0
 
         #-------------------------------------------------------------------------------------------
         # Defaults for roll angle PIDs
         #-------------------------------------------------------------------------------------------
-        cli_rrp_gain = 100.0
+        cli_rrp_gain = 105.0
         cli_rri_gain = 9.0
         cli_rrd_gain = 0.0
 
@@ -1221,6 +1221,13 @@ def CheckCLI(argv):
 
     samples_per_motion = 2
     dri_frequency = 250
+    if dri_frequency % samples_per_motion != 0:
+        print "dri_frequency %d must be devisible by samples_per_motion %d" % (dri_frequency, samples_per_motion)
+        sys.exit(2)
+
+    if dri_frequency > 250:
+        print "Data Ready Interrupts don't seem to work above 250Hz"
+        sys.exit(2)
 
     return cli_fly, cli_flight_plan, cli_calibrate_0g, cli_hover_target, cli_video, cli_vvp_gain, cli_vvi_gain, cli_vvd_gain, cli_hvp_gain, cli_hvi_gain, cli_hvd_gain, cli_prp_gain, cli_pri_gain, cli_prd_gain, cli_rrp_gain, cli_rri_gain, cli_rrd_gain, cli_yrp_gain, cli_yri_gain, cli_yrd_gain, cli_test_case, cli_alpf, cli_glpf, cli_rtf_period, cli_tau, cli_diagnostics
 
@@ -1259,7 +1266,7 @@ def CleanShutdown():
     #-----------------------------------------------------------------------------------------------
     now = datetime.now()
     now_string = now.strftime("%y%m%d-%H:%M:%S")
-    log_file_name = "qcstats" + now_string + ".csv"
+    log_file_name = "qcstats.csv"
     shutil.move("/dev/shm/qclogs", log_file_name)
 
     #-----------------------------------------------------------------------------------------------
@@ -1379,6 +1386,7 @@ class FlightPlan:
             self.fp_prev_index = fp_index
 
         return self.fp_evx_target[fp_index], self.fp_evy_target[fp_index], self.fp_evz_target[fp_index]
+
 
 ####################################################################################################
 #
@@ -1633,11 +1641,14 @@ def go(name):
     print "Just warming up and chilling out.  Gimme 20s or so..."
 
     #===============================================================================================
-    # START TESTCASE 1 CODE: spin up each blade individually for 10s each and check they all turn
-    #                        the right way
+    # START TESTCASE 1 CODE: spin up each blade individually for 5s each and check they all turn
+    #                        the right way.  At the same time, log X, Y and Z accelerometer readings
+    #                        to measure noise from the motors and props due to possible prop and motor
+    #                        damage.
     #===============================================================================================
     if test_case == 1:
         print "TESTCASE 1: Check props are spinning as expected"
+        elapsed_time = 0
         for esc in esc_list:
             print "%s prop should rotate %s." % (esc.name, "anti-clockwise" if esc.motor_rotation == MOTOR_ROTATION_ACW else "clockwise")
             for count in range(0, hover_target, 10):
@@ -1646,7 +1657,17 @@ def go(name):
                 #-----------------------------------------------------------------------------------
                 esc.update(count)
                 time.sleep(0.01)
-            time.sleep(5.0)
+
+            #---------------------------------------------------------------------------------------
+            # The prop is now up to the configured spin rate.  Start a 5s loop based upon the 
+            # dri_frequency logging the noise from the accelerometer.
+            #---------------------------------------------------------------------------------------
+            logger.warning("time, qax, qay, qax")
+            for loops in range(dri_frequency * 5):
+                qax, qay, qaz, qrx, qry, qrz, dt, temp = mpu6050.readSensors()
+                elapsed_time += dt
+                qax, qay, qaz, qrx, qry, qrz = mpu6050.scaleSensors(qax, qay, qaz, qrx, qry, qrz)
+                logger.warning("%f, %f, %f, %f", elapsed_time / dri_frequency, qax, qay, qaz)
             esc.update(0)
         CleanShutdown()
     #===============================================================================================
@@ -1790,7 +1811,7 @@ def go(name):
     PID_YR_I_GAIN = yri_gain
     PID_YR_D_GAIN = yrd_gain
 
-    (data_errors, i2c_errors, num_4g_hits) = mpu6050.getMisses() 
+    (data_errors, i2c_errors, num_4g_hits) = mpu6050.getMisses()
     logger.warning("%d data errors; %d i2c errors; %d 4g hits", data_errors, i2c_errors, num_4g_hits)
     print "Thunderbirds are go!"
 
@@ -1924,25 +1945,30 @@ def go(name):
         upa, ura = GetRotationAngles(qax, qay, qaz)
 
         #-------------------------------------------------------------------------------------------
-        # Now do the fusion based upon the germs fractions
-        # germs      - Gravity Error Root Mean Square - the absolute difference between predicted and
-        #              accelerometer gravity readings as a fraction of gravity
-        # germs_bias = the ratio of prediction and accelerometer gravity to fuse; large bias favours
-        #              prediction over acceleration
+        # Complementary Filter: Some comment here about complementary filter and that there's an
+        # expectation of net acceleration averaging to zero over the tau period.
         #-------------------------------------------------------------------------------------------
         tau_fraction = tau / (tau + i_time)
         pa = tau_fraction * pa + (1 - tau_fraction) * upa
         ra = tau_fraction * ra + (1 - tau_fraction) * ura
 
-#       gv_predict = math.pow(math.pow(qgx,2) + math.pow(qgy,2) + math.pow(qgz,2),0.5)
-#       gv_measure = math.pow(math.pow(qax,2) + math.pow(qay,2) + math.pow(qaz,2),0.5)
-#       germs = math.fabs(gv_predict - gv_measure)/gv_predict
-#       germs_bias = 80.0
-
+        #-------------------------------------------------------------------------------------------
+        # Germs Filter: Now do the fusion based upon the germs fractions
+        # germs      - Gravity Error Root Mean Square - the absolute difference between predicted and
+        #              accelerometer gravity readings
+        # germs_root - the R of RMS - 1/2 = square root, 1/3 = cube root
+        # germs_bias = the ratio of prediction and accelerometer gravity to fuse; large bias favours
+        #              prediction over acceleration
+        #-------------------------------------------------------------------------------------------
+        gv_predict = math.pow(math.pow(qgx,2) + math.pow(qgy,2) + math.pow(qgz,2),0.5)
+        gv_measure = math.pow(math.pow(qax,2) + math.pow(qay,2) + math.pow(qaz,2),0.5)
+        germs = math.fabs(gv_predict - gv_measure)/gv_predict
+#       germs_bias = 800.0
+#
 #       fusion_fraction = germs_bias / (germs_bias + germs)
 #       pa = (1 - fusion_fraction) * pa + fusion_fraction * upa
 #       ra = (1 - fusion_fraction) * ra + fusion_fraction * ura
- 
+
         #-------------------------------------------------------------------------------------------
         # Get the curent flight plan targets
         #-------------------------------------------------------------------------------------------
