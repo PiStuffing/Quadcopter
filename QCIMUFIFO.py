@@ -280,7 +280,7 @@ class MPU6050 :
 
     def __init__(self, address=0x68, alpf=1, glpf=1):
         global adc_frequency
-        global dri_frequency
+        global sampling_rate
 
         self.i2c = I2C(address)
         self.address = address
@@ -312,7 +312,7 @@ class MPU6050 :
         # dlpf to 0 or 7 changes 1kHz to 8kHz and therefore will require sample rate divider
         # to be changed to 7 to obtain the same 1kHz sample rate.
         #-------------------------------------------------------------------------------------------
-        sample_rate_divisor = int(math.trunc(adc_frequency / dri_frequency))
+        sample_rate_divisor = int(math.trunc(adc_frequency / sampling_rate))
         logger.warning("SRD:, %d", sample_rate_divisor)
         self.i2c.write8(self.__MPU6050_RA_SMPLRT_DIV, sample_rate_divisor - 1)
         time.sleep(0.1)
@@ -334,6 +334,8 @@ class MPU6050 :
         # 0x05 =   10Hz
         # 0x06 =    5Hz
         # 0x07 = 3600Hz @ 8kHz
+        #
+        # 0x40 FIFO overflow does not overwrite full FIFO contents
         #-------------------------------------------------------------------------------------------
         self.i2c.write8(self.__MPU6050_RA_CONFIG, 0x40 | glpf)
         time.sleep(0.1)
@@ -469,7 +471,7 @@ class MPU6050 :
         gy /= fifo_batches
         gz /= fifo_batches
 
-        return ax, ay, az, gx, gy, gz, fifo_batches / dri_frequency
+        return ax, ay, az, gx, gy, gz, fifo_batches / sampling_rate
 
     def resetFIFO(self):
         #-------------------------------------------------------------------------------------------
@@ -494,7 +496,7 @@ class MPU6050 :
         gz_offset = 0.0
 
         self.resetFIFO()
-        time.sleep(samples_per_motion / dri_frequency)
+        time.sleep(42 / sampling_rate) # 42 samples just fits into the FIFO (512 / 12)
         ax, ay, az, self.gx_offset, self.gy_offset, self.gz_offset, dt = self.readFIFO()
 
     def calibrate0g(self):
@@ -510,7 +512,7 @@ class MPU6050 :
             with open('0goffsets', 'wb') as offs_file:
                 raw_input("Rest me on my props and press enter.")
                 self.resetFIFO()
-                time.sleep(samples_per_motion / dri_frequency)
+                time.sleep(42 / sampling_rate) # 42 samples just fits into the FIFO (512 / 12)
                 ax, ay, az, gx, gy, gz, dt = self.readFIFO()
                 offs_file.write("%f %f %f" % (ax, ay, az))
 
@@ -896,8 +898,7 @@ def PWMTerm():
 ####################################################################################################
 def CheckCLI(argv):
     global adc_frequency
-    global dri_frequency
-    global samples_per_motion
+    global sampling_rate
 
     cli_fly = False
     cli_video = False
@@ -1008,21 +1009,21 @@ def CheckCLI(argv):
         #-------------------------------------------------------------------------------------------
         # Defaults for vertical velocity PIDs
         #-------------------------------------------------------------------------------------------
-        cli_vvp_gain = 360.0
+        cli_vvp_gain = 400.0
         cli_vvi_gain = 180.0
         cli_vvd_gain = 0.0
 
         #-------------------------------------------------------------------------------------------
         # Defaults for horizontal velocity PIDs
         #-------------------------------------------------------------------------------------------
-        cli_hvp_gain = 1.2
+        cli_hvp_gain = 1.5
         cli_hvi_gain = 0.1
         cli_hvd_gain = 0.0
 
         #-------------------------------------------------------------------------------------------
         # Defaults for pitch angle PIDs
         #-------------------------------------------------------------------------------------------
-        cli_prp_gain = 100.0
+        cli_prp_gain = 90.0
         cli_pri_gain = 9.0
         cli_prd_gain = 0.0
 
@@ -1036,9 +1037,16 @@ def CheckCLI(argv):
         #-------------------------------------------------------------------------------------------
         # Defaults for yaw angle PIDs
         #-------------------------------------------------------------------------------------------
-        cli_yrp_gain = 75.0
-        cli_yri_gain = 25.0
+        cli_yrp_gain = 80.0
+        cli_yri_gain = 8.0
         cli_yrd_gain = 0.0
+
+        #-------------------------------------------------------------------------------------------
+        # Zoe specific defaults
+        #-------------------------------------------------------------------------------------------
+        cli_tau = 2.5
+        cli_alpf = 3
+
 
     #-----------------------------------------------------------------------------------------------
     # Right, let's get on with reading the command line and checking consistency
@@ -1188,31 +1196,15 @@ def CheckCLI(argv):
 
     #===============================================================================================
     # adc_frequency      - the sampling rate of the ADC
-    # dri_frequency      - the data sampling rate and thus data ready interrupt rate
-    # samples_per_motion - the number of dri triggered samples to be batched before invoking
+    # sampling_rate      - the data sampling rate and thus data ready interrupt rate
     #                      motion processing.
-    #
-    # The maximum DRI frequency seems to be 250Hz even if SMPLRT_DIV is set to 0 (1kHz) or 1 (500Hz)
-    # Since the DRI's are used as the software clock, dri_frequency must never be set to > 250.
-    # In addition, setting it to 250 means there are 4 milliseconds allowed per samples for motion
-    # processing; if the on-screen numbers don't add up (flight time vs sample loops @ dri_frequency)
-    # this most likely means samples are being missed during motion processing, and dri_frequency
-    # should be dropped to 200, 166, 143, 125, 111, 100 until all is well.
     #===============================================================================================
     if cli_glpf == 0:
         adc_frequency = 8000
     else:
         adc_frequency = 1000
 
-    samples_per_motion = 5
-    dri_frequency = 500
-#   if dri_frequency % samples_per_motion != 0:
-#       print "dri_frequency %d must be devisible by samples_per_motion %d" % (dri_frequency, samples_per_motion)
-#       sys.exit(2)
-
-#   if dri_frequency > 250:
-#       print "Data Ready Interrupts don't seem to work above 250Hz"
-#       sys.exit(2)
+    sampling_rate = 333
 
     return cli_fly, cli_flight_plan, cli_calibrate_0g, cli_hover_target, cli_video, cli_vvp_gain, cli_vvi_gain, cli_vvd_gain, cli_hvp_gain, cli_hvi_gain, cli_hvd_gain, cli_prp_gain, cli_pri_gain, cli_prd_gain, cli_rrp_gain, cli_rri_gain, cli_rrd_gain, cli_yrp_gain, cli_yri_gain, cli_yrd_gain, cli_test_case, cli_alpf, cli_glpf, cli_rtf_period, cli_tau, cli_diagnostics
 
@@ -1404,8 +1396,7 @@ def go():
     global shoot_video
 
     global adc_frequency
-    global dri_frequency
-    global samples_per_motion
+    global sampling_rate
 
     #-----------------------------------------------------------------------------------------------
     # Global constants
@@ -1619,15 +1610,9 @@ def go():
 
             #---------------------------------------------------------------------------------------
             # The prop is now up to the configured spin rate.  Start a 5s loop based upon the
-            # dri_frequency logging the noise from the accelerometer.
+            # sampling_rate logging the noise from the accelerometer.
             #---------------------------------------------------------------------------------------
             time.sleep(5)
-#           logger.warning("time, qax, qay, qax")
-#           for loops in range(5 * dri_frequency / samples_per_motion):
-#               qax, qay, qaz, qrx, qry, qrz, dt = mpu6050.readFIFO()
-#               elapsed_time += dt
-#               qax, qay, qaz, qrx, qry, qrz = mpu6050.scaleSensors(qax, qay, qaz, qrx, qry, qrz)
-#               logger.warning("%f, %f, %f, %f", elapsed_time / dri_frequency, qax, qay, qaz)
             esc.update(0)
         CleanShutdown()
     #===============================================================================================
@@ -1665,7 +1650,7 @@ def go():
     ya = 0.0
 
     mpu6050.resetFIFO()
-    time.sleep(10 / dri_frequency)
+    time.sleep(42 / sampling_rate) # 42 samples just fits into the FIFO (512 / 12)
 
     #-------------------------------------------------------------------------------------------
     # Now get the batch over averaged data from the FIFO.
@@ -1774,7 +1759,7 @@ def go():
     #-----------------------------------------------------------------------------------------------
     if diagnostics:
         temp = mpu6050.readTemperature()
-        logger.warning('time, dt, loops, temp, qrx, qry, qrz, qax, qay, qaz, efrgv_x, efrgv_y, efrgv_z, qfrgv_x, qfrgv_y, qfrgv_z, qvx_input, qvy_input, qvz_input, pitch, roll, yaw, evx_target, qvx_target, qxp, qxi, qxd, pr_target, prp, pri, prd, pr_out, evy_yarget, qvy_target, qyp, qyi, qyd, rr_target, rrp, rri, rrd, rr_out, evz_target, qvz_target, qzp, qzi, qzd, qvz_out, yr_target, yrp, yri, yrd, yr_out, FL spin, FR spin, BL spin, BR spin')
+        logger.warning('time, dt, loops, sleep, temp, qrx, qry, qrz, qax, qay, qaz, efrgv_x, efrgv_y, efrgv_z, qfrgv_x, qfrgv_y, qfrgv_z, qvx_input, qvy_input, qvz_input, pitch, roll, yaw, evx_target, qvx_target, qxp, qxi, qxd, pr_target, prp, pri, prd, pr_out, evy_yarget, qvy_target, qyp, qyi, qyd, rr_target, rrp, rri, rrd, rr_out, evz_target, qvz_target, qzp, qzi, qzd, qvz_out, yr_target, yrp, yri, yrd, yr_out, FL spin, FR spin, BL spin, BR spin')
 
     #===============================================================================================
     # Initialize critical timing immediately before starting the PIDs.  This is done by reading the
@@ -1813,6 +1798,8 @@ def go():
     # ur? = euler rotation between frames
     #
     #===============================================================================================
+    esc_period = 0.01
+    sleep_time = esc_period
     sampling_loops = 0
     motion_loops = 0
     keep_looping = True
@@ -1824,18 +1811,18 @@ def go():
     #-----------------------------------------------------------------------------------------------
     mpu6050.resetFIFO()
     while keep_looping:
-        
+
         #-------------------------------------------------------------------------------------------
         # Sleep for a while waiting for the FIFO to collect several batches of data
         #-------------------------------------------------------------------------------------------
         motion_time = time.time() - start_motion
-        sleep_time = samples_per_motion / dri_frequency - motion_time 
-        sleep_time = sleep_time if sleep_time > 0 else 0.0
 
         #-------------------------------------------------------------------------------------------
         # Sleep for 10ms before collectedin another batch of data from the FIFO
         #-------------------------------------------------------------------------------------------
-        time.sleep(sleep_time)
+        sleep_time = esc_period - motion_time
+        if sleep_time > 0.0:
+            time.sleep(sleep_time)
         start_motion = time.time()
 
         #-------------------------------------------------------------------------------------------
@@ -1858,7 +1845,7 @@ def go():
         # missed samples or sampling errors.
         #------------------------------------------------------------------------------------------
         motion_loops += 1
-        sampling_loops += i_time * dri_frequency
+        sampling_loops += i_time * sampling_rate
 
         #-------------------------------------------------------------------------------------------
         # Angular predication: Now we know the time since the last batch of samples, update the
@@ -2089,8 +2076,8 @@ def go():
         #-------------------------------------------------------------------------------------------
         if diagnostics:
             temp = mpu6050.readTemperature()
-            logger.warning('%f, %f, %d, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %s, %f, %s, %d, %f, %f, %s, %f, %s, %d, %f, %f, %s, %d, %f, %s, %d, %d, %d, %d, %d',
-                            sampling_loops / dri_frequency, i_time, sampling_loops, temp / 333.86 + 21, qrx, qry, qrz, qax, qay, qaz, egx, egy, egz, qgx, qgy, qgz, qvx_input, qvy_input, qvz_input, math.degrees(pa), math.degrees(ra), math.degrees(ya), evx_target, qvx_target, qvx_diags, math.degrees(pr_target), pr_diags, pr_out, evy_target, qvy_target, qvy_diags, math.degrees(rr_target), rr_diags, rr_out, evz_target, qvz_target, qvz_diags, qvz_out, math.degrees(yr_target), yr_diags, yr_out, esc_list[0].pulse_width, esc_list[1].pulse_width, esc_list[2].pulse_width, esc_list[3].pulse_width)
+            logger.warning('%f, %f, %d, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %s, %f, %s, %d, %f, %f, %s, %f, %s, %d, %f, %f, %s, %d, %f, %s, %d, %d, %d, %d, %d',
+                            sampling_loops / sampling_rate, i_time, sampling_loops, sleep_time, temp / 333.86 + 21, qrx, qry, qrz, qax, qay, qaz, egx, egy, egz, qgx, qgy, qgz, qvx_input, qvy_input, qvz_input, math.degrees(pa), math.degrees(ra), math.degrees(ya), evx_target, qvx_target, qvx_diags, math.degrees(pr_target), pr_diags, pr_out, evy_target, qvy_target, qvy_diags, math.degrees(rr_target), rr_diags, rr_out, evz_target, qvz_target, qvz_diags, qvz_out, math.degrees(yr_target), yr_diags, yr_out, esc_list[0].pulse_width, esc_list[1].pulse_width, esc_list[2].pulse_width, esc_list[3].pulse_width)
 
     print "flight time %f" % (time.time() - start_flight)
 
