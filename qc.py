@@ -7,16 +7,13 @@
 ## PiStuffing/Quadcopter under GPL for non-commercial application.  Any code derived from    ##
 ## this should retain this copyright comment.                                                ##
 ##                                                                                           ##
-## Copyright 2014 - 2015 Andy Baker (Hove) - andy@pistuffing.co.uk                           ##
+## Copyright 2014 - 2016 Andy Baker (Hove) - andy@pistuffing.co.uk                           ##
 ##                                                                                           ##
 ###############################################################################################
 ###############################################################################################
 
-#----------------------------------------------------------------------------------------------
-# Remove the # for the version of code you want to run
-#----------------------------------------------------------------------------------------------
-#import QCDRI as Quadcopter
-#import QCIMUFIFO as Quadcopter
+# import QCDRI as Quadcopter
+from QCIMUFIFO import Quadcopter
 
 import os
 
@@ -26,4 +23,5 @@ if __name__ == '__main__':
 	#-------------------------------------------------------------------------------------
 	# Off we go!
 	#-------------------------------------------------------------------------------------
-	Quadcopter.go()
+        # Quadcopter.go()
+	Quadcopter().go()
