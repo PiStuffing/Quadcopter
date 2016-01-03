@@ -1263,7 +1263,7 @@ def munlockall():
 
 
 ####################################################################################################
-# 
+#
 # Class to split initialation, flight startup and flight control
 #
 ####################################################################################################
@@ -1354,7 +1354,7 @@ class Quadcopter:
         #-------------------------------------------------------------------------------------------
         # Set the BCM input assigned to sensor data ready interrupt
         #-------------------------------------------------------------------------------------------
-        RPIO_DATA_READY_INTERRUPT = 22            
+        RPIO_DATA_READY_INTERRUPT = 22
 
         #-------------------------------------------------------------------------------------------
         # Set up the ESC to GPIO pin and location mappings and assign to each ESC
@@ -1384,7 +1384,7 @@ class Quadcopter:
         name_list = ['front left', 'front right', 'back left', 'back right']
 
         #-------------------------------------------------------------------------------------------
-        # Enable RPIO for ESC PWM.  This must be set up prior to adding the SignalHandler below or it 
+        # Enable RPIO for ESC PWM.  This must be set up prior to adding the SignalHandler below or it
         # will override what we set thus killing the "Kill Switch"..
         #-------------------------------------------------------------------------------------------
         PWMInit()
@@ -1576,8 +1576,8 @@ class Quadcopter:
         pa, ra = GetRotationAngles(qax, qay, qaz)
 
         #-------------------------------------------------------------------------------------------
-        # Log the critical parameters from this warm-up: the take-off surface tilt, and gravity. 
-        # Note that some of the variables used above are used in the main processing loop.  Messing 
+        # Log the critical parameters from this warm-up: the take-off surface tilt, and gravity.
+        # Note that some of the variables used above are used in the main processing loop.  Messing
         # with the above code can have very unexpected effects in flight.
         #-------------------------------------------------------------------------------------------
         logger.warning("pitch %f, roll %f", math.degrees(pa), math.degrees(ra))
@@ -1929,7 +1929,7 @@ class Quadcopter:
             yr_out = int(round(yr_out / 2))
 
             #=======================================================================================
-            # PID output distribution: Walk through the ESCs, and apply the PID outputs i.e. the 
+            # PID output distribution: Walk through the ESCs, and apply the PID outputs i.e. the
             # updates PWM pulse widths according to where the ESC is sited on the frame
             #=======================================================================================
             for esc in self.esc_list:
