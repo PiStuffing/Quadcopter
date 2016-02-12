@@ -30,6 +30,7 @@ import struct
 import logging
 import csv
 from RPIO import PWM
+import RPi.GPIO as GPIO
 import subprocess
 from datetime import datetime
 import shutil
@@ -274,7 +275,7 @@ class MPU6050 :
     __MPU6050_RA_WHO_AM_I = 0x75
 
     __SCALE_GYRO = 500.0 * math.pi / (65536 * 180)
-    __SCALE_ACCEL = 4.0 / 65536 #AB! Try 4 if I shows no 2g hits
+    __SCALE_ACCEL = 8.0 / 65536 #AB! +/-4g
 
     def __init__(self, address=0x68, alpf=2, glpf=1):
         self.i2c = I2C(address)
@@ -373,23 +374,23 @@ class MPU6050 :
         # See SCALE_ACCEL for convertion from raw data to units of meters per second squared
         #-------------------------------------------------------------------------------------------
         # int(math.log(g / 2, 2)) << 3
-        self.i2c.write8(self.__MPU6050_RA_ACCEL_CONFIG, 0x00)  #AB! Try 0x00 if 0x08 shows no 2g hits
+        self.i2c.write8(self.__MPU6050_RA_ACCEL_CONFIG, 0x08)  #AB! +/-4g
         time.sleep(0.1)
 
         #-------------------------------------------------------------------------------------------
-        # Set up interrupts as disabled.
+        # Set INT pin to push / pull, 50us pulse 0x10 (turned off).
         #-------------------------------------------------------------------------------------------
         self.i2c.write8(self.__MPU6050_RA_INT_PIN_CFG, 0x00)
         time.sleep(0.1)
 
         #-------------------------------------------------------------------------------------------
-        # Disable interrupts
+        # Enable FIFO overflow interrupt 0x10 (turned off).
         #-------------------------------------------------------------------------------------------
         self.i2c.write8(self.__MPU6050_RA_INT_ENABLE, 0x00)
         time.sleep(0.1)
 
         #-------------------------------------------------------------------------------------------
-        # Enable FIFO mode, and reset it
+        # Enable FIFO mode
         #-------------------------------------------------------------------------------------------
         self.i2c.write8(self.__MPU6050_RA_USER_CTRL, 0x44)
 
@@ -442,16 +443,22 @@ class MPU6050 :
         fifo_bytes = self.i2c.readU16(self.__MPU6050_RA_FIFO_COUNTH)
         fifo_batches = int(fifo_bytes / 12)  # This rounds down
 
-        batch_size = 6   # ax, ay, az, gx, gy, gz
+        batch_size = 6   # signed shorts: ax, ay, az, gx, gy, gz
+        valid_batches = fifo_batches
         for ii in range(fifo_batches):
             sensor_data = []
-            for jj in range(batch_size):
-                hibyte = self.i2c.readU8(self.__MPU6050_RA_FIFO_R_W)
+            fifo_batch = self.i2c.readList(self.__MPU6050_RA_FIFO_R_W, 12)
+            for jj in range(0, 12, 2):
+                hibyte = fifo_batch[jj]
+                lobyte = fifo_batch[jj + 1]
+
                 if (hibyte > 127):
                     hibyte -= 256
-                lobyte = self.i2c.readU8(self.__MPU6050_RA_FIFO_R_W)
                 sensor_data.append((hibyte << 8) + lobyte)
 
+            if sensor_data[2] < 0:
+                valid_batches -= 1
+                continue
 
             ax += sensor_data[0]
             ay += sensor_data[1]
@@ -460,20 +467,48 @@ class MPU6050 :
             gy += sensor_data[4]
             gz += sensor_data[5]
 
-        ax /= fifo_batches
-        ay /= fifo_batches
-        az /= fifo_batches
-        gx /= fifo_batches
-        gy /= fifo_batches
-        gz /= fifo_batches
+        if valid_batches == 0:
+            raise IOError("Aargh")
+
+        ax /= valid_batches
+        ay /= valid_batches
+        az /= valid_batches
+        gx /= valid_batches
+        gy /= valid_batches
+        gz /= valid_batches
 
         return ax, ay, az, gx, gy, gz, fifo_batches / sampling_rate
 
     def resetFIFO(self):
         #-------------------------------------------------------------------------------------------
-        # Disable the feed to the FIFO and reset the FIFO itself.
+        # Reset the FIFO itself, flushing the contents and checking it's aligned properly with the
+        # code expectation of ax, ay, az, gx, gy, gz.  The FIFO reset operation is asynchronous so
+        # there is always a chance it happens while data is being written, thus chopping up a 12
+        # by sample.
         #-------------------------------------------------------------------------------------------
-        self.i2c.write8(self.__MPU6050_RA_USER_CTRL, 0x44)
+        while True:
+            self.i2c.write8(self.__MPU6050_RA_USER_CTRL, 0x44)
+
+            #---------------------------------------------------------------------------------------
+            # Sleep for roughly 10 samples and then check the Z axis accelerometer readings for
+            # each sample for sanity / validity
+            #---------------------------------------------------------------------------------------
+            time.sleep(10 / sampling_rate)
+            fifo_bytes = self.i2c.readU16(self.__MPU6050_RA_FIFO_COUNTH)
+            fifo_batches = int(fifo_bytes / 12)
+
+            for ii in range(fifo_batches):
+                fifo_batch = self.i2c.readList(self.__MPU6050_RA_FIFO_R_W, 12)
+                az_hibyte = fifo_batch[4]
+                az_lobyte = fifo_batch[5]
+                if (az_hibyte > 127):
+                    az_hibyte -= 256
+                az = (az_hibyte << 8) + az_lobyte
+                if az < 0.9 * 0x2000: #AB! +/-4g
+                    logger.critical("FIFO out-of-sync - retry...")
+                    break
+            else:
+                break
 
     def scaleSensors(self, ax, ay, az, gx, gy, gz):
         qax = (ax - self.ax_offset) * self.__SCALE_ACCEL
@@ -487,10 +522,6 @@ class MPU6050 :
         return qax, qay, qaz, qrx, qry, qrz
 
     def calibrateGyros(self):
-        gx_offset = 0.0
-        gy_offset = 0.0
-        gz_offset = 0.0
-
         self.resetFIFO()
         time.sleep(42 / sampling_rate) # 42 samples just fits into the FIFO (512 / 12)
         ax, ay, az, self.gx_offset, self.gy_offset, self.gz_offset, dt = self.readFIFO()
@@ -529,6 +560,11 @@ class MPU6050 :
         except EnvironmentError:
             offs_rc = False
         logger.warning("0g Offsets:, %f, %f, %f", self.ax_offset, self.ay_offset, self.az_offset)
+
+        self.ax_offset = 0.0
+        self.ay_offset = 0.0
+        self.az_offset = 0.0 # float(az_offset)
+        
         return offs_rc
 
     def getMisses(self):
@@ -653,7 +689,7 @@ class ESC:
         # pulse widths with 3ms carrier.
         #-------------------------------------------------------------------------------------------
         self.min_pulse_width = 1000
-        self.max_pulse_width = 2000
+        self.max_pulse_width = 1999
 
         #-------------------------------------------------------------------------------------------
         # The PWM pulse range required by this ESC
@@ -699,6 +735,7 @@ def GetRotationAngles(ax, ay, az):
     roll = math.atan2(ay, az)
 
     return pitch, roll
+
 
 ####################################################################################################
 #
@@ -869,7 +906,7 @@ def RotateQ2E(qvx, qvy, qvz, pa, ra, ya):
 
 ####################################################################################################
 #
-# GPIO pins initialization for MPU6050 interrupt, sounder and hardware PWM
+# Initialize hardware PWM
 #
 ####################################################################################################
 RPIO_DMA_CHANNEL = 1
@@ -885,11 +922,32 @@ def PWMInit():
 
 ####################################################################################################
 #
-# GPIO pins cleanup for MPU6050 interrupt, sounder and hardware PWM
+# Cleanup hardware PWM
 #
 ####################################################################################################
 def PWMTerm():
     PWM.cleanup()
+
+
+####################################################################################################
+#
+# GPIO pins initialization for MPU6050 FIFO overflow interrupt
+#
+####################################################################################################
+def GPIOInit(FIFOOverflowISR):
+    GPIO.setmode(GPIO.BCM)
+    GPIO.setup(GPIO_FIFO_OVERFLOW_INTERRUPT, GPIO.IN, GPIO.PUD_OFF)
+    GPIO.add_event_detect(GPIO_FIFO_OVERFLOW_INTERRUPT, GPIO.RISING, FIFOOverflowISR)
+
+
+####################################################################################################
+#
+# GPIO pins cleanup for MPU6050 FIFO overflow interrupt
+#
+####################################################################################################
+def GPIOTerm():
+    GPIO.remove_event_detect(GPIO_FIFO_OVERFLOW_INTERRUPT)
+    GPIO.cleanup()
 
 
 ####################################################################################################
@@ -907,7 +965,7 @@ def CheckCLI(argv):
     #-----------------------------------------------------------------------------------------------
     cli_test_case = 0
     cli_diagnostics = False
-    cli_rtf_period = 0.75
+    cli_rtf_period = 1.5
     cli_tau = 5
     cli_calibrate_0g = False
     cli_flight_plan = ''
@@ -1355,9 +1413,10 @@ class Quadcopter:
         logger.warning("%s is flying.", "Phoebe" if i_am_phoebe else "Chloe" if i_am_chloe else "Zoe")
 
         #-------------------------------------------------------------------------------------------
-        # Set the BCM input assigned to sensor data ready interrupt
+        # Set the BCM pin assigned to the FIFO overflow interrupt
         #-------------------------------------------------------------------------------------------
-        RPIO_DATA_READY_INTERRUPT = 22
+        global GPIO_FIFO_OVERFLOW_INTERRUPT
+        GPIO_FIFO_OVERFLOW_INTERRUPT = 22
 
         #-------------------------------------------------------------------------------------------
         # Set up the ESC to GPIO pin and location mappings and assign to each ESC
@@ -1370,6 +1429,11 @@ class Quadcopter:
         # will override what we set thus killing the "Kill Switch"..
         #-------------------------------------------------------------------------------------------
         PWMInit()
+
+        #-------------------------------------------------------------------------------------------
+        # Enable GPIO for the FIFO overflow hardware interrupt.
+        #-------------------------------------------------------------------------------------------
+        GPIOInit(self.fifoOverflowISR)
 
         #-------------------------------------------------------------------------------------------
         # Set the signal handler here so the core processing loop can be stopped (or not started) by
@@ -1424,14 +1488,13 @@ class Quadcopter:
             adc_frequency = 1000
 
         adc_frequency = 1000  # defined by dlpf >= 1; DO NOT USE ZERO => 8000 adc_frequency
-        sampling_rate = 500   # <= 500 to prevent FIFO overflow
+        sampling_rate = 1000   # <= 500 to prevent FIFO overflow
 
         #-------------------------------------------------------------------------------------------
-        # Initialize the gyroscope / accelerometer I2C object and calibrate the gyros
+        # Initialize the gyroscope / accelerometer I2C object
         #-------------------------------------------------------------------------------------------
         global mpu6050
         mpu6050 = MPU6050(0x68, alpf, glpf)
-        mpu6050.calibrateGyros()
 
         #-------------------------------------------------------------------------------------------
         # Initialize the barometer / altimeter I2C object
@@ -1549,26 +1612,6 @@ class Quadcopter:
             return
 
         #-------------------------------------------------------------------------------------------
-        # Set the props spinning at their base rate to ensure the IMU reaches a stable temperature 
-        # wrt ambient.  This takes about 3 seconds.  base_pwm is determined by running testcase 1 
-        # multiple times incrementing -h slowly until a level of PWM is found where all props spin.
-        # This depends on the firmware in the ESCs
-        #-------------------------------------------------------------------------------------------
-        print "Just acclimatising..."
-        if i_am_phoebe:
-            base_pwm = 150
-        elif i_am_chloe:
-            base_pwm = 150    
-        elif i_am_zoe:
-            base_pwm = 150
-
-#       base_pwm = 0
-        for esc in self.esc_list:
-            esc.update(base_pwm)
-
-        time.sleep(5.0)    
-
-        #-------------------------------------------------------------------------------------------
         # Flush the FIFO, collect a FIFO full of samples and calculate startup gravity and angles
         #-------------------------------------------------------------------------------------------
         pa = 0.0
@@ -1576,12 +1619,16 @@ class Quadcopter:
         ya = 0.0
 
         mpu6050.resetFIFO()
-        time.sleep(42 / sampling_rate) # 42 samples just fits into the 512 byte FIFO (512 bytes/ 12 bytes per sample)
+        time.sleep(42 / sampling_rate) # 42 samples of 12 bytes just fits into the 512 byte FIFO
 
         #-------------------------------------------------------------------------------------------
         # Get the batch of averaged data from the FIFO.
         #-------------------------------------------------------------------------------------------
-        qax, qay, qaz, qrx, qry, qrz, dt = mpu6050.readFIFO()
+        try:
+            qax, qay, qaz, qrx, qry, qrz, dt = mpu6050.readFIFO()
+        except IOError, err:
+            logger.critical("ABORT: %s", err)
+            return
 
         #-------------------------------------------------------------------------------------------
         # Sort out units and calibration for the incoming data
@@ -1595,16 +1642,17 @@ class Quadcopter:
         pa, ra = GetRotationAngles(qax, qay, qaz)
 
         #-------------------------------------------------------------------------------------------
+        # Calibrate gyros now we are acclimatised
+        #-------------------------------------------------------------------------------------------
+        mpu6050.calibrateGyros()
+
+        #-------------------------------------------------------------------------------------------
         # Log the critical parameters from this warm-up: the take-off surface tilt, and gravity.
         # Note that some of the variables used above are used in the main processing loop.  Messing
         # with the above code can have very unexpected effects in flight.
         #-------------------------------------------------------------------------------------------
         logger.warning("pitch %f, roll %f", math.degrees(pa), math.degrees(ra))
         logger.warning("egx %f, egy %f, egz %f", egx, egy, egz)
-
-        hover_speed = base_pwm
-        hsf = base_pwm
-        ready_to_fly = False
 
         #-------------------------------------------------------------------------------------------
         # Start up the video camera if required - this runs from take-off through to shutdown
@@ -1714,6 +1762,29 @@ class Quadcopter:
         rr_pid = PID(PID_RR_P_GAIN, PID_RR_I_GAIN, PID_RR_D_GAIN)
         yr_pid = PID(PID_YR_P_GAIN, PID_YR_I_GAIN, PID_YR_D_GAIN)
 
+        #------------------------------------------------------------------------------------------
+        # Set the props spinning at their base rate to ensure initial kick-start doesn't get spotted
+        # by the sensors messing up the flight thereafter. base_pwm is determined by running testcase 1
+        # multiple times incrementing -h slowly until a level of PWM is found where all props spin.
+        # This depends on the firmware in the ESCs
+        #------------------------------------------------------------------------------------------
+        base_pwm = 0
+        if i_am_phoebe:
+            base_pwm = 150
+        elif i_am_chloe:
+            base_pwm = 150
+        elif i_am_zoe:
+            base_pwm = 150
+
+        for esc in self.esc_list:
+            esc.update(base_pwm)
+        time.sleep(0.5)
+        rtf_period -= 0.5
+
+        hover_speed = base_pwm
+        hsf = base_pwm
+        ready_to_fly = False
+
         #===========================================================================================
         #
         # Motion and PID processing loop naming conventions
@@ -1731,14 +1802,15 @@ class Quadcopter:
         sleep_time = esc_period
         sampling_loops = 0
         motion_loops = 0
-        self.keep_looping = True
-        start_flight = time.time()
-        start_motion = start_flight
 
         #-------------------------------------------------------------------------------------------
         # Enable the FIFO and go!
         #-------------------------------------------------------------------------------------------
         mpu6050.resetFIFO()
+        start_flight = time.time()
+        start_motion = start_flight
+
+        self.keep_looping = True
         while self.keep_looping:
 
             #---------------------------------------------------------------------------------------
@@ -1758,7 +1830,12 @@ class Quadcopter:
             #---------------------------------------------------------------------------------------
             # Now get the batch over averaged data from the FIFO.
             #---------------------------------------------------------------------------------------
-            qax, qay, qaz, qrx, qry, qrz, i_time = mpu6050.readFIFO()
+            try:
+                qax, qay, qaz, qrx, qry, qrz, i_time = mpu6050.readFIFO()
+            except IOError, err:
+                logger.critical("ABORT: %s", err)
+                keep_looping = False
+                break
 
             #---------------------------------------------------------------------------------------
             # Sort out units and calibration for the incoming data
@@ -2011,7 +2088,7 @@ class Quadcopter:
         logger.warning("%d data errors; %d i2c errors; %d 2g hits", data_errors, i2c_errors, num_2g_hits)
 
         #-------------------------------------------------------------------------------------------
-        # Stop the PWM between flights
+        # Stop the PWM and FIFO overflow interrupt between flights
         #-------------------------------------------------------------------------------------------
         for esc in self.esc_list:
             esc.update(0)
@@ -2060,6 +2137,11 @@ class Quadcopter:
         PWMTerm()
 
         #-----------------------------------------------------------------------------------------------
+        # Clean up the GPIO FIFO Overflow ISR
+        #-----------------------------------------------------------------------------------------------
+        GPIOTerm()
+
+        #-----------------------------------------------------------------------------------------------
         # Reset the signal handler to default
         #-----------------------------------------------------------------------------------------------
         signal.signal(signal.SIGINT, signal.SIG_DFL)
@@ -2074,5 +2156,14 @@ class Quadcopter:
     def shutdownSignalHandler(self, signal, frame):
         if not self.keep_looping:
             self.shutdown()
+        self.keep_looping = False
+
+    ####################################################################################################
+    #
+    # Signal handler for FIFO overflow => abort flight
+    #
+    ####################################################################################################
+    def fifoOverflowISR(self, pin):
+        print "FIFO OVERFLOW, ABORT"
         self.keep_looping = False
 
