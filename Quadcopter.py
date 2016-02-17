@@ -475,14 +475,14 @@ class MPU6050 :
 
             if sensor_data[2] < 65536 / 8 * 0.1:                                          #AB! +/-4g
                 self.num_0g_hits += 1
-                valid_batches -= 1
+#               valid_batches -= 1
 #                logger.critical("!! %x %x %x %x %x %x", sensor_data[0],
 #                                                        sensor_data[1],
 #                                                        sensor_data[2],
 #                                                        sensor_data[3],
 #                                                        sensor_data[4],
 #                                                        sensor_data[5])
-                continue
+#               continue
 
             ax += sensor_data[0]
             ay += sensor_data[1]
@@ -709,13 +709,9 @@ class ESC:
         # Initialize the RPIO DMA PWM for this ESC in microseconds - 1ms - 2ms of
         # pulse widths with 3ms carrier.
         #-------------------------------------------------------------------------------------------
-        self.min_pulse_width = 1000
+        self.pulse_width = 1000
+        self.min_pulse_width = 1000 + 150 # base_pwm
         self.max_pulse_width = 1999
-
-        #-------------------------------------------------------------------------------------------
-        # The PWM pulse range required by this ESC
-        #-------------------------------------------------------------------------------------------
-        self.pulse_width = self.min_pulse_width
 
         #-------------------------------------------------------------------------------------------
         # Name - for logging purposes only
@@ -725,11 +721,13 @@ class ESC:
         #-------------------------------------------------------------------------------------------
         # Initialize the RPIO DMA PWM for this ESC.
         #-------------------------------------------------------------------------------------------
-        PWM.add_channel_pulse(RPIO_DMA_CHANNEL, self.bcm_pin, 0, self.pulse_width)
+        self.set(0)
 
+    def set(self, pw):
+        PWM.add_channel_pulse(RPIO_DMA_CHANNEL, self.bcm_pin, 0, 1000 + pw)
 
-    def update(self, spin_rate):
-        self.pulse_width = int(self.min_pulse_width + spin_rate)
+    def update(self, pw):
+        self.pulse_width = int(self.min_pulse_width + pw)
 
         if self.pulse_width < self.min_pulse_width:
             self.pulse_width = self.min_pulse_width
@@ -986,7 +984,7 @@ def CheckCLI(argv):
     #-----------------------------------------------------------------------------------------------
     cli_test_case = 0
     cli_diagnostics = False
-    cli_rtf_period = 1.5
+    cli_rtf_period = 0.5
     cli_tau = 5
     cli_calibrate_0g = False
     cli_flight_plan = ''
@@ -1079,7 +1077,7 @@ def CheckCLI(argv):
         #-------------------------------------------------------------------------------------------
         # Phoebe's PID configuration due to using her ESCs / motors / props
         #-------------------------------------------------------------------------------------------
-        cli_hover_target = 380
+        cli_hover_target = 430 # 380 for floppy props
 
         #-------------------------------------------------------------------------------------------
         # Defaults for vertical velocity PIDs
@@ -1483,7 +1481,7 @@ class Quadcopter:
         name_list = ['front left', 'front right', 'back left', 'back right']
 
         #-------------------------------------------------------------------------------------------
-        # Prime the ESCs with the default 0 spin rotors to stop their whining!
+        # Prime the ESCs to stop their anonying beeping!
         #-------------------------------------------------------------------------------------------
         self.esc_list = []
         for esc_index in range(0, 4):
@@ -1576,7 +1574,7 @@ class Quadcopter:
                     #-------------------------------------------------------------------------------
                     # Spin up to user determined (-h) hover speeds ~200
                     #-------------------------------------------------------------------------------
-                    esc.update(count)
+                    esc.set(count)
                     time.sleep(0.01)
 
                 #-----------------------------------------------------------------------------------
@@ -1584,7 +1582,7 @@ class Quadcopter:
                 # sampling_rate logging the noise from the accelerometer.
                 #-----------------------------------------------------------------------------------
                 time.sleep(5)
-                esc.update(0)
+                esc.set(0)
             return
         #===========================================================================================
         # END TESTCASE 1 CODE: spin up each blade individually for 10s each and check they all turn the
@@ -1780,12 +1778,11 @@ class Quadcopter:
             base_pwm = 150
 
         for esc in self.esc_list:
-            esc.update(base_pwm)
+            esc.set(base_pwm)
         time.sleep(0.5)
-        rtf_period -= 0.5
 
         hover_speed = base_pwm
-        hsf = base_pwm
+        hsf = float(base_pwm)
         ready_to_fly = False
 
         #-------------------------------------------------------------------------------------------
@@ -1956,7 +1953,7 @@ class Quadcopter:
             #---------------------------------------------------------------------------------------
             # Convert the vertical velocity PID output direct to PWM pulse width.
             #---------------------------------------------------------------------------------------
-            vert_out = hover_speed + int(round(qvz_out))
+            vert_out = hover_speed - base_pwm + int(round(qvz_out))
 
             #=======================================================================================
             # START TESTCASE 3 CODE: Override motion processing results; instead use angles to maintain
@@ -2098,7 +2095,7 @@ class Quadcopter:
         #-------------------------------------------------------------------------------------------
         mpu6050.disableFIFOOverflowISR()
         for esc in self.esc_list:
-            esc.update(0)
+            esc.set(0)
 
     ####################################################################################################
     #
@@ -2116,7 +2113,7 @@ class Quadcopter:
         # Stop the blades spinning
         #-----------------------------------------------------------------------------------------------
         for esc in self.esc_list:
-            esc.update(0)
+            esc.set(0)
 
         #-----------------------------------------------------------------------------------------------
         # Stop the video if it's running
