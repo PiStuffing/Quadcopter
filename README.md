@@ -10,17 +10,23 @@ Licensing
 Index
 -----
 <ul>
-<li>beret.brd     - Eagle layout the Raspberry Pi A+/B+/B2 breadboard replacement PCB</li>
-<li>GPIO.tgz      - Performance enhanced Python RPi.GPIO edge detection</li>
+<li>README.md     - This file</li>
 <li>LICENCE       - Usage definition</li>
-<li>PhoebePresentationCamJamSept14 - LibreOffice presentation for ...</li>
-<li>PhoebeQC.pdf  - Documentation about DIY quadcopter</li>
 <li>qc.py         - Python wrapper code</li>
 <li>Quadcopter.py - Core flight controller code</li>
-<li>README.md     - This file</li>
+<li>RPIO.tgz      - RPIO library with minor tweaks to include B2 and Zero
+<li>PhoebeHATEagle.brd - A+ / B+ / B2 HAT PCB for DroTek 10-DOF MPU-9250 + PWM out</li>
+<li>PhoebeHATGerbers.zip - Gerbers for above A+ / B+ / B2 HAT PCB</li>
+<li>ZoeZeroEagle.brd - Pi Zero pHAT PCB for DroTek 10-DOF MPU-9250 + PWM out</li>
+<li>ZoeZeroGerbers.zip - Gerbers for above PiZero pHAT PCB</li>
 </ul>
-
-Change List (most recent at the top)
-------------------------------------
-
+<hr/>
+<ul>
+RETIRED:
+<li>QCDRI.pi      - Interrupt driven sampling - superceded by FIFO version
+<li>GPIO.tgz      - QCDRI.py only: Performance enhanced Python RPi.GPIO edge detection</li>
+<li>beret.brd     - Eagle layout the Raspberry Pi A+/B+/B2 generic breadboard replacement PCB</li>
+<li>PhoebePresentationCamJamSept14 - LibreOffice presentation for ...</li>
+<li>PhoebeQC.pdf  - Documentation about DIY quadcopter</li>
+</ul>
 
