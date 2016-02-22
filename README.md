@@ -1,7 +1,7 @@
 Quadcopter
 ==========
 
-Python project for Phoebe the Raspberry Pi Autonomous Quadcopter
+Python project for an Raspberry Pi Autonomous Quadcopter Flight Controller
 
 Licensing
 ---------
