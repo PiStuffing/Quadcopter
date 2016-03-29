@@ -515,20 +515,18 @@ class MPU6050 :
         SMBUS_MAX_BUF_SIZE = 32
 
         fifo_bytes = self.i2c.readU16(self.__MPU6050_RA_FIFO_COUNTH)
-        logger.critical("%d FIFO bytes to flush",  fifo_bytes)
 
         for ii in range(int(fifo_bytes / SMBUS_MAX_BUF_SIZE)):
             self.i2c.readList(self.__MPU6050_RA_FIFO_R_W, SMBUS_MAX_BUF_SIZE)
 
-        for ii in range(fifo_bytes % SMBUS_MAX_BUF_SIZE):    
+        for ii in range(fifo_bytes % SMBUS_MAX_BUF_SIZE):
             self.i2c.readU8(self.__MPU6050_RA_FIFO_R_W)
 
         fifo_bytes = self.i2c.readU16(self.__MPU6050_RA_FIFO_COUNTH)
-        logger.critical("%d FIFO bytes remaining",  fifo_bytes)
 
         #-------------------------------------------------------------------------------------------
         # Finally start feeding the FIFO with sensor data again
-        #-------------------------------------------------------------------------------------------       
+        #-------------------------------------------------------------------------------------------
         self.i2c.write8(self.__MPU6050_RA_FIFO_EN, 0x78)
 
     def setGyroOffsets(self, gx, gy, gz):
@@ -831,7 +829,7 @@ def RotateE2Q(evx, evy, evz, pa, ra, ya):
 
 ####################################################################################################
 #
-# Convert a vector to earth-frame coordingates from quadcopter-frame coordinates.
+# Convert a vector to earth-frame coordinates from quadcopter-frame coordinates.
 #
 ####################################################################################################
 def RotateQ2E(qvx, qvy, qvz, pa, ra, ya):
@@ -984,7 +982,7 @@ def CheckCLI(argv):
     #-----------------------------------------------------------------------------------------------
     cli_test_case = 0
     cli_diagnostics = False
-    cli_rtf_period = 0.5
+    cli_rtf_period = 0.1
     cli_tau = 5
     cli_calibrate_0g = False
     cli_flight_plan = ''
@@ -995,7 +993,7 @@ def CheckCLI(argv):
         #-------------------------------------------------------------------------------------------
         # Phoebe's PID configuration due to using her ESCs / motors / props
         #-------------------------------------------------------------------------------------------
-        cli_hover_target = 450 # 430 for cheap chinese
+        cli_hover_target = 375
 
         #-------------------------------------------------------------------------------------------
         # Defaults for vertical velocity PIDs
@@ -1014,15 +1012,15 @@ def CheckCLI(argv):
         #-------------------------------------------------------------------------------------------
         # Defaults for pitch angle PIDs
         #-------------------------------------------------------------------------------------------
-        cli_prp_gain = 110.0
-        cli_pri_gain = 5.5
+        cli_prp_gain = 140.0
+        cli_pri_gain = 14.0
         cli_prd_gain = 0.0
 
         #-------------------------------------------------------------------------------------------
         # Defaults for roll angle PIDs
         #-------------------------------------------------------------------------------------------
-        cli_rrp_gain = 120.0
-        cli_rri_gain = 6.0
+        cli_rrp_gain = 150.0
+        cli_rri_gain = 15.0
         cli_rrd_gain = 0.0
 
         #-------------------------------------------------------------------------------------------
@@ -1077,13 +1075,13 @@ def CheckCLI(argv):
         #-------------------------------------------------------------------------------------------
         # Phoebe's PID configuration due to using her ESCs / motors / props
         #-------------------------------------------------------------------------------------------
-        cli_hover_target = 430 # 380 for floppy props
+        cli_hover_target = 300 # Floppy props: 380
 
         #-------------------------------------------------------------------------------------------
         # Defaults for vertical velocity PIDs
         #-------------------------------------------------------------------------------------------
-        cli_vvp_gain = 400.0
-        cli_vvi_gain = 200.0
+        cli_vvp_gain = 350.0 # Floppy props: 400.0
+        cli_vvi_gain = 175.0 # Floppy props: 200.0
         cli_vvd_gain = 0.0
 
         #-------------------------------------------------------------------------------------------
@@ -1096,22 +1094,22 @@ def CheckCLI(argv):
         #-------------------------------------------------------------------------------------------
         # Defaults for pitch angle PIDs
         #-------------------------------------------------------------------------------------------
-        cli_prp_gain = 110.0
-        cli_pri_gain = 11.0
+        cli_prp_gain = 85.0  # Floppy props: 100.0
+        cli_pri_gain = 8.5   # Floppy props: 10.0
         cli_prd_gain = 0.0
 
         #-------------------------------------------------------------------------------------------
         # Defaults for roll angle PIDs
         #-------------------------------------------------------------------------------------------
-        cli_rrp_gain = 90.0
-        cli_rri_gain = 9.0
+        cli_rrp_gain = 75.0  # Floppy props: 90.0
+        cli_rri_gain = 7.5   # Floppy props: 9.0
         cli_rrd_gain = 0.0
 
         #-------------------------------------------------------------------------------------------
         # Defaults for yaw angle PIDs
         #-------------------------------------------------------------------------------------------
-        cli_yrp_gain = 80.0
-        cli_yri_gain = 8.0
+        cli_yrp_gain = 100.0 # Floppy props: 80.0
+        cli_yri_gain = 10.0  # Floppy props: 8.0
         cli_yrd_gain = 0.0
 
     #-----------------------------------------------------------------------------------------------
@@ -1121,7 +1119,7 @@ def CheckCLI(argv):
         opts, args = getopt.getopt(argv,'df:gvh:r:', ['tc=', 'tau=', 'vvp=', 'vvi=', 'vvd=', 'hvp=', 'hvi=', 'hvd=', 'prp=', 'pri=', 'prd=', 'rrp=', 'rri=', 'rrd=', 'tau=', 'yrp=', 'yri=', 'yrd='])
     except getopt.GetoptError:
         logger.critical('Must specify one of -f or -g or --tc')
-        logger.critical('  qcpi.py')
+        logger.critical('  qc.py')
         logger.critical('  -f set the flight plan CSV file')
         logger.critical('  -h set the hover PWM pulse width - default: %dus', cli_hover_target)
         logger.critical('  -d enable diagnostics')
@@ -1623,7 +1621,7 @@ class Quadcopter:
             return
 
         #-------------------------------------------------------------------------------------------
-        # Flush the FIFO, collect a FIFO full of samples
+        # Flush the FIFO, collect half a FIFO full of samples
         #-------------------------------------------------------------------------------------------
         mpu6050.flushFIFO()
         time.sleep(20 / sampling_rate)
@@ -1739,12 +1737,6 @@ class Quadcopter:
         if diagnostics:
             logger.warning('time, dt, loops, sleep, temp, qrx, qry, qrz, qax, qay, qaz, efrgv_x, efrgv_y, efrgv_z, qfrgv_x, qfrgv_y, qfrgv_z, qvx_input, qvy_input, qvz_input, pitch, roll, yaw, evx_target, qvx_target, qxp, qxi, qxd, pr_target, prp, pri, prd, pr_out, evy_yarget, qvy_target, qyp, qyi, qyd, rr_target, rrp, rri, rrd, rr_out, evz_target, qvz_target, qzp, qzi, qzd, qvz_out, yr_target, yrp, yri, yrd, yr_out, FL spin, FR spin, BL spin, BR spin')
 
-        #===========================================================================================
-        # Initialize critical timing immediately before starting the PIDs.  This is done by reading the
-        # sensors, and that also gives us a starting position of the rolling average from.
-        #===========================================================================================
-
-        #-------------------------------------------------------------------------------------------
         # Start the X, Y (horizontal) and Z (vertical) velocity PIDs
         #-------------------------------------------------------------------------------------------
         qvx_pid = PID(PID_QVX_P_GAIN, PID_QVX_I_GAIN, PID_QVX_D_GAIN)
@@ -1789,7 +1781,7 @@ class Quadcopter:
         # Set up the variaous timing constants and stats
         #-------------------------------------------------------------------------------------------
         esc_period = 0.01
-        i_time = 0.0
+        i_time = 0.005
         sampling_loops = 0
         motion_loops = 0
         start_flight = time.time()
@@ -1905,7 +1897,7 @@ class Quadcopter:
             # down to the following - just need to test whether this is needed by adding horizontal
             # movement into the flight plan.
             #---------------------------------------------------------------------------------------
-#           qvz_target *= (egz / qgz)
+            qvz_target *= (egz / qgz)
 
             #---------------------------------------------------------------------------------------
             # Delete reorientated gravity from raw accelerometer readings and sum to make velocity all
@@ -2097,57 +2089,58 @@ class Quadcopter:
         for esc in self.esc_list:
             esc.set(0)
 
-    ####################################################################################################
-    #
-    # Shutdown triggered by early Ctrl-C or end of script
-    #
-    ####################################################################################################
-    def shutdown(self):
-
-        #-----------------------------------------------------------------------------------------------
-        # Stop the signal handler
-        #-----------------------------------------------------------------------------------------------
-        signal.signal(signal.SIGINT, signal.SIG_IGN)
-
-        #-----------------------------------------------------------------------------------------------
-        # Stop the blades spinning
-        #-----------------------------------------------------------------------------------------------
-        for esc in self.esc_list:
-            esc.set(0)
-
-        #-----------------------------------------------------------------------------------------------
+        #-------------------------------------------------------------------------------------------
         # Stop the video if it's running
-        #-----------------------------------------------------------------------------------------------
+        #-------------------------------------------------------------------------------------------
         if self.shoot_video:
             video.send_signal(signal.SIGINT)
 
-        #-----------------------------------------------------------------------------------------------
+
+    ################################################################################################
+    #
+    # Shutdown triggered by early Ctrl-C or end of script
+    #
+    ################################################################################################
+    def shutdown(self):
+
+        #-------------------------------------------------------------------------------------------
+        # Stop the signal handler
+        #-------------------------------------------------------------------------------------------
+        signal.signal(signal.SIGINT, signal.SIG_IGN)
+
+        #-------------------------------------------------------------------------------------------
+        # Stop the blades spinning
+        #-------------------------------------------------------------------------------------------
+        for esc in self.esc_list:
+            esc.set(0)
+
+        #-------------------------------------------------------------------------------------------
         # Copy logs from /dev/shm (shared / virtual memory) to the Logs directory.
-        #-----------------------------------------------------------------------------------------------
+        #-------------------------------------------------------------------------------------------
         now = datetime.now()
         now_string = now.strftime("%y%m%d-%H:%M:%S")
         log_file_name = "qcstats.csv"
         shutil.move("/dev/shm/qclogs", log_file_name)
 
-        #-----------------------------------------------------------------------------------------------
+        #-------------------------------------------------------------------------------------------
         # Unlock memory we've used from RAM
-        #-----------------------------------------------------------------------------------------------
+        #-------------------------------------------------------------------------------------------
         munlockall()
 
-        #-----------------------------------------------------------------------------------------------
+        #-------------------------------------------------------------------------------------------
         # Clean up PWM / GPIO, but pause beforehand to give the ESCs time to stop properly
-        #-----------------------------------------------------------------------------------------------
+        #-------------------------------------------------------------------------------------------
         time.sleep(1.0)
         PWMTerm()
 
-        #-----------------------------------------------------------------------------------------------
+        #-------------------------------------------------------------------------------------------
         # Clean up the GPIO FIFO Overflow ISR
-        #-----------------------------------------------------------------------------------------------
+        #-------------------------------------------------------------------------------------------
         GPIOTerm()
 
-        #-----------------------------------------------------------------------------------------------
+        #-------------------------------------------------------------------------------------------
         # Reset the signal handler to default
-        #-----------------------------------------------------------------------------------------------
+        #-------------------------------------------------------------------------------------------
         signal.signal(signal.SIGINT, signal.SIG_DFL)
 
         sys.exit(0)
