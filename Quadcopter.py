@@ -555,12 +555,12 @@ class MPU6050 :
         # Open the ofset file for this run
         #-------------------------------------------------------------------------------------------
         try:
-            with open('0goffsets', 'wb') as offs_file:
+            with open('0goffsets', 'ab') as offs_file:
                 raw_input("Rest me on my props and press enter.")
                 self.flushFIFO()
                 time.sleep(20 / sampling_rate)
                 ax, ay, az, gx, gy, gz, dt = self.readFIFO()
-                offs_file.write("%f %f %f" % (ax, ay, az))
+                offs_file.write("%f %f %f\n" % (ax, ay, az))
 
         except EnvironmentError:
             offs_rc = False
@@ -575,13 +575,17 @@ class MPU6050 :
                     ax_offset, ay_offset, az_offset = line.split()
             self.ax_offset = float(ax_offset)
             self.ay_offset = float(ay_offset)
-            self.az_offset = 0.0 # float(az_offset)
+            self.az_offset = float(az_offset)
+
         except EnvironmentError:
             offs_rc = False
 
-        #AB! Override for safety
-        self.ax_offset = 0.0
-        self.ay_offset = 0.0
+        #AB! Overwritten as the offset values clearly have no effect
+        #AB! e.g. 100 offset @ +/- 4g = 0.12 m/s/s drift which is about 6m
+        #AB! over 10s
+        #AB! self.ax_offset = 0.0
+        #AB! self.ay_offset = 0.0
+
         self.az_offset = 0.0
 
         logger.warning("0g Offsets:, %f, %f, %f", self.ax_offset, self.ay_offset, self.az_offset)
@@ -983,7 +987,7 @@ def CheckCLI(argv):
     cli_test_case = 0
     cli_diagnostics = False
     cli_rtf_period = 0.1
-    cli_tau = 5
+    cli_tau = 7.5
     cli_calibrate_0g = False
     cli_flight_plan = ''
 
@@ -1075,7 +1079,7 @@ def CheckCLI(argv):
         #-------------------------------------------------------------------------------------------
         # Phoebe's PID configuration due to using her ESCs / motors / props
         #-------------------------------------------------------------------------------------------
-        cli_hover_target = 300 # Floppy props: 380
+        cli_hover_target = 310 # CF:300; Floppy props:380
 
         #-------------------------------------------------------------------------------------------
         # Defaults for vertical velocity PIDs
@@ -1737,6 +1741,7 @@ class Quadcopter:
         if diagnostics:
             logger.warning('time, dt, loops, sleep, temp, qrx, qry, qrz, qax, qay, qaz, efrgv_x, efrgv_y, efrgv_z, qfrgv_x, qfrgv_y, qfrgv_z, qvx_input, qvy_input, qvz_input, pitch, roll, yaw, evx_target, qvx_target, qxp, qxi, qxd, pr_target, prp, pri, prd, pr_out, evy_yarget, qvy_target, qyp, qyi, qyd, rr_target, rrp, rri, rrd, rr_out, evz_target, qvz_target, qzp, qzi, qzd, qvz_out, yr_target, yrp, yri, yrd, yr_out, FL spin, FR spin, BL spin, BR spin')
 
+        #-------------------------------------------------------------------------------------------
         # Start the X, Y (horizontal) and Z (vertical) velocity PIDs
         #-------------------------------------------------------------------------------------------
         qvx_pid = PID(PID_QVX_P_GAIN, PID_QVX_I_GAIN, PID_QVX_D_GAIN)
@@ -1780,8 +1785,9 @@ class Quadcopter:
         #-------------------------------------------------------------------------------------------
         # Set up the variaous timing constants and stats
         #-------------------------------------------------------------------------------------------
-        esc_period = 0.01
-        i_time = 0.005
+        i_time = 0.0
+        samples_per_motion = 10
+        sleep_time = samples_per_motion / sampling_rate
         sampling_loops = 0
         motion_loops = 0
         start_flight = time.time()
@@ -1811,7 +1817,7 @@ class Quadcopter:
             #---------------------------------------------------------------------------------------
             # Sleep for a while waiting for the FIFO to collect several batches of data.
             #---------------------------------------------------------------------------------------
-            sleep_time = esc_period - i_time
+            sleep_time -= (i_time - samples_per_motion / sampling_rate)
             if sleep_time > 0.0:
                 time.sleep(sleep_time)
 
@@ -1872,7 +1878,7 @@ class Quadcopter:
                 if hover_speed >= hover_target:
                     hover_speed = hover_target
                     ready_to_fly = True
-                    logger.critical("RTF @ %fs", motion_loops * esc_period)
+                    logger.critical("RTF @ %fs", motion_loops * samples_per_motion / sampling_rate)
 
                 else:
                     hsf += (hover_target - base_pwm) * i_time / rtf_period
