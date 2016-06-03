@@ -35,6 +35,7 @@ from datetime import datetime
 import shutil
 import ctypes
 from ctypes.util import find_library
+import minimalmodbus
 
 ####################################################################################################
 #
@@ -149,7 +150,7 @@ class I2C:
 #  The compass / magnetometer of the MPU-9250 is not used
 #
 ####################################################################################################
-class MPU6050 :
+class MPU6050:
     i2c = None
 
     # Registers/etc.
@@ -376,9 +377,9 @@ class MPU6050 :
         time.sleep(0.1)
 
         #-------------------------------------------------------------------------------------------
-        # Set INT pin to push / pull, 50us pulse 0x10.
+        # Set INT pin to push/pull, latch til read, any read to clear
         #-------------------------------------------------------------------------------------------
-        self.i2c.write8(self.__MPU6050_RA_INT_PIN_CFG, 0x10)
+        self.i2c.write8(self.__MPU6050_RA_INT_PIN_CFG, 0x30)
         time.sleep(0.1)
 
         #-------------------------------------------------------------------------------------------
@@ -630,6 +631,95 @@ class MS5611 :
 
 ####################################################################################################
 #
+#  Ultrasonic range finder
+#
+####################################################################################################
+class SRF02:
+    i2c = None
+
+    #Reisters/etc
+    __SRF02_RA_CONFIG = 0x00
+    __SRF02_RA_RNG_HI = 0x02
+    __SRF02_RA_RNG_LO = 0x03
+    __SRF02_RA_AUTO_HI = 0x04
+    __SRF02_RA_AUTO_LO = 0x05
+
+    def __init__(self, address=0x70):
+        self.i2c = I2C(address)
+
+
+    def pingProximity(self):
+        #-------------------------------------------------------------------------------------------
+        # Set up range units as centimeters and ping
+        #-------------------------------------------------------------------------------------------
+        self.i2c.write8(self.__SRF02_RA_CONFIG, 0x51)
+
+    def pingProcessed(self):
+        #-------------------------------------------------------------------------------------------
+        # Check if data is available
+        #-------------------------------------------------------------------------------------------
+        rc = self.i2c.read8(self.__SRF02_RA_CONFIG)
+        if rc == 0xFF:
+            return False
+        else:
+            return True
+
+    def readProximity(self):
+        #-------------------------------------------------------------------------------------------
+        # Read proximity - sensor units are centimeters so convert to meters.
+        #-------------------------------------------------------------------------------------------
+        range = self.i2c.readU16(self.__SRF02_RA_RNG_HI)
+        return range / 100
+
+
+####################################################################################################
+#
+#  LEDDAR range finder
+#
+####################################################################################################
+class LEDDAR:
+
+    def __init__(self):
+        #-------------------------------------------------------------------------------------------
+        # Connect to the LEDDAR #AB:
+        #-------------------------------------------------------------------------------------------
+        minimalmodbus.BAUDRATE=115200
+        self.mmb = minimalmodbus.Instrument("/dev/ttyAMA0", 1, 'rtu')
+        self.mmb.BAUDRATE=115200
+        self.mmb.serial.baudrate = 115200
+
+        self.prev_distance = 0.0
+        self.prev_timestamp = 0.0
+
+
+    def read(self, tilt_ratio):
+        #-------------------------------------------------------------------------------------------
+        # Read the current height and timestamp registers
+        #-------------------------------------------------------------------------------------------
+        (time_lss, time_mss, temperature, num_detections, distance) = self.mmb.read_registers(20, 5, 4)
+
+        #-------------------------------------------------------------------------------------------
+        # Convert units for returned values.
+        #-------------------------------------------------------------------------------------------
+        timestamp = ((time_mss << 16) + time_lss) / 1000
+        distance /= 1000
+        dt = (timestamp - self.prev_timestamp)
+
+        #-------------------------------------------------------------------------------------------
+        # LEDDAR results are in mm and ms therefore mm/ms is the same as m/s that we need.  Compensate
+        # for any tilt for the new distance reading
+        #-------------------------------------------------------------------------------------------
+        distance *= tilt_ratio
+        velocity = (distance - self.prev_distance) / (timestamp - self.prev_timestamp)
+
+        self.prev_timestamp = timestamp
+        self.prev_distance = distance
+
+        return distance, dt, velocity
+
+
+####################################################################################################
+#
 # PID algorithm to take input sensor readings, and target requirements, and output an arbirtrary
 # corrective value.
 #
@@ -767,8 +857,9 @@ def GetAbsoluteAngles(ax, ay, az):
 
     pitch = math.atan2(-ax, az)
     roll = math.atan2(ay, az)
+    tilt = math.atan2(math.pow(math.pow(ax, 2) + math.pow(ay, 2), 0.5) / az)
 
-    return pitch, roll
+    return pitch, roll, tilt
 
 
 ####################################################################################################
@@ -955,10 +1046,14 @@ def PWMTerm():
 # GPIO pins initialization for MPU6050 FIFO overflow interrupt
 #
 ####################################################################################################
-def GPIOInit(FIFOOverflowISR):
+def GPIOInit(FIFOOverflowISR, LEDDARDataReadyISR):
     GPIO.setmode(GPIO.BCM)
+
     GPIO.setup(GPIO_FIFO_OVERFLOW_INTERRUPT, GPIO.IN, GPIO.PUD_OFF)
-    GPIO.add_event_detect(GPIO_FIFO_OVERFLOW_INTERRUPT, GPIO.RISING, FIFOOverflowISR)
+    GPIO.setup(GPIO_LEDDAR_DR_INTERRUPT, GPIO.IN, GPIO.PUD_OFF)
+
+#    GPIO.add_event_detect(GPIO_FIFO_OVERFLOW_INTERRUPT, GPIO.RISING, FIFOOverflowISR)
+#    GPIO.add_event_detect(GPIO_LEDDAR_DR_INTERRUPT, GPIO.RISING, LEDDARDataReadyISR)
 
 
 ####################################################################################################
@@ -967,7 +1062,8 @@ def GPIOInit(FIFOOverflowISR):
 #
 ####################################################################################################
 def GPIOTerm():
-    GPIO.remove_event_detect(GPIO_FIFO_OVERFLOW_INTERRUPT)
+#    GPIO.remove_event_detect(GPIO_FIFO_OVERFLOW_INTERRUPT)
+#    GPIO.remove_event_detect(GPIO_LEDDAR_DR_INTERRUPT)
     GPIO.cleanup()
 
 
@@ -1009,22 +1105,22 @@ def CheckCLI(argv):
         #-------------------------------------------------------------------------------------------
         # Defaults for horizontal velocity PIDs
         #-------------------------------------------------------------------------------------------
-        cli_hvp_gain = 1.2
-        cli_hvi_gain = 0.1
+        cli_hvp_gain = 1.75
+        cli_hvi_gain = 0.25
         cli_hvd_gain = 0.0
 
         #-------------------------------------------------------------------------------------------
         # Defaults for pitch angle PIDs
         #-------------------------------------------------------------------------------------------
-        cli_prp_gain = 140.0
-        cli_pri_gain = 14.0
+        cli_prp_gain = 150.0
+        cli_pri_gain = 15.0
         cli_prd_gain = 0.0
 
         #-------------------------------------------------------------------------------------------
         # Defaults for roll angle PIDs
         #-------------------------------------------------------------------------------------------
-        cli_rrp_gain = 150.0
-        cli_rri_gain = 15.0
+        cli_rrp_gain = 160.0
+        cli_rri_gain = 16.0
         cli_rrd_gain = 0.0
 
         #-------------------------------------------------------------------------------------------
@@ -1050,8 +1146,8 @@ def CheckCLI(argv):
         #-------------------------------------------------------------------------------------------
         # Defaults for horizontal velocity PIDs
         #-------------------------------------------------------------------------------------------
-        cli_hvp_gain = 1.2
-        cli_hvi_gain = 0.1
+        cli_hvp_gain = 1.6
+        cli_hvi_gain = 0.3
         cli_hvd_gain = 0.0
 
         #-------------------------------------------------------------------------------------------
@@ -1091,22 +1187,22 @@ def CheckCLI(argv):
         #-------------------------------------------------------------------------------------------
         # Defaults for horizontal velocity PIDs
         #-------------------------------------------------------------------------------------------
-        cli_hvp_gain = 1.5
-        cli_hvi_gain = 0.1
+        cli_hvp_gain = 1.6
+        cli_hvi_gain = 0.3
         cli_hvd_gain = 0.0
 
         #-------------------------------------------------------------------------------------------
         # Defaults for pitch angle PIDs
         #-------------------------------------------------------------------------------------------
-        cli_prp_gain = 85.0  # Floppy props: 100.0
-        cli_pri_gain = 8.5   # Floppy props: 10.0
+        cli_prp_gain = 60.0  # Floppy props: 100.0
+        cli_pri_gain = 6.0   # Floppy props: 10.0
         cli_prd_gain = 0.0
 
         #-------------------------------------------------------------------------------------------
         # Defaults for roll angle PIDs
         #-------------------------------------------------------------------------------------------
-        cli_rrp_gain = 75.0  # Floppy props: 90.0
-        cli_rri_gain = 7.5   # Floppy props: 9.0
+        cli_rrp_gain = 60.0  # Floppy props: 90.0
+        cli_rri_gain = 6.0   # Floppy props: 9.0
         cli_rrd_gain = 0.0
 
         #-------------------------------------------------------------------------------------------
@@ -1378,18 +1474,37 @@ class Quadcopter:
         i_am_zoe = False
 
         my_name = os.uname()[1]
-        if my_name == "phoebe.local":
+        if my_name == "phoebe.local" or my_name == "phoebe":
             print "Hi, I'm Phoebe. Nice to meet you!"
             i_am_phoebe = True
-        elif my_name == "chloe.local":
+        elif my_name == "chloe.local" or my_name == "chloe":
             print "Hi, I'm Chloe.  Nice to meet you!"
             i_am_chloe = True
-        elif my_name == "zoe.local":
+        elif my_name == "zoe.local" or my_name == "zoe":
             print "Hi, I'm Zoe.  Nice to meet you!"
             i_am_zoe = True
         else:
             print "Sorry, I'm not qualified to fly this quadcopter."
             return
+
+        #-------------------------------------------------------------------------------------------
+        # Set up extra sensors based on quad identify.
+        # -  urf_installed should not be set to True until the RPi kernel I2C driver supports clock stretching
+        # -  compass_installed can only be used with an MPU9250
+        #-------------------------------------------------------------------------------------------
+        if i_am_phoebe:
+            self.urf_installed = False
+            self.leddar_installed = True
+            self.compass_installed = True
+            self.camera_installed = False
+            self.barometer_installed = True
+        else:
+            self.urf_installed = False
+            self.leddar_installed = False
+            self.compass_installed = True
+            self.camera_installed = False
+            self.barometer_installed = True
+
 
         #-------------------------------------------------------------------------------------------
         # Lock code permanently in memory - no swapping to disk
@@ -1434,10 +1549,13 @@ class Quadcopter:
         logger.warning("%s is flying.", "Phoebe" if i_am_phoebe else "Chloe" if i_am_chloe else "Zoe")
 
         #-------------------------------------------------------------------------------------------
-        # Set the BCM pin assigned to the FIFO overflow interrupt
+        # Set the BCM pin assigned to the FIFO overflow and LEDDAR data ready interrupts
         #-------------------------------------------------------------------------------------------
         global GPIO_FIFO_OVERFLOW_INTERRUPT
         GPIO_FIFO_OVERFLOW_INTERRUPT = 22
+
+        global GPIO_LEDDAR_DR_INTERRUPT
+        GPIO_LEDDAR_DR_INTERRUPT = 18
 
         #-------------------------------------------------------------------------------------------
         # Enable RPIO for ESC PWM.  This must be set up prior to adding the SignalHandler below or it
@@ -1446,9 +1564,9 @@ class Quadcopter:
         PWMInit()
 
         #-------------------------------------------------------------------------------------------
-        # Enable GPIO for the FIFO overflow hardware interrupt.
+        # Enable GPIO for the FIFO overflow and LEDDAR data ready hardware interrupts.
         #-------------------------------------------------------------------------------------------
-        GPIOInit(self.fifoOverflowISR)
+        GPIOInit(self.fifoOverflowISR, self.LEDDARDataReadyISR)
 
         #-------------------------------------------------------------------------------------------
         # Set the signal handler here so the core processing loop can be stopped (or not started) by
@@ -1512,8 +1630,32 @@ class Quadcopter:
         #-------------------------------------------------------------------------------------------
         # Initialize the barometer / altimeter I2C object
         #-------------------------------------------------------------------------------------------
-        global ms5611
-        ms5611 = MS5611(0x77)
+        if self.barometer_installed:
+            global ms5611
+            ms5611 = MS5611(0x77)
+
+        #-------------------------------------------------------------------------------------------
+        # Initialize the ultrasonic range finder I2C object and calibrate the sensor
+        #-------------------------------------------------------------------------------------------
+        if self.urf_installed:
+            global srf02
+            srf02 = SRF02(0x70)
+            for ii in range(10):
+                srf02.pingProximity()
+                time.sleep(0.070)  # 70ms sleep guarantees a valid result
+                sfr02.readProximity()
+
+        #-------------------------------------------------------------------------------------------
+        # Kill off the terminal running on the serial bus so LEDDAR can use it later
+        #-------------------------------------------------------------------------------------------
+        os.system("systemctl stop serial-getty@ttyAMA0.service")
+
+        #-------------------------------------------------------------------------------------------
+        # Start up the LEDDAR now to give it time to self-tune and settle
+        #-------------------------------------------------------------------------------------------
+        if self.leddar_installed:
+            global leddar
+            leddar = LEDDAR()
 
     #===============================================================================================
     # Keyboard input between flights for CLI update etc
@@ -1625,7 +1767,7 @@ class Quadcopter:
             return
 
         #-------------------------------------------------------------------------------------------
-        # Flush the FIFO, collect half a FIFO full of samples
+        # Flush the FIFO, collect roughly half a FIFO full of samples
         #-------------------------------------------------------------------------------------------
         mpu6050.flushFIFO()
         time.sleep(20 / sampling_rate)
@@ -1648,6 +1790,8 @@ class Quadcopter:
         pa, ra = GetRotationAngles(qax, qay, qaz)
         ya = 0.0
 
+        tilt_ratio = qaz / egz
+
         #-------------------------------------------------------------------------------------------
         # Log the critical parameters from this warm-up: the take-off surface tilt, and gravity.
         # Note that some of the variables used above are used in the main processing loop.  Messing
@@ -1656,6 +1800,37 @@ class Quadcopter:
         logger.warning("pitch %f, roll %f", math.degrees(pa), math.degrees(ra))
         logger.warning("egx %f, egy %f, egz %f", egx, egy, egz)
         logger.warning("based upon %d samples", dt * sampling_rate)
+
+        #-------------------------------------------------------------------------------------------
+        # Read the initial height of the URF from the ground
+        #-------------------------------------------------------------------------------------------
+        urfz = 0
+        if self.urf_installed:
+            srf02.pingProximity()
+            time.sleep(0.070)  # 70ms sleep guarantees a valid result
+            if not srf02.pingProcessed():
+                print "URF FMR FECK"
+            else:
+                urfz = srf02.readProximity()
+                srf02.pingProximity()
+
+        #-------------------------------------------------------------------------------------------
+        # Get an initial set of readings from the LEDDAR thus clearing the DR interrupt
+        #-------------------------------------------------------------------------------------------
+        l_dist = 0.0
+        l_dt = 0.0
+        l_vel = 0.0
+        if self.leddar_installed:
+            l_dist, l_dt, l_vel = leddar.read(tilt_ratio)
+
+        #-------------------------------------------------------------------------------------------
+        # Prime the direction vector of the earth's magnotic core to provide long term yaw stability.
+        #-------------------------------------------------------------------------------------------
+        magx = 0.0
+        magy = 0.0
+        magz = 0.0
+        if self.compass_installed:
+            magx, magy, magz = mpu6050.readCompass()
 
         #-------------------------------------------------------------------------------------------
         # Start up the video camera if required - this runs from take-off through to shutdown
@@ -1731,15 +1906,15 @@ class Quadcopter:
         PID_YR_I_GAIN = yri_gain
         PID_YR_D_GAIN = yrd_gain
 
-        (i2c_errors, num_0g_hits, num_2g_hits) = mpu6050.getMisses()
-        logger.warning("%d i2c errors; %d 0g hits; %d 2g hits.", i2c_errors, num_0g_hits, num_2g_hits)
+        ############################################################################################
         print "Thunderbirds are go!"
+        ############################################################################################
 
         #-------------------------------------------------------------------------------------------
         # Diagnostic log header
         #-------------------------------------------------------------------------------------------
         if diagnostics:
-            logger.warning('time, dt, loops, sleep, temp, qrx, qry, qrz, qax, qay, qaz, efrgv_x, efrgv_y, efrgv_z, qfrgv_x, qfrgv_y, qfrgv_z, qvx_input, qvy_input, qvz_input, pitch, roll, yaw, evx_target, qvx_target, qxp, qxi, qxd, pr_target, prp, pri, prd, pr_out, evy_yarget, qvy_target, qyp, qyi, qyd, rr_target, rrp, rri, rrd, rr_out, evz_target, qvz_target, qzp, qzi, qzd, qvz_out, yr_target, yrp, yri, yrd, yr_out, FL spin, FR spin, BL spin, BR spin')
+            logger.warning('time, dt, loops, sleep, temp, urf, l_dist, l_time, l_velocity, magx, magy, magz, qrx, qry, qrz, qax, qay, qaz, efrgv_x, efrgv_y, efrgv_z, qfrgv_x, qfrgv_y, qfrgv_z, qvx_input, qvy_input, qvz_input, pitch, roll, yaw, evx_target, qvx_target, pr_target, pr_out, evy_yarget, qvy_target, rr_target, rr_out, evz_target, qvz_target, qvz_out, yr_target, yr_out, FL spin, FR spin, BL spin, BR spin')
 
         #-------------------------------------------------------------------------------------------
         # Start the X, Y (horizontal) and Z (vertical) velocity PIDs
@@ -1783,13 +1958,24 @@ class Quadcopter:
         ready_to_fly = False
 
         #-------------------------------------------------------------------------------------------
-        # Set up the variaous timing constants and stats
+        # Set up the various timing constants and stats. 
         #-------------------------------------------------------------------------------------------
         i_time = 0.0
         samples_per_motion = 10
-        sleep_time = samples_per_motion / sampling_rate
+        sleep_time = 0.0 
         sampling_loops = 0
         motion_loops = 0
+
+        #-------------------------------------------------------------------------------------------
+        # Constrain the maximum sleep time per motion loop to prevent FIFO overflow
+        #-------------------------------------------------------------------------------------------
+        FIFO_SIZE = 512
+        SAMPLE_SIZE = 12
+        max_sleep_time = (sampling_rate / samples_per_motion) / (FIFO_SIZE / SAMPLE_SIZE) / 2
+
+        #-------------------------------------------------------------------------------------------
+        # Used for flight stats only
+        #-------------------------------------------------------------------------------------------
         start_flight = time.time()
 
         #-------------------------------------------------------------------------------------------
@@ -1817,9 +2003,18 @@ class Quadcopter:
             #---------------------------------------------------------------------------------------
             # Sleep for a while waiting for the FIFO to collect several batches of data.
             #---------------------------------------------------------------------------------------
-            sleep_time -= (i_time - samples_per_motion / sampling_rate)
+            sleep_time += (samples_per_motion / sampling_rate - i_time)
             if sleep_time > 0.0:
-                time.sleep(sleep_time)
+                time.sleep(sleep_time if sleep_time < max_sleep_time else max_sleep_time)
+
+            #---------------------------------------------------------------------------------------
+            # Before proceeding further, check the FIFO overflow interrupt to ensure we didn't sleep
+            # too long
+            #---------------------------------------------------------------------------------------
+            if GPIO.input(GPIO_FIFO_OVERFLOW_INTERRUPT):
+                print "FIFO OVERFLOW, ABORT!"
+                keep_looping = False
+                break
 
             #---------------------------------------------------------------------------------------
             # Now get the batch of averaged data from the FIFO.
@@ -1872,7 +2067,80 @@ class Quadcopter:
             ra = tau_fraction * ra + (1 - tau_fraction) * ura
 
             #---------------------------------------------------------------------------------------
-            # Get the current flight plan targets
+            # Read the compass to determine yaw but not just yet.  Yaw from the compass will be fused
+            # with integrated gyro Z axis yaw to provide long term stability.  For now though, we're just
+            # collecting the data for logging.
+            #---------------------------------------------------------------------------------------
+            if self.compass_installed:
+                magx, magy, magz = mpu6050.readCompass()
+
+            #---------------------------------------------------------------------------------------
+            # Rotate gravity to the new quadframe
+            #---------------------------------------------------------------------------------------
+            qgx, qgy, qgz = RotateE2Q(egx, egy, egz, pa, ra, ya)
+
+            #---------------------------------------------------------------------------------------
+            # The tilt ratio is used to compensate both LEDDAR height (and thus velocity) and the
+            # flight plan vertical target for the fact the sensors are leaning.
+            #
+            # tilt ratio is derived from cos(tilt angle);
+            # - tilt angle is arctan(sqrt(x*x + y*y) / z)
+            # - cos(arctan(a)) = 1 / (sqrt(1 + a*a))
+            # This all collapses down to the following.  0 <= Tilt ratio <= 1
+            #---------------------------------------------------------------------------------------
+            tilt_ratio = qgz / egz
+
+            #---------------------------------------------------------------------------------------
+            # Check if there's a URF reading available, and if so, read and re-ping; note the tilt angle
+            # only comes from the accelerometer so is likely to be noisy.  This can be improved
+            # as tilt is only a
+            #---------------------------------------------------------------------------------------
+            if self.urf_installed and srf02.pingProcessed():
+                urfz = srf02.readProximity()
+                srf02.pingProximity()
+
+            # ========================= Velocity PID input processing ==============================
+
+            #---------------------------------------------------------------------------------------
+            # Delete reorientated gravity from raw accelerometer readings and integrate over time
+            # to make velocity all in quad frame
+            #---------------------------------------------------------------------------------------
+            qvx_input += (qax - qgx) * i_time * GRAV_ACCEL
+            qvy_input += (qay - qgy) * i_time * GRAV_ACCEL
+            qvz_input += (qaz - qgz) * i_time * GRAV_ACCEL
+
+            #---------------------------------------------------------------------------------------
+            # Get the latest set of LEDDAR velocities if available
+            #---------------------------------------------------------------------------------------
+            if self.leddar_installed and GPIO.input(GPIO_LEDDAR_DR_INTERRUPT):
+                try:
+                    l_dist, l_dt, l_vel = leddar.read(tilt_ratio)
+                except IOError, e:
+                    self.leddar_installed = False
+                    l_dist = 0.0
+                    l_dt = 0.0
+                    l_vel = 0.0
+                    logger.critical("############# LEDDAR CONNECTION FAILED #################")
+                else:    
+                    #---------------------------------------------------------------------------------------
+                    # Pass the integrated accelerometer and differentiated leddar velocities through a
+                    # complementary filter. LEDDAR produces outputs at about 8Hz, hence 1s ltau
+                    #---------------------------------------------------------------------------------------
+                    ltau = 1.0
+                    ltau_fraction = ltau / (ltau + l_dt)
+                    qvz_input = ltau_fraction * qvz_input + (1 - ltau_fraction) * l_vel
+
+            #---------------------------------------------------------------------------------------
+            # For diagnostic comparison against the LEDDAR or URF readings, take the quad frame
+            # velocity vector and rotate to earth coordintates to compare the evz value against the
+            # d(urf cos(tilt)/dt velocity. #AB: comparison not implemented.
+            #---------------------------------------------------------------------------------------
+            evx, evy, evz = RotateQ2E(qvx_input, qvy_input, qvz_input, pa, ra, ya)
+
+            # ======================= Velocity PID target processing ===============================
+
+            #---------------------------------------------------------------------------------------
+            # Check the flight plan for earth frame velocity targets.
             #---------------------------------------------------------------------------------------
             if not ready_to_fly:
                 if hover_speed >= hover_target:
@@ -1888,30 +2156,14 @@ class Quadcopter:
                 evx_target, evy_target, evz_target = fp.getTargets(i_time)
 
             #---------------------------------------------------------------------------------------
-            # Rotate gravity to the new quadframe
-            #---------------------------------------------------------------------------------------
-            qgx, qgy, qgz = RotateE2Q(egx, egy, egz, pa, ra, ya)
-
-            #---------------------------------------------------------------------------------------
             # Convert earth-frame velocity targets to quadcopter frame.
             #---------------------------------------------------------------------------------------
             qvx_target, qvy_target, qvz_target = RotateE2Q(evx_target, evy_target, evz_target, pa, ra, ya)
 
             #---------------------------------------------------------------------------------------
-            # Boost the quad frame velocity target by dividing by cos(ta) - tilt angle is
-            # arctan(z / sqrt(x*x + y*y)) and cos(arctan(a)) = 1 / (sqrt(1 + a*a)) so this all collapses
-            # down to the following - just need to test whether this is needed by adding horizontal
-            # movement into the flight plan.
+            # Boost the quad frame velocity target by the tilt ratio.  HACK?
             #---------------------------------------------------------------------------------------
-            qvz_target *= (egz / qgz)
-
-            #---------------------------------------------------------------------------------------
-            # Delete reorientated gravity from raw accelerometer readings and sum to make velocity all
-            # in quad frame
-            #---------------------------------------------------------------------------------------
-            qvx_input += (qax - qgx) * i_time * GRAV_ACCEL
-            qvy_input += (qay - qgy) * i_time * GRAV_ACCEL
-            qvz_input += (qaz - qgz) * i_time * GRAV_ACCEL
+            qvz_target /= tilt_ratio
 
             #=======================================================================================
             # Motion PIDs: Run the horizontal speed PIDs to determine targets for rotation rate PIDs
@@ -1935,10 +2187,10 @@ class Quadcopter:
             # - A forward unintentional drift is a positive input and negative output from the
             #   velocity PID.  This represents corrective acceleration.  To achieve corrective
             #   backward acceleration, the negative velocity PID output needs to trigger a negative
-            #   pitch rotation rate
+            #   pitch rotation rate target.
             # - A left unintentional drift is a positive input and negative output from the velocity
             #   PID.  To achieve corrective right acceleration, the negative velocity PID output needs
-            #   to trigger a positive roll rotation rate
+            #   to trigger a positive roll rotation rate target.
             #---------------------------------------------------------------------------------------
 
             #---------------------------------------------------------------------------------------
@@ -2076,8 +2328,8 @@ class Quadcopter:
             #---------------------------------------------------------------------------------------
             if diagnostics:
                 temp = mpu6050.readTemperature()
-                logger.warning('%f, %f, %d, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %s, %f, %s, %d, %f, %f, %s, %f, %s, %d, %f, %f, %s, %d, %f, %s, %d, %d, %d, %d, %d',
-                                sampling_loops / sampling_rate, i_time, sampling_loops, sleep_time, temp / 333.86 + 21, qrx, qry, qrz, qax, qay, qaz, egx, egy, egz, qgx, qgy, qgz, qvx_input, qvy_input, qvz_input, math.degrees(pa), math.degrees(ra), math.degrees(ya), evx_target, qvx_target, qvx_diags, math.degrees(pr_target), pr_diags, pr_out, evy_target, qvy_target, qvy_diags, math.degrees(rr_target), rr_diags, rr_out, evz_target, qvz_target, qvz_diags, qvz_out, math.degrees(yr_target), yr_diags, yr_out, self.esc_list[0].pulse_width, self.esc_list[1].pulse_width, self.esc_list[2].pulse_width, self.esc_list[3].pulse_width)
+                logger.warning('%f, %f, %d, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %d, %f, %f, %f, %d, %f, %f, %d, %f, %d, %d, %d, %d, %d',
+                                sampling_loops / sampling_rate, i_time, sampling_loops, sleep_time, temp / 333.86 + 21, urfz, l_dist, l_dt, l_vel, magx, magy, magz, qrx, qry, qrz, qax, qay, qaz, egx, egy, egz, qgx, qgy, qgz, qvx_input, qvy_input, qvz_input, math.degrees(pa), math.degrees(ra), math.degrees(ya), evx_target, qvx_target, math.degrees(pr_target), pr_out, evy_target, qvy_target, math.degrees(rr_target), rr_out, evz_target, qvz_target, qvz_out, math.degrees(yr_target), yr_out, self.esc_list[0].pulse_width, self.esc_list[1].pulse_width, self.esc_list[2].pulse_width, self.esc_list[3].pulse_width)
 
         print "flight time %f" % (time.time() - start_flight)
 
@@ -2163,10 +2415,19 @@ class Quadcopter:
 
     ####################################################################################################
     #
-    # Signal handler for FIFO overflow => abort flight cleanly
+    # Interrupt Service Routine for FIFO overflow => abort flight cleanly
     #
     ####################################################################################################
     def fifoOverflowISR(self, pin):
-        print "FIFO OVERFLOW, ABORT"
-        self.keep_looping = False
+        if self.keep_looping:
+            print "FIFO OVERFLOW, ABORT"
+            self.keep_looping = False
 
+    ####################################################################################################
+    #
+    # Interrupt Service Routine for LEDDAR data ready - RETIRED
+    #
+    ####################################################################################################
+    def LEDDARDataReadyISR(self, pin):
+        print "LEDDAR ISR"
+        self.leddar_dr = True
