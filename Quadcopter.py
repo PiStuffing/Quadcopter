@@ -688,9 +688,16 @@ class LEDDAR:
         self.mmb.BAUDRATE=115200
         self.mmb.serial.baudrate = 115200
 
-        self.prev_distance = 0.0
-        self.prev_timestamp = 0.0
+    def reset(self, tilt_ratio):
+        #-------------------------------------------------------------------------------------------
+        # Set up the base readings
+        #-------------------------------------------------------------------------------------------
+        (time_lss, time_mss, temperature, num_detections, distance) = self.mmb.read_registers(20, 5, 4)
 
+        self.prev_timestamp = ((time_mss << 16) + time_lss) / 1000
+
+        distance /= 1000
+        self.prev_distance = distance * tilt_ratio
 
     def read(self, tilt_ratio):
         #-------------------------------------------------------------------------------------------
@@ -802,7 +809,7 @@ class ESC:
         # pulse widths with 3ms carrier.
         #-------------------------------------------------------------------------------------------
         self.pulse_width = 1000
-        self.min_pulse_width = 1000 + 150 # base_pwm
+        self.min_pulse_width = 1000 + base_pwm
         self.max_pulse_width = 1999
 
         #-------------------------------------------------------------------------------------------
@@ -1134,7 +1141,7 @@ def CheckCLI(argv):
         #-------------------------------------------------------------------------------------------
         # Chloe's PID configuration due to using her frame / ESCs / motors / props
         #-------------------------------------------------------------------------------------------
-        cli_hover_target = 450
+        cli_hover_target = 420 # 420 = T-motor 1240; 370 = CCF 1355 
 
         #-------------------------------------------------------------------------------------------
         # Defaults for vertical velocity PIDs
@@ -1146,22 +1153,22 @@ def CheckCLI(argv):
         #-------------------------------------------------------------------------------------------
         # Defaults for horizontal velocity PIDs
         #-------------------------------------------------------------------------------------------
-        cli_hvp_gain = 1.6
-        cli_hvi_gain = 0.3
+        cli_hvp_gain = 1.2
+        cli_hvi_gain = 0.2
         cli_hvd_gain = 0.0
 
         #-------------------------------------------------------------------------------------------
         # Defaults for pitch angle PIDs
         #-------------------------------------------------------------------------------------------
         cli_prp_gain = 100.0
-        cli_pri_gain = 9.0
+        cli_pri_gain = 10.0
         cli_prd_gain = 0.0
 
         #-------------------------------------------------------------------------------------------
         # Defaults for roll angle PIDs
         #-------------------------------------------------------------------------------------------
         cli_rrp_gain = 100.0
-        cli_rri_gain = 9.0
+        cli_rri_gain = 10.0
         cli_rrd_gain = 0.0
 
         #-------------------------------------------------------------------------------------------
@@ -1175,7 +1182,7 @@ def CheckCLI(argv):
         #-------------------------------------------------------------------------------------------
         # Phoebe's PID configuration due to using her ESCs / motors / props
         #-------------------------------------------------------------------------------------------
-        cli_hover_target = 310 # CF:300; Floppy props:380
+        cli_hover_target = 310 # 310 = AirGear 0903; 300 = CCF; 380 = AirGear Floppy props
 
         #-------------------------------------------------------------------------------------------
         # Defaults for vertical velocity PIDs
@@ -1498,7 +1505,13 @@ class Quadcopter:
             self.compass_installed = True
             self.camera_installed = False
             self.barometer_installed = True
-        else:
+        elif i_am_chloe:
+            self.urf_installed = False
+            self.leddar_installed = True
+            self.compass_installed = True
+            self.camera_installed = False
+            self.barometer_installed = True
+        elif i_am_zoe:
             self.urf_installed = False
             self.leddar_installed = False
             self.compass_installed = True
@@ -1575,9 +1588,7 @@ class Quadcopter:
         signal.signal(signal.SIGINT, self.shutdownSignalHandler)
 
         #-------------------------------------------------------------------------------------------
-        # Phoebe and Zoe have similar custom PCBs so share the same PWM pin layouts; Chloe uses the
-        # breadboard PCB with a different layout of the PWM pins. Also, due to different ESCs in use,
-        # the minimum PWM value that sets the props spinning is different for each.
+        # Phoebe, Chloe and Zoe have similar custom PCBs so share the same PWM pin layouts.
         #-------------------------------------------------------------------------------------------
         if i_am_phoebe:
             ESC_BCM_BL = 26
@@ -1585,7 +1596,7 @@ class Quadcopter:
             ESC_BCM_FR = 17
             ESC_BCM_BR = 19
         elif i_am_chloe:
-            ESC_BCM_BL = 5
+            ESC_BCM_BL = 26
             ESC_BCM_FL = 27
             ESC_BCM_FR = 17
             ESC_BCM_BR = 19
@@ -1601,8 +1612,18 @@ class Quadcopter:
         name_list = ['front left', 'front right', 'back left', 'back right']
 
         #-------------------------------------------------------------------------------------------
-        # Prime the ESCs to stop their anonying beeping!
+        # Prime the ESCs to stop their anonying beeping!  All 3 use the same ESCs so have the same
+        # base_pwm
         #-------------------------------------------------------------------------------------------
+        global base_pwm
+        base_pwm = 0
+        if i_am_phoebe:
+            base_pwm = 150
+        elif i_am_chloe:
+            base_pwm = 150
+        elif i_am_zoe:
+            base_pwm = 150
+
         self.esc_list = []
         for esc_index in range(0, 4):
             esc = ESC(pin_list[esc_index], location_list[esc_index], rotation_list[esc_index], name_list[esc_index])
@@ -1615,14 +1636,27 @@ class Quadcopter:
         # adc_frequency      - the sampling rate of the ADC
         # sampling_rate      - the data sampling rate and thus data ready interrupt rate
         #                      motion processing.
+        # samples_per_motion - how often motion processing is triggered compared to the sampling_rate
+        #
+        # If LEDDAR is installed, reading the modbus slows the motion processing down significantly
+        # more than it should, and this causes FIFO overflows.  By reducing the sampling frequency,
+        # the FIFO overflow time increases.  Samples per motion follows suit to maintain motion
+        # processing at about 100Hz.
         #===========================================================================================
         alpf = 0
         glpf = 1
 
         global adc_frequency
         global sampling_rate
+        global samples_per_motion
         adc_frequency = 1000        #AB! defined by dlpf >= 1; DO NOT USE ZERO => 8000 adc_frequency
-        sampling_rate = 1000        #AB! <= 500 to prevent FIFO overflow with diagnostics enabled
+
+        if self.leddar_installed:
+            sampling_rate = 500        #AB! <= 500 to prevent FIFO overflow with diagnostics enabled
+            samples_per_motion = 5
+        else:
+            sampling_rate = 1000        #AB! <= 500 to prevent FIFO overflow with diagnostics enabled
+            samples_per_motion = 10
 
         global mpu6050
         mpu6050 = MPU6050(0x68, alpf, glpf)
@@ -1821,7 +1855,7 @@ class Quadcopter:
         l_dt = 0.0
         l_vel = 0.0
         if self.leddar_installed:
-            l_dist, l_dt, l_vel = leddar.read(tilt_ratio)
+            leddar.reset(tilt_ratio)
 
         #-------------------------------------------------------------------------------------------
         # Prime the direction vector of the earth's magnotic core to provide long term yaw stability.
@@ -1938,17 +1972,9 @@ class Quadcopter:
         #------------------------------------------------------------------------------------------
         # Set the props spinning at their base rate to ensure initial kick-start doesn't get spotted
         # by the sensors messing up the flight thereafter. base_pwm is determined by running testcase 1
-        # multiple times incrementing -h slowly until a level of PWM is found where all props spin.
-        # This depends on the firmware in the ESCs
+        # multiple times incrementing -h slowly until a level of PWM is found where all props stop
+        # whining annoyingly, but do not yet spin.  This depends on the firmware in the ESCs
         #------------------------------------------------------------------------------------------
-        base_pwm = 0
-        if i_am_phoebe:
-            base_pwm = 150
-        elif i_am_chloe:
-            base_pwm = 150
-        elif i_am_zoe:
-            base_pwm = 150
-
         for esc in self.esc_list:
             esc.set(base_pwm)
         time.sleep(0.5)
@@ -1958,11 +1984,10 @@ class Quadcopter:
         ready_to_fly = False
 
         #-------------------------------------------------------------------------------------------
-        # Set up the various timing constants and stats. 
+        # Set up the various timing constants and stats.
         #-------------------------------------------------------------------------------------------
         i_time = 0.0
-        samples_per_motion = 10
-        sleep_time = 0.0 
+        sleep_time = 0.0
         sampling_loops = 0
         motion_loops = 0
 
@@ -2116,12 +2141,12 @@ class Quadcopter:
                 try:
                     l_dist, l_dt, l_vel = leddar.read(tilt_ratio)
                 except IOError, e:
-                    self.leddar_installed = False
                     l_dist = 0.0
                     l_dt = 0.0
                     l_vel = 0.0
                     logger.critical("############# LEDDAR CONNECTION FAILED #################")
-                else:    
+                    break
+                else:
                     #---------------------------------------------------------------------------------------
                     # Pass the integrated accelerometer and differentiated leddar velocities through a
                     # complementary filter. LEDDAR produces outputs at about 8Hz, hence 1s ltau
