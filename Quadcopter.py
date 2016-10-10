@@ -12,6 +12,7 @@
 ####################################################################################################
 ####################################################################################################
 
+
 from __future__ import division
 from __future__ import with_statement
 import signal
@@ -26,6 +27,7 @@ from array import *
 import smbus
 import select
 import os
+import io
 import logging
 import csv
 from RPIO import PWM
@@ -36,6 +38,9 @@ import shutil
 import ctypes
 from ctypes.util import find_library
 import minimalmodbus
+import picamera
+import struct
+
 
 ####################################################################################################
 #
@@ -154,25 +159,13 @@ class MPU6050:
     i2c = None
 
     # Registers/etc.
-    __MPU6050_RA_MAG_WIA = 0x00
-    __MPU6050_RA_MAG_INFO = 0x01
-    __MPU6050_RA_MAG_ST1 = 0x02          # 0x01 = Data ready for one shot polling
-    __MPU6050_RA_MAG_HXL = 0x03          # Note different byte order cf acc/gyro
-    __MPU6050_RA_MAG_HXH = 0x04          # Note different byte order cf acc/gyro
-    __MPU6050_RA_MAG_HYL = 0x05          # Note different byte order cf acc/gyro
-    __MPU6050_RA_MAG_HYH = 0x06          # Note different byte order cf acc/gyro
-    __MPU6050_RA_MAG_HZL = 0x07          # Note different byte order cf acc/gyro
-    __MPU6050_RA_MAG_HZH = 0x08          # Note different byte order cf acc/gyro
-    __MPU6050_RA_MAG_ST2 = 0x09          # Unlatch register for next sample - read 7 bytes each time
-    __MPU6050_RA_MAG_CNTL1 = 0x0A        # 0x10 = 16-bit, 0x01 = one-shot polling, 0x02 = continuous
-    __MPU6050_RA_MAG_CNTL2 = 0x0B        # Reset
-    __MPU6050_RA_MAG_ASTC = 0x0C         # Self test
-    __MPU6050_RA_MAG_TS1 = 0x0D          # Shipment test register
-    __MPU6050_RA_MAG_TS2 = 0x0E          # Shipment test register
-    __MPU6050_RA_MAG_I2CDIS = 0x0F       # I2C disable
-    __MPU6050_RA_MAG_ASAX = 0x10         # Factory settings
-    __MPU6050_RA_MAG_ASAY = 0x11         # Factory settings
-    __MPU6050_RA_MAG_ASAZ = 0x12         # Factory settings
+    __MPU6050_RA_SELF_TEST_XG = 0x00
+    __MPU6050_RA_SELF_TEST_YG = 0x01
+    __MPU6050_RA_SELF_TEST_ZG = 0x02
+    __MPU6050_RA_SELF_TEST_XA = 0x0D
+    __MPU6050_RA_SELF_TEST_YA = 0x0E
+    __MPU6050_RA_SELF_TEST_ZA = 0x0F
+    __MPU6050_RA_XG_OFFS_USRH = 0x13
     __MPU6050_RA_XG_OFFS_USRH = 0x13
     __MPU6050_RA_XG_OFFS_USRL = 0x14
     __MPU6050_RA_YG_OFFS_USRH = 0x15
@@ -272,6 +265,39 @@ class MPU6050:
     __MPU6050_RA_FIFO_COUNTL = 0x73
     __MPU6050_RA_FIFO_R_W = 0x74
     __MPU6050_RA_WHO_AM_I = 0x75
+
+    #-----------------------------------------------------------------------------------------------
+    # Compass output registers when using the I2C master / slave
+    #-----------------------------------------------------------------------------------------------
+    __MPU9250_RA_MAG_XOUT_L = 0x4A
+    __MPU9250_RA_MAG_XOUT_H = 0x4B
+    __MPU9250_RA_MAG_YOUT_L = 0x4C
+    __MPU9250_RA_MAG_YOUT_H = 0x4D
+    __MPU9250_RA_MAG_ZOUT_L = 0x4E
+    __MPU9250_RA_MAG_ZOUT_H = 0x4F
+
+    #-----------------------------------------------------------------------------------------------
+    # Compass output registers when directly accessing via IMU bypass
+    #-----------------------------------------------------------------------------------------------
+    __AK893_RA_WIA = 0x00
+    __AK893_RA_INFO = 0x01
+    __AK893_RA_ST1 = 0x00
+    __AK893_RA_X_LO = 0x03
+    __AK893_RA_X_HI = 0x04
+    __AK893_RA_Y_LO = 0x05
+    __AK893_RA_Y_HI = 0x06
+    __AK893_RA_Z_LO = 0x07
+    __AK893_RA_Z_HI = 0x08
+    __AK893_RA_ST2 = 0x09
+    __AK893_RA_CNTL1 = 0x0A
+    __AK893_RA_RSV = 0x0B
+    __AK893_RA_ASTC = 0x0C
+    __AK893_RA_TS1 = 0x0D
+    __AK893_RA_TS2 = 0x0E
+    __AK893_RA_I2CDIS = 0x0F
+    __AK893_RA_ASAX = 0x10
+    __AK893_RA_ASAY = 0x11
+    __AK893_RA_ASAZ = 0x12
 
     __SCALE_GYRO = 500.0 * math.pi / (65536 * 180)
     __SCALE_ACCEL = 8.0 / 65536                                                           #AB! +/-4g
@@ -377,7 +403,7 @@ class MPU6050:
         time.sleep(0.1)
 
         #-------------------------------------------------------------------------------------------
-        # Set INT pin to push/pull, latch til read, any read to clear
+        # Set INT pin to push/pull, latch 'til read, any read to clear
         #-------------------------------------------------------------------------------------------
         self.i2c.write8(self.__MPU6050_RA_INT_PIN_CFG, 0x30)
         time.sleep(0.1)
@@ -399,11 +425,6 @@ class MPU6050:
         self.i2c.write8(self.__MPU6050_RA_FIFO_EN, 0x00)
 
         #-------------------------------------------------------------------------------------------
-        # Set up the magnetometer: 0x10 = 16-bit, 0x01 = one-shot, 0x02 = continuous
-        #-------------------------------------------------------------------------------------------
-        self.i2c.write8(self.__MPU6050_RA_MAG_CNTL1, 0x12)
-
-        #-------------------------------------------------------------------------------------------
         # Read ambient temperature
         #-------------------------------------------------------------------------------------------
         temp = self.readTemperature()
@@ -413,8 +434,21 @@ class MPU6050:
         temp = self.i2c.readS16(self.__MPU6050_RA_TEMP_OUT_H)
         return temp
 
+    def initCompass(self):    
+        #-------------------------------------------------------------------------------------------
+        # Set up the I2C master pass through.
+        #-------------------------------------------------------------------------------------------
+        int_bypass = self.i2c.readU8(self.__MPU6050_RA_INT_PIN_CFG)
+        self.i2c.write8(self.__MPU6050_RA_INT_PIN_CFG , int_bypass | 0x02)
+
+        #-------------------------------------------------------------------------------------------
+        # Connect directly to the bypassed magnetometer, and configured it for 16 bit continuous data
+        #-------------------------------------------------------------------------------------------
+        self.i2c_compass = I2C(0x0C)
+        self.i2c_compass.write8(self.__AK893_RA_CNTL1, 0x16);
+   
     def readCompass(self):
-        compass_bytes = self.i2c.readList(self.__MPU6050_RA_MAG_HXL, 7)
+        compass_bytes = self.i2c_compass.readList(self.__AK893_RA_X_LO, 7)
 
         #-------------------------------------------------------------------------------------------
         # Convert the array of 6 bytes to 3 shorts - 7th byte kicks off another read
@@ -433,17 +467,25 @@ class MPU6050:
 
     def enableFIFOOverflowISR(self):
         #-------------------------------------------------------------------------------------------
-        # Set INT pin to push / pull, 50us pulse 0x10.
+        # Clear the interrupt status register and enable the FIFO overflow interrupt 0x10
+        #AB! Something odd here: can't clear the GPIO pin if the ISR is enabled, and then status read
+        #AB! in that order
         #-------------------------------------------------------------------------------------------
         self.i2c.write8(self.__MPU6050_RA_INT_ENABLE, 0x10)
+        self.i2c.readU8(self.__MPU6050_RA_INT_STATUS)
 
     def disableFIFOOverflowISR(self):
         #-------------------------------------------------------------------------------------------
-        # Set INT pin to push / pull, 50us pulse 0x00.
+        # Disable the FIFO overflow interrupt.
         #-------------------------------------------------------------------------------------------
         self.i2c.write8(self.__MPU6050_RA_INT_ENABLE, 0x00)
 
-    def readFIFO(self):
+    def numFIFOBatches(self):
+        fifo_bytes = self.i2c.readU16(self.__MPU6050_RA_FIFO_COUNTH)
+        fifo_batches = int(fifo_bytes / 12)  # This rounds down
+        return fifo_batches
+
+    def readFIFO(self, fifo_batches):
         #-------------------------------------------------------------------------------------------
         # Read n x 12 bytes of FIFO data averaging, and return the averaged values and inferred time
         # based upon the sampling rate and the number of samples.
@@ -455,8 +497,6 @@ class MPU6050:
         gy = 0.0
         gz = 0.0
 
-        fifo_bytes = self.i2c.readU16(self.__MPU6050_RA_FIFO_COUNTH)
-        fifo_batches = int(fifo_bytes / 12)  # This rounds down
         valid_batches = fifo_batches
         batch_size = 6   # signed shorts: ax, ay, az, gx, gy, gz
 
@@ -485,7 +525,7 @@ class MPU6050:
             gz += sensor_data[5]
 
         if valid_batches == 0:
-            raise IOError("%d FIFO bytes, %d batches of which none valid" % (fifo_bytes, fifo_batches))
+            raise IOError("%d FIFO batches of which none valid" % fifo_batches)
 
         ax /= valid_batches
         ay /= valid_batches
@@ -552,7 +592,8 @@ class MPU6050:
                 raw_input("Rest me on my props and press enter.")
                 self.flushFIFO()
                 time.sleep(20 / sampling_rate)
-                ax, ay, az, gx, gy, gz, dt = self.readFIFO()
+                fifo_batches = self.numFIFOBatches()
+                ax, ay, az, gx, gy, gz, dt = self.readFIFO(fifo_batches)
                 offs_file.write("%f %f %f\n" % (ax, ay, az))
 
         except EnvironmentError:
@@ -573,11 +614,9 @@ class MPU6050:
         except EnvironmentError:
             offs_rc = False
 
-        #AB! Overwritten as the offset values clearly have no effect
-        #AB! e.g. 100 offset @ +/- 4g = 0.12 m/s/s drift which is about 6m
-        #AB! over 10s
-        #AB! self.ax_offset = 0.0
-        #AB! self.ay_offset = 0.0
+        #AB! Overwritten as the offset values actually make things worse
+        self.ax_offset = 0.0
+        self.ay_offset = 0.0
         self.az_offset = 0.0
 
         logger.warning("0g Offsets:, %f, %f, %f", self.ax_offset, self.ay_offset, self.az_offset)
@@ -672,14 +711,14 @@ class LEDDAR:
 
     def __init__(self):
         #-------------------------------------------------------------------------------------------
-        # Connect to the LEDDAR #AB:
+        # Connect to the LEDDAR
         #-------------------------------------------------------------------------------------------
         minimalmodbus.BAUDRATE=115200
         self.mmb = minimalmodbus.Instrument("/dev/ttyAMA0", 1, 'rtu')
         self.mmb.BAUDRATE=115200
         self.mmb.serial.baudrate = 115200
 
-    def reset(self, tilt_ratio):
+    def reset(self):
         #-------------------------------------------------------------------------------------------
         # Set up the base readings
         #-------------------------------------------------------------------------------------------
@@ -688,10 +727,12 @@ class LEDDAR:
         self.prev_timestamp = ((time_mss << 16) + time_lss) / 1000
 
         distance /= 1000
-        self.init_distance = distance * tilt_ratio
+        self.init_distance = distance
         self.prev_distance = self.init_distance
 
-    def read(self, tilt_ratio):
+        return self.init_distance
+
+    def read(self):
         #-------------------------------------------------------------------------------------------
         # Read the current height and timestamp registers
         #-------------------------------------------------------------------------------------------
@@ -702,14 +743,8 @@ class LEDDAR:
         #-------------------------------------------------------------------------------------------
         timestamp = ((time_mss << 16) + time_lss) / 1000
         distance /= 1000
+        dd = (distance - self.prev_distance)
         dt = (timestamp - self.prev_timestamp)
-
-        #-------------------------------------------------------------------------------------------
-        # LEDDAR results are in mm and ms therefore mm/ms is the same as m/s that we need.  Compensate
-        # for any tilt for the new distance reading
-        #-------------------------------------------------------------------------------------------
-        distance *= tilt_ratio
-        velocity = (distance - self.prev_distance) / dt
 
         self.prev_timestamp = timestamp
         self.prev_distance = distance
@@ -719,93 +754,125 @@ class LEDDAR:
         #-------------------------------------------------------------------------------------------
         distance -= self.init_distance
 
-        return distance, dt, velocity
+        return distance, dd, dt
+
 
 ####################################################################################################
 #
-#  PX4FLOW optial flow sensor
+#  Sensor Driver for PIX4FLOW sensor
 #
 ####################################################################################################
-class PX4FLOW :
+class PX4FLOW:
     i2c = None
-    ''' 
-
-I2C FRAME REGISTERS 0 - 21 (0x00 - 0x15)
-========================================    
-typedef struct i2c_frame
-{
-    uint16_t frame_count;// counts created I2C frames [#frames]
-    int16_t pixel_flow_x_sum;// latest x flow measurement in pixels*10 [pixels]
-    int16_t pixel_flow_y_sum;// latest y flow measurement in pixels*10 [pixels]
-    int16_t flow_comp_m_x;// x velocity*1000 [meters/sec]
-    int16_t flow_comp_m_y;// y velocity*1000 [meters/sec]
-    int16_t qual;// Optical flow quality / confidence [0: bad, 255: maximum quality]
-    int16_t gyro_x_rate; // latest gyro x rate [rad/sec]
-    int16_t gyro_y_rate; // latest gyro y rate [rad/sec]
-    int16_t gyro_z_rate; // latest gyro z rate [rad/sec]
-    uint8_t gyro_range; // gyro range [0 .. 7] equals [50 deg/sec .. 2000 deg/sec] 
-    uint8_t sonar_timestamp;// time since last sonar update [milliseconds]
-    int16_t ground_distance;// Ground distance in meters*1000 [meters]. Positive value: distance known. Negative value: Unknown distance
-} i2c_frame;
-
-I2C INTEGRAL FRAME REGISTERS 22 - 46 (0x16 - 0x2E)
-========================================    
-typedef struct i2c_integral_frame
-{
-    uint16_t frame_count_since_last_readout;//number of flow measurements since last I2C readout [#frames]
-    int16_t pixel_flow_x_integral;//accumulated flow in radians*10000 around x axis since last I2C readout [rad*10000]
-    int16_t pixel_flow_y_integral;//accumulated flow in radians*10000 around y axis since last I2C readout [rad*10000]
-    int16_t gyro_x_rate_integral;//accumulated gyro x rates in radians*10000 since last I2C readout [rad*10000] 
-    int16_t gyro_y_rate_integral;//accumulated gyro y rates in radians*10000 since last I2C readout [rad*10000] 
-    int16_t gyro_z_rate_integral;//accumulated gyro z rates in radians*10000 since last I2C readout [rad*10000] 
-    uint32_t integration_timespan;//accumulation timespan in microseconds since last I2C readout [microseconds]
-    uint32_t sonar_timestamp;// time since last sonar update [microseconds]
-    int16_t ground_distance;// Ground distance in meters*1000 [meters*1000]
-    int16_t gyro_temperature;// Temperature * 100 in centi-degrees Celsius [degcelsius*100]
-    uint8_t quality;// averaged quality of accumulated flow values [0:bad quality;255: max quality]
-} __attribute__((packed)) i2c_integral_frame;
-
-    '''
 
     # Registers/etc.
-    __PX4FLOW_RA_FRAME_COUNT_LO      = 0x00
-    __PX4FLOW_RA_PIXEL_FLOW_X_LO     = 0x02
-    __PX4FLOW_RA_PIXEL_FLOW_Y_LO     = 0x04
-    __PX4FLOW_RA_FLOW_COMP_M_X_LO    = 0x06
-    __PX4FLOW_RA_FLOW_COMP_M_Y_LO    = 0x08
-    __PX4FLOW_RA_QUAL_REG_LO         = 0x0A
-    __PX4FLOW_RA_GYRO_X_LO           = 0x0C           
-    __PX4FLOW_RA_GYRO_Y_LO           = 0x0E           
-    __PX4FLOW_RA_GYRO_Z_LO           = 0x10
-    __PX4FLOW_RA_GYRO_RANGE          = 0x12
-    __PX4FLOW_RA_SONAR_TIMESTAMP     = 0x13
-    __PX4FLOW_RA_SONAR_DISTANCE      = 0x14
+    __PX4FLOW_FRAME_COUNT      = 0x0                  # 2 bytes unsigned - number
+    __PX4FLOW_PIXEL_FLOW_X     = 0x2                  # 2 bytes signed - latest x flow (pixels x 10)
+    __PX4FLOW_PIXEL_FLOW_Y     = 0x4                  # 2 bytes signed - latest y flow (pixels x 10)
+    __PX4FLOW_FLOW_COMP_M_X    = 0x6                  # 2 bytes signed - x velocity * 1000 (m/s)
+    __PX4FLOW_FLOW_COMP_M_Y    = 0x8                  # 2 bytes signed - y velocity * 1000 (m/s)
+    __PX4FLOW_QUAL_REG         = 0x0A                 # 2 bytes signed - optical flow quality (0:bad 255:max)
+    __PX4FLOW_GYRO_X_RATE      = 0x0C                 # 2 bytes signed - gyro x rate (rad/sec)
+    __PX4FLOW_GYRO_Y_RATE      = 0x0E                 # 2 bytes signed - gyro y rate (rad/sec)
+    __PX4FLOW_GYRO_Z_RATE      = 0x10                 # 2 bytes signed - gyro z rate (rad/sec)
+    __PX4FLOW_GYRO_RANGE       = 0x12                 # 1 byte unsigned - 0 - 7 = 50 - 2000 (degrees / second)
+    __PX4FLOW_SONAR_TIMESTAMP  = 0x13                 # 1 byte unsigned - time since last sonar sample (ms)
+    __PX4FLOW_GROUND_DISTANCE  = 0x14                 # 2 bytes signed  - ground distance (meters <0 = error)
 
-    __PX4FLOW_RA_INT_FRAME_COUNT_LO  = 0x16    
-    __PX4FLOW_RA_INT_PIXEL_FLOW_X_LO = 0x18
-    __PX4FLOW_RA_INT_PIXEL_FLOW_Y_LO = 0x1A
-    __PX4FLOW_RA_INT_GYRO_X_LO       = 0x1C        
-    __PX4FLOW_RA_INT_GYRO_Y_LO       = 0x1E        
-    __PX4FLOW_RA_INT_GYRO_Z_LO       = 0x20        
-    __PX4FLOW_RA_INT_TIMESPAN        = 0x22    
-    __PX4FLOW_RA_INT_SONAR_TIMESTAMP = 0x26
-    __PX4FLOW_RA_INT_SONAR_DISTANCE  = 0x2A
-    __PX4FLOW_RA_INT_GYRO_TEMP       = 0x2C
-    __PX4FLOW_RA_INT_QUALITY         = 0x2E
-
+    #--------------------------------------------------------------------------------------------------------
+    # All integrals since the previous I2C read
+    #--------------------------------------------------------------------------------------------------------
+    __PX4FLOW_FRAME_COUNT_INTEGRAL        = 0x16      # 2 unsigned - number of reads since last I2C read
+    __PX4FLOW_PIXEL_FLOW_X_INTEGRAL       = 0x18      # 2 signed - integrated flow around x axis (rad * 1000)
+    __PX4FLOW_PIXEL_FLOW_Y_INTEGRAL       = 0x1A      # 2 signed - integrated flow around y axis (rad * 1000)
+    __PX4FLOW_GYRO_X_RATE_INTEGRAL        = 0x1C      # 2 signed - integrated gyro X axis roll (rad * 1000)          # Would this be better for incremental roll rather than rate * dt
+    __PX4FLOW_GYRO_Y_RATE_INTEGRAL        = 0x1E      # 2 signed - integrated gyro Y axis pitch (rad * 1000)         # Would this be better for incremental roll rather than rate * dt
+    __PX4FLOW_GYRO_Z_RATE_INTEGRAL        = 0x20      # 2 signed - integrated gyro Z axis yaw (rad * 1000)           # Would this be better for incremental roll rather than rate * dt
+    __PX4FLOW_TIMESPAN_INTEGRAL           = 0x22      # 4 unsigned - integrated time lapse (microseconds)
+    __PX4FLOW_SONAR_TIMESTAMP_2           = 0x26      # 4 unsigned - time since last sonar update (microseconds)
+    __PX4FLOW_GROUND_DISTANCE_2           = 0x2A      # 2 signed - ground distance (meters * 1000)
+    __PX4FLOW_GYRO_TEMPERATURE            = 0x2C      # 2 signed - temperature (celsius * 100)
+    __PX4FLOW_QUALITY_AVERAGE             = 0x2E      # 1 signed - averaged quality (0:bad 255:max)
 
     def __init__(self, address=0x42):
         self.i2c = I2C(address)
         self.address = address
 
     def read(self):
-        try:
-            sensor_data =  self.i2c.readList(self.__FRAME_COUNT, 22)
+            #AB! Isn't SMBUS limited to 32 bytes?
+            sensor_data =  self.i2c.readList(self.__PX4FLOW_FRAME_COUNT, 47)  # 22 if not using the integral registers
 
-        except:
-            self.qual = 0
-            errorMessage = traceback.format_exc()
-            logger.error("optial flow readOpticalFlow %s" % errorMessage)
+            hibyte = sensor_data[self.__PX4FLOW_FLOW_COMP_M_X + 1]
+            if (hibyte > 127):
+               hibyte -= 256
+            x_velocity = ((hibyte << 8) + sensor_data[self.__PX4FLOW_FLOW_COMP_M_X]) / 1000
+
+            hibyte = sensor_data[self.__PX4FLOW_FLOW_COMP_M_Y + 1]
+            if (hibyte > 127):
+               hibyte -= 256
+            y_velocity = ((hibyte << 8) + sensor_data[self.__PX4FLOW_FLOW_COMP_M_Y]) / 1000
+
+            hibyte = sensor_data[self.__PX4FLOW_QUAL_REG + 1]
+            if (hibyte > 127):
+               hibyte -= 256
+            qual = (hibyte << 8) + sensor_data[self.__PX4FLOW_QUAL_REG]
+
+            hibyte = sensor_data[self.__PX4FLOW_GYRO_X_RATE + 1]
+            if (hibyte > 127):
+               hibyte -= 256
+            pitch_rate = (hibyte << 8) + sensor_data[self.__PX4FLOW_GYRO_X_RATE]
+
+            hibyte = sensor_data[self.__PX4FLOW_GYRO_Y_RATE + 1]
+            if (hibyte > 127):
+               hibyte -= 256
+            roll_rate = (hibyte << 8) + sensor_data[self.__PX4FLOW_GYRO_Y_RATE]
+
+            hibyte = sensor_data[self.__PX4FLOW_GYRO_Z_RATE + 1]
+            if (hibyte > 127):
+               hibyte -= 256
+            yaw_rate = (hibyte << 8) + sensor_data[self.__PX4FLOW_GYRO_Z_RATE]
+
+            hibyte = sensor_data[self.__PX4FLOW_GROUND_DISTANCE + 1]
+            if (hibyte > 127):
+               hibyte -= 256
+            sonar_height = ((hibyte << 8) + sensor_data[self.__PX4FLOW_GROUND_DISTANCE]) / 1000
+
+            sonar_dt = (sensor_data[self.__PX4FLOW_SONAR_TIMESTAMP]) / 1000
+
+            #---------------------------------------------------------------------------------------
+            # This is the flow integral set of registers; we don't need the contents
+            # currently, but when we do, increase the i2c.readList above to 47.
+            #---------------------------------------------------------------------------------------
+            hibyte = sensor_data[self.__PX4FLOW_PIXEL_FLOW_X_INTEGRAL + 1]
+            if (hibyte > 127):
+               hibyte -= 256
+            x_rps = ((hibyte << 8) + sensor_data[self.__PX4FLOW_PIXEL_FLOW_X_INTEGRAL]) / 1000
+
+            hibyte = sensor_data[self.__PX4FLOW_PIXEL_FLOW_Y_INTEGRAL + 1]
+            if (hibyte > 127):
+               hibyte -= 256
+            y_rps = ((hibyte << 8) + sensor_data[self.__PX4FLOW_PIXEL_FLOW_Y_INTEGRAL]) / 1000
+
+            hibyte = sensor_data[self.__PX4FLOW_GYRO_X_RATE_INTEGRAL + 1]
+            if (hibyte > 127):
+               hibyte -= 256
+            roll_increment = (hibyte << 8) + sensor_data[self.__PX4FLOW_GYRO_X_RATE_INTEGRAL]
+
+            hibyte = sensor_data[self.__PX4FLOW_GYRO_Y_RATE_INTEGRAL + 1]
+            if (hibyte > 127):
+               hibyte -= 256
+            pitch_increment = (hibyte << 8) + sensor_data[self.__PX4FLOW_GYRO_Y_RATE_INTEGRAL]
+
+            hibyte = sensor_data[self.__PX4FLOW_GYRO_Z_RATE_INTEGRAL + 1]
+            if (hibyte > 127):
+               hibyte -= 256
+            yaw_increment = (hibyte << 8) + sensor_data[self.__PX4FLOW_GYRO_Z_RATE_INTEGRAL]
+
+            time_elapsed = 0
+            for ii in range(4):
+                time_elapsed += sensor_data[self.__PX4FLOW_TIMESPAN_INTEGRAL + ii] << (8 * ii)
+
+            return x_rps, y_rps
 
 
 ####################################################################################################
@@ -947,9 +1014,8 @@ def GetAbsoluteAngles(ax, ay, az):
 
     pitch = math.atan2(-ax, az)
     roll = math.atan2(ay, az)
-    tilt = math.atan2(math.pow(math.pow(ax, 2) + math.pow(ay, 2), 0.5) / az)
 
-    return pitch, roll, tilt
+    return pitch, roll
 
 
 ####################################################################################################
@@ -1164,7 +1230,6 @@ def GPIOTerm():
 ####################################################################################################
 def CheckCLI(argv):
     cli_fly = False
-    cli_video = False
     cli_hover_target = 0
 
     #-----------------------------------------------------------------------------------------------
@@ -1186,11 +1251,25 @@ def CheckCLI(argv):
         cli_hover_target = 375
 
         #-------------------------------------------------------------------------------------------
+        # Defaults for vertical distance PIDs
+        #-------------------------------------------------------------------------------------------
+        cli_vdp_gain = 1.0
+        cli_vdi_gain = 0.0
+        cli_vdd_gain = 0.0
+
+        #-------------------------------------------------------------------------------------------
         # Defaults for vertical velocity PIDs
         #-------------------------------------------------------------------------------------------
         cli_vvp_gain = 360.0
         cli_vvi_gain = 180.0
         cli_vvd_gain = 0.0
+
+        #-------------------------------------------------------------------------------------------
+        # Defaults for horizontal distance PIDs
+        #-------------------------------------------------------------------------------------------
+        cli_hdp_gain = 1.0
+        cli_hdi_gain = 0.0
+        cli_hdd_gain = 0.0
 
         #-------------------------------------------------------------------------------------------
         # Defaults for horizontal velocity PIDs
@@ -1220,11 +1299,18 @@ def CheckCLI(argv):
         cli_yri_gain = 30.0
         cli_yrd_gain = 0.0
 
-    elif i_am_chloe:
+    elif i_am_chloe or i_am_hermione:
         #-------------------------------------------------------------------------------------------
         # Chloe's PID configuration due to using her frame / ESCs / motors / props
         #-------------------------------------------------------------------------------------------
-        cli_hover_target = 420 # 420 = T-motor 1240; 370 = CCF 1355 
+        cli_hover_target = 500 # 500 = CCF 1355 + Quadframe; 420 = T-motor 1240 + F450 Alloy Arms; 370 = CCF 1355
+
+        #-------------------------------------------------------------------------------------------
+        # Defaults for vertical distance PIDs
+        #-------------------------------------------------------------------------------------------
+        cli_vdp_gain = 1.0
+        cli_vdi_gain = 0.0
+        cli_vdd_gain = 0.0
 
         #-------------------------------------------------------------------------------------------
         # Defaults for vertical velocity PIDs
@@ -1234,38 +1320,52 @@ def CheckCLI(argv):
         cli_vvd_gain = 0.0
 
         #-------------------------------------------------------------------------------------------
+        # Defaults for horizontal distance PIDs
+        #-------------------------------------------------------------------------------------------
+        cli_hdp_gain = 1.0
+        cli_hdi_gain = 0.0
+        cli_hdd_gain = 0.0
+
+        #-------------------------------------------------------------------------------------------
         # Defaults for horizontal velocity PIDs
         #-------------------------------------------------------------------------------------------
-        cli_hvp_gain = 1.2
-        cli_hvi_gain = 0.2
+        cli_hvp_gain = 1.6
+        cli_hvi_gain = 0.0
         cli_hvd_gain = 0.0
 
         #-------------------------------------------------------------------------------------------
         # Defaults for pitch angle PIDs
         #-------------------------------------------------------------------------------------------
-        cli_prp_gain = 100.0
-        cli_pri_gain = 10.0
+        cli_prp_gain = 125.0
+        cli_pri_gain = 0.125
         cli_prd_gain = 0.0
 
         #-------------------------------------------------------------------------------------------
         # Defaults for roll angle PIDs
         #-------------------------------------------------------------------------------------------
-        cli_rrp_gain = 100.0
-        cli_rri_gain = 10.0
+        cli_rrp_gain = 125.0
+        cli_rri_gain = 0.125
         cli_rrd_gain = 0.0
 
         #-------------------------------------------------------------------------------------------
         # Defaults for yaw angle PIDs
         #-------------------------------------------------------------------------------------------
-        cli_yrp_gain = 50.0
-        cli_yri_gain = 25.0
+        cli_yrp_gain = 150.0
+        cli_yri_gain = 15.0
         cli_yrd_gain = 0.0
 
     elif i_am_zoe:
         #-------------------------------------------------------------------------------------------
         # Phoebe's PID configuration due to using her ESCs / motors / props
         #-------------------------------------------------------------------------------------------
-        cli_hover_target = 310 # 310 = AirGear 0903; 300 = CCF; 380 = AirGear Floppy props
+        cli_hover_target = 340 # 340 = AirGear 0903; 300 = CCF; 380 = AirGear Floppy props
+
+        #-------------------------------------------------------------------------------------------
+        # Defaults for vertical distance PIDs
+        #-------------------------------------------------------------------------------------------
+        cli_vdp_gain = 1.0
+        cli_vdi_gain = 0.0
+        cli_vdd_gain = 0.0
 
         #-------------------------------------------------------------------------------------------
         # Defaults for vertical velocity PIDs
@@ -1275,24 +1375,31 @@ def CheckCLI(argv):
         cli_vvd_gain = 0.0
 
         #-------------------------------------------------------------------------------------------
+        # Defaults for horizontal distance PIDs
+        #-------------------------------------------------------------------------------------------
+        cli_hdp_gain = 1.0
+        cli_hdi_gain = 0.0
+        cli_hdd_gain = 0.0
+
+        #-------------------------------------------------------------------------------------------
         # Defaults for horizontal velocity PIDs
         #-------------------------------------------------------------------------------------------
         cli_hvp_gain = 1.6
-        cli_hvi_gain = 0.3
+        cli_hvi_gain = 0.0
         cli_hvd_gain = 0.0
 
         #-------------------------------------------------------------------------------------------
         # Defaults for pitch angle PIDs
         #-------------------------------------------------------------------------------------------
-        cli_prp_gain = 60.0  # Floppy props: 100.0
-        cli_pri_gain = 6.0   # Floppy props: 10.0
+        cli_prp_gain = 55.0  # Floppy props: 100.0
+        cli_pri_gain = 0.055 # Floppy props: 10.0
         cli_prd_gain = 0.0
 
         #-------------------------------------------------------------------------------------------
         # Defaults for roll angle PIDs
         #-------------------------------------------------------------------------------------------
-        cli_rrp_gain = 60.0  # Floppy props: 90.0
-        cli_rri_gain = 6.0   # Floppy props: 9.0
+        cli_rrp_gain = 50.0  # Floppy props: 90.0
+        cli_rri_gain = 0.05  # Floppy props: 9.0
         cli_rrd_gain = 0.0
 
         #-------------------------------------------------------------------------------------------
@@ -1306,7 +1413,7 @@ def CheckCLI(argv):
     # Right, let's get on with reading the command line and checking consistency
     #-----------------------------------------------------------------------------------------------
     try:
-        opts, args = getopt.getopt(argv,'df:gvh:r:', ['tc=', 'tau=', 'vvp=', 'vvi=', 'vvd=', 'hvp=', 'hvi=', 'hvd=', 'prp=', 'pri=', 'prd=', 'rrp=', 'rri=', 'rrd=', 'tau=', 'yrp=', 'yri=', 'yrd='])
+        opts, args = getopt.getopt(argv,'df:gh:r:', ['tc=', 'tau=', 'vdp=', 'vdi=', 'vdd=', 'vvp=', 'vvi=', 'vvd=', 'hdp=', 'hdi=', 'hdd=', 'hvp=', 'hvi=', 'hvd=', 'prp=', 'pri=', 'prd=', 'rrp=', 'rri=', 'rrd=', 'tau=', 'yrp=', 'yri=', 'yrd='])
     except getopt.GetoptError:
         logger.critical('Must specify one of -f or -g or --tc')
         logger.critical('  qc.py')
@@ -1314,13 +1421,18 @@ def CheckCLI(argv):
         logger.critical('  -h set the hover PWM pulse width - default: %dus', cli_hover_target)
         logger.critical('  -d enable diagnostics')
         logger.critical('  -g calibrate X, Y axis 0g')
-        logger.critical('  -v video the flight')
         logger.critical('  -r ??  set the ready-to-fly period - default: %fs', cli_rtf_period)
         logger.critical('  --tc   select which testcase to run')
         logger.critical('  --tau  set the angle CF -3dB point - default: %fs', cli_tau)
+        logger.critical('  --vdp  set vertical distance PID P gain - default: %f', cli_vvp_gain)
+        logger.critical('  --vdi  set vertical distance PID P gain - default: %f', cli_vvi_gain)
+        logger.critical('  --vdd  set vertical distance PID P gain - default: %f', cli_vvd_gain)
         logger.critical('  --vvp  set vertical speed PID P gain - default: %f', cli_vvp_gain)
         logger.critical('  --vvi  set vertical speed PID P gain - default: %f', cli_vvi_gain)
         logger.critical('  --vvd  set vertical speed PID P gain - default: %f', cli_vvd_gain)
+        logger.critical('  --hdp  set horizontal speed PID P gain - default: %f', cli_hdp_gain)
+        logger.critical('  --hdi  set horizontal speed PID I gain - default: %f', cli_hdi_gain)
+        logger.critical('  --hdd  set horizontal speed PID D gain - default: %f', cli_hdd_gain)
         logger.critical('  --hvp  set horizontal speed PID P gain - default: %f', cli_hvp_gain)
         logger.critical('  --hvi  set horizontal speed PID I gain - default: %f', cli_hvi_gain)
         logger.critical('  --hvd  set horizontal speed PID D gain - default: %f', cli_hvd_gain)
@@ -1344,9 +1456,6 @@ def CheckCLI(argv):
             cli_hover_target = int(arg)
             hover_target_defaulted = False
 
-        elif opt in '-v':
-            cli_video = True
-
         elif opt in '-d':
             cli_diagnostics = True
 
@@ -1362,6 +1471,15 @@ def CheckCLI(argv):
         elif opt in '--tau':
             cli_tau = float(arg)
 
+        elif opt in '--vdp':
+            cli_vdp_gain = float(arg)
+
+        elif opt in '--vdi':
+            cli_vdi_gain = float(arg)
+
+        elif opt in '--vdd':
+            cli_vdd_gain = float(arg)
+
         elif opt in '--vvp':
             cli_vvp_gain = float(arg)
 
@@ -1370,6 +1488,15 @@ def CheckCLI(argv):
 
         elif opt in '--vvd':
             cli_vvd_gain = float(arg)
+
+        elif opt in '--hdp':
+            cli_hdp_gain = float(arg)
+
+        elif opt in '--hdi':
+            cli_hdi_gain = float(arg)
+
+        elif opt in '--hdd':
+            cli_hdd_gain = float(arg)
 
         elif opt in '--hvp':
             cli_hvp_gain = float(arg)
@@ -1434,7 +1561,7 @@ def CheckCLI(argv):
     elif cli_test_case == 1 and hover_target_defaulted:
         raise ValueError('You must choose a specific hover speed (-h) for test case 1 - try 200')
 
-    return cli_fly, cli_flight_plan, cli_calibrate_0g, cli_hover_target, cli_video, cli_vvp_gain, cli_vvi_gain, cli_vvd_gain, cli_hvp_gain, cli_hvi_gain, cli_hvd_gain, cli_prp_gain, cli_pri_gain, cli_prd_gain, cli_rrp_gain, cli_rri_gain, cli_rrd_gain, cli_yrp_gain, cli_yri_gain, cli_yrd_gain, cli_test_case, cli_rtf_period, cli_tau, cli_diagnostics
+    return cli_fly, cli_flight_plan, cli_calibrate_0g, cli_hover_target, cli_vdp_gain, cli_vdi_gain, cli_vdd_gain, cli_vvp_gain, cli_vvi_gain, cli_vvd_gain, cli_hdp_gain, cli_hdi_gain, cli_hdd_gain, cli_hvp_gain, cli_hvi_gain, cli_hvd_gain, cli_prp_gain, cli_pri_gain, cli_prd_gain, cli_rrp_gain, cli_rri_gain, cli_rrd_gain, cli_yrp_gain, cli_yri_gain, cli_yrd_gain, cli_test_case, cli_rtf_period, cli_tau, cli_diagnostics
 
 
 ####################################################################################################
@@ -1509,13 +1636,13 @@ class FlightPlan():
             logger.critical("%s", self.fp_name[fp_index])
             self.fp_prev_index = fp_index
 
-        evx_target = self.fp_evx_target[fp_index]    
+        evx_target = self.fp_evx_target[fp_index]
         evy_target = self.fp_evy_target[fp_index]
         evz_target = self.fp_evz_target[fp_index]
 
         self.edx_target += evx_target * delta_time
         self.edy_target += evy_target * delta_time
-        self.edz_target += evz_target * delta_time 
+        self.edz_target += evz_target * delta_time
 
         return evx_target, evy_target, evz_target, self.edx_target, self.edy_target, self.edz_target
 
@@ -1544,6 +1671,33 @@ def munlockall():
 
 ####################################################################################################
 #
+# Video at 10fps. Each frame is 320 x 320 pixels.  Each macro-block is 16 x 16 pixels.  Due to an
+# extra column of macro-blocks (dunno why), that means each frame breaks down into 21 columns by
+# 20 rows = 420 macro-blocks, each of which is 4 bytes - 1 signed byte X, 1 signed byte Y and 2 unsigned
+# bytes SAD (sum of absolute differences).
+#
+####################################################################################################
+def RecordVideo(frame_width, frame_height, frame_rate):
+    with picamera.PiCamera() as camera:
+        camera.resolution = (frame_width, frame_height)
+        camera.framerate = frame_rate
+
+        vofi = io.open("/dev/shm/motion_stream", mode = "wb", buffering = 0)
+        try:
+            camera.start_recording('/dev/null', format='h264', motion_output=vofi, quality=23)
+
+            try:
+                while True:
+                    camera.wait_recording(1.0)
+            except KeyboardInterrupt:
+                pass
+            finally:
+                camera.stop_recording()
+        finally:
+            vofi.close()
+
+####################################################################################################
+#
 # Class to split initialation, flight startup and flight control
 #
 ####################################################################################################
@@ -1558,7 +1712,6 @@ class Quadcopter:
     MOTOR_ROTATION_ACW = 2
 
     keep_looping = False
-    shoot_video = False
 
     #===============================================================================================
     # One-off initialization
@@ -1571,9 +1724,11 @@ class Quadcopter:
         global i_am_phoebe
         global i_am_chloe
         global i_am_zoe
+        global i_am_hermione
         i_am_phoebe = False
         i_am_chloe = False
         i_am_zoe = False
+        i_am_hermione = False
 
         my_name = os.uname()[1]
         if my_name == "phoebe.local" or my_name == "phoebe":
@@ -1582,9 +1737,12 @@ class Quadcopter:
         elif my_name == "chloe.local" or my_name == "chloe":
             print "Hi, I'm Chloe.  Nice to meet you!"
             i_am_chloe = True
-        elif my_name == "zoe.local" or my_name == "zoe":
+        elif my_name == "zoe.local" or my_name == "zoe" or my_name == "arctic":
             print "Hi, I'm Zoe.  Nice to meet you!"
             i_am_zoe = True
+        elif my_name == "hermione.local" or my_name == "hermione":
+            print "Hi, I'm Hermione.  Nice to meet you!"
+            i_am_hermione = True
         else:
             print "Sorry, I'm not qualified to fly this quadcopter."
             return
@@ -1594,25 +1752,36 @@ class Quadcopter:
         # -  urf_installed should not be set to True until the RPi kernel I2C driver supports clock stretching
         # -  compass_installed can only be used with an MPU9250
         #-------------------------------------------------------------------------------------------
+        X8 = False
         if i_am_phoebe:
             self.urf_installed = False
-            self.leddar_installed = True
+            self.leddar_installed = False
+            self.px4flow_installed = False
             self.compass_installed = True
             self.camera_installed = False
-            self.barometer_installed = True
+            self.barometer_installed = False
         elif i_am_chloe:
             self.urf_installed = False
-            self.leddar_installed = True
+            self.leddar_installed = False
+            self.px4flow_installed = False
             self.compass_installed = True
             self.camera_installed = False
-            self.barometer_installed = True
+            self.barometer_installed = False
         elif i_am_zoe:
             self.urf_installed = False
             self.leddar_installed = False
+            self.px4flow_installed = False
+            self.compass_installed = True
+            self.camera_installed = True
+            self.barometer_installed = False
+        elif i_am_hermione:
+            self.urf_installed = False
+            self.leddar_installed = False
+            self.px4flow_installed = False
             self.compass_installed = True
             self.camera_installed = False
-            self.barometer_installed = True
-
+            self.barometer_installed = False
+            # X8 = True
 
         #-------------------------------------------------------------------------------------------
         # Lock code permanently in memory - no swapping to disk
@@ -1620,7 +1789,7 @@ class Quadcopter:
         mlockall()
 
         #-------------------------------------------------------------------------------------------
-        # Set up the base logging
+        # Set up the base logging1G
         #-------------------------------------------------------------------------------------------
         global logger
         logger = logging.getLogger('QC logger')
@@ -1654,13 +1823,13 @@ class Quadcopter:
         #-------------------------------------------------------------------------------------------
         # First log, whose flying and under what configuration
         #-------------------------------------------------------------------------------------------
-        logger.warning("%s is flying.", "Phoebe" if i_am_phoebe else "Chloe" if i_am_chloe else "Zoe")
+        logger.warning("%s is flying.", "Phoebe" if i_am_phoebe else "Chloe" if i_am_chloe else "Zoe" if i_am_zoe else "Hermione")
 
         #-------------------------------------------------------------------------------------------
         # Set the BCM pin assigned to the FIFO overflow and LEDDAR data ready interrupts
         #-------------------------------------------------------------------------------------------
         global GPIO_FIFO_OVERFLOW_INTERRUPT
-        GPIO_FIFO_OVERFLOW_INTERRUPT = 22
+        GPIO_FIFO_OVERFLOW_INTERRUPT = 24 if X8 else 22
 
         global GPIO_LEDDAR_DR_INTERRUPT
         GPIO_LEDDAR_DR_INTERRUPT = 18
@@ -1685,30 +1854,81 @@ class Quadcopter:
         #-------------------------------------------------------------------------------------------
         # Phoebe, Chloe and Zoe have similar custom PCBs so share the same PWM pin layouts.
         #-------------------------------------------------------------------------------------------
-        if i_am_phoebe:
-            ESC_BCM_BL = 26
-            ESC_BCM_FL = 27
-            ESC_BCM_FR = 17
-            ESC_BCM_BR = 19
-        elif i_am_chloe:
-            ESC_BCM_BL = 26
-            ESC_BCM_FL = 27
-            ESC_BCM_FR = 17
-            ESC_BCM_BR = 19
-        elif i_am_zoe:
-            ESC_BCM_BL = 26
-            ESC_BCM_FL = 27
-            ESC_BCM_FR = 17
-            ESC_BCM_BR = 19
+        ESC_BCM_FLT = 0
+        ESC_BCM_FRT = 0
+        ESC_BCM_BLT = 0
+        ESC_BCM_BRT = 0
+        ESC_BCM_FLU = 0
+        ESC_BCM_FRU = 0
+        ESC_BCM_BLU = 0
+        ESC_BCM_BRU = 0
 
-        pin_list = [ESC_BCM_FL, ESC_BCM_FR, ESC_BCM_BL, ESC_BCM_BR]
-        location_list = [self.MOTOR_LOCATION_FRONT | self.MOTOR_LOCATION_LEFT, self.MOTOR_LOCATION_FRONT | self.MOTOR_LOCATION_RIGHT, self.MOTOR_LOCATION_BACK | self.MOTOR_LOCATION_LEFT, self.MOTOR_LOCATION_BACK | self.MOTOR_LOCATION_RIGHT]
-        rotation_list = [self.MOTOR_ROTATION_ACW, self.MOTOR_ROTATION_CW, self.MOTOR_ROTATION_CW, self.MOTOR_ROTATION_ACW]
-        name_list = ['front left', 'front right', 'back left', 'back right']
+        if i_am_phoebe:
+            ESC_BCM_FLT = 27
+            ESC_BCM_FRT = 17
+            ESC_BCM_BLT = 26
+            ESC_BCM_BRT = 19
+        elif i_am_chloe:
+            ESC_BCM_FLT = 27
+            ESC_BCM_FRT = 17
+            ESC_BCM_BLT = 26
+            ESC_BCM_BRT = 19
+        elif i_am_zoe:
+            ESC_BCM_FLT = 27
+            ESC_BCM_FRT = 17
+            ESC_BCM_BLT = 26
+            ESC_BCM_BRT = 19
+        elif i_am_hermione:
+            ESC_BCM_FLT = 27
+            ESC_BCM_FRT = 17
+            ESC_BCM_BLT = 26
+            ESC_BCM_BRT = 20
+            ESC_BCM_FLU = 22
+            ESC_BCM_FRU = 23
+            ESC_BCM_BLU = 16
+            ESC_BCM_BRU = 19
+
+
+        pin_list = [ESC_BCM_FLT,
+                    ESC_BCM_FRT,
+                    ESC_BCM_BLT,
+                    ESC_BCM_BRT,
+                    ESC_BCM_FLU,
+                    ESC_BCM_FRU,
+                    ESC_BCM_BLU,
+                    ESC_BCM_BRU]
+
+
+        location_list = [self.MOTOR_LOCATION_FRONT | self.MOTOR_LOCATION_LEFT,
+                         self.MOTOR_LOCATION_FRONT | self.MOTOR_LOCATION_RIGHT,
+                         self.MOTOR_LOCATION_BACK | self.MOTOR_LOCATION_LEFT,
+                         self.MOTOR_LOCATION_BACK | self.MOTOR_LOCATION_RIGHT,
+                         self.MOTOR_LOCATION_FRONT | self.MOTOR_LOCATION_LEFT,
+                         self.MOTOR_LOCATION_FRONT | self.MOTOR_LOCATION_RIGHT,
+                         self.MOTOR_LOCATION_BACK | self.MOTOR_LOCATION_LEFT,
+                         self.MOTOR_LOCATION_BACK | self.MOTOR_LOCATION_RIGHT]
+
+        rotation_list = [self.MOTOR_ROTATION_ACW,
+                         self.MOTOR_ROTATION_CW,
+                         self.MOTOR_ROTATION_CW,
+                         self.MOTOR_ROTATION_ACW,
+                         self.MOTOR_ROTATION_CW,
+                         self.MOTOR_ROTATION_ACW,
+                         self.MOTOR_ROTATION_ACW,
+                         self.MOTOR_ROTATION_CW]
+
+        name_list = ['front left topside',
+                     'front right topside',
+                     'back left topside',
+                     'back right topside',
+                     'front left underside',
+                     'front right underside',
+                     'back left underside',
+                     'back right underside']
 
         #-------------------------------------------------------------------------------------------
-        # Prime the ESCs to stop their anonying beeping!  All 3 use the same ESCs so have the same
-        # base_pwm
+        # Prime the ESCs to stop their anonying beeping!  All 4 of P,C, H & Z  use the same ESCs
+        # so have the same base_pwm
         #-------------------------------------------------------------------------------------------
         global base_pwm
         base_pwm = 0
@@ -1718,9 +1938,11 @@ class Quadcopter:
             base_pwm = 150
         elif i_am_zoe:
             base_pwm = 150
+        elif i_am_hermione:
+            base_pwm = 150
 
         self.esc_list = []
-        for esc_index in range(0, 4):
+        for esc_index in range(8 if X8 else 4):
             esc = ESC(pin_list[esc_index], location_list[esc_index], rotation_list[esc_index], name_list[esc_index])
             self.esc_list.append(esc)
 
@@ -1746,11 +1968,11 @@ class Quadcopter:
         global samples_per_motion
         adc_frequency = 1000        #AB! defined by dlpf >= 1; DO NOT USE ZERO => 8000 adc_frequency
 
-        if self.leddar_installed:
+        if self.leddar_installed or self.camera_installed:
             sampling_rate = 500        #AB! <= 500 to prevent FIFO overflow with diagnostics enabled
             samples_per_motion = 5
         else:
-            sampling_rate = 1000        #AB! <= 500 to prevent FIFO overflow with diagnostics enabled
+            sampling_rate = 1000       #AB! <= 500 to prevent FIFO overflow with diagnostics enabled
             samples_per_motion = 10
 
         global mpu6050
@@ -1775,16 +1997,20 @@ class Quadcopter:
                 sfr02.readProximity()
 
         #-------------------------------------------------------------------------------------------
-        # Kill off the terminal running on the serial bus so LEDDAR can use it later
-        #-------------------------------------------------------------------------------------------
-        os.system("systemctl stop serial-getty@ttyAMA0.service")
-
-        #-------------------------------------------------------------------------------------------
-        # Start up the LEDDAR now to give it time to self-tune and settle
+        # Start up the LEDDAR now to give it time to self-tune and settle; kill off the terminal
+        # running on the serial bus so LEDDAR can use it
         #-------------------------------------------------------------------------------------------
         if self.leddar_installed:
+            os.system("systemctl stop serial-getty@ttyAMA0.service")
             global leddar
             leddar = LEDDAR()
+
+        #-------------------------------------------------------------------------------------------
+        # Initialize PX4FLOW
+        #-------------------------------------------------------------------------------------------
+        if self.px4flow_installed:
+            global px4flow
+            px4flow = PX4FLOW()
 
     #===============================================================================================
     # Keyboard input between flights for CLI update etc
@@ -1813,13 +2039,13 @@ class Quadcopter:
         # Check the command line for calibration or flight parameters
         #-------------------------------------------------------------------------------------------
         try:
-            flying, flight_plan, calibrate_0g, hover_target, self.shoot_video, vvp_gain, vvi_gain, vvd_gain, hvp_gain, hvi_gain, hvd_gain, prp_gain, pri_gain, prd_gain, rrp_gain, rri_gain, rrd_gain, yrp_gain, yri_gain, yrd_gain, test_case, rtf_period, atau, diagnostics = CheckCLI(self.argv)
+            flying, flight_plan, calibrate_0g, hover_target, vdp_gain, vdi_gain, vdd_gain, vvp_gain, vvi_gain, vvd_gain, hdp_gain, hdi_gain, hdd_gain, hvp_gain, hvi_gain, hvd_gain, prp_gain, pri_gain, prd_gain, rrp_gain, rri_gain, rrd_gain, yrp_gain, yri_gain, yrd_gain, test_case, rtf_period, atau, diagnostics = CheckCLI(self.argv)
         except ValueError, err:
             print "Command line error: %s" % err
             return
 
-        logger.warning("fly = %s, flight plan = %s, calibrate_0g = %d, hover_target = %d, shoot_video = %s, vvp_gain = %f, vvi_gain = %f, vvd_gain= %f, hvp_gain = %f, hvi_gain = %f, hvd_gain = %f, prp_gain = %f, pri_gain = %f, prd_gain = %f, rrp_gain = %f, rri_gain = %f, rrd_gain = %f, yrp_gain = %f, yri_gain = %f, yrd_gain = %f, test_case = %d, rtf_period = %f, atau = %f, diagnostics = %s",
-                flying, flight_plan, calibrate_0g, hover_target, self.shoot_video, vvp_gain, vvi_gain, vvd_gain, hvp_gain, hvi_gain, hvd_gain, prp_gain, pri_gain, prd_gain, rrp_gain, rri_gain, rrd_gain, yrp_gain, yri_gain, yrd_gain, test_case, rtf_period, atau, diagnostics)
+        logger.warning("fly = %s, flight plan = %s, calibrate_0g = %d, hover_target = %d, vdp_gain = %f, vdi_gain = %f, vdd_gain= %f, vvp_gain = %f, vvi_gain = %f, vvd_gain= %f, hdp_gain = %f, hdi_gain = %f, hdd_gain = %f, hvp_gain = %f, hvi_gain = %f, hvd_gain = %f, prp_gain = %f, pri_gain = %f, prd_gain = %f, rrp_gain = %f, rri_gain = %f, rrd_gain = %f, yrp_gain = %f, yri_gain = %f, yrd_gain = %f, test_case = %d, rtf_period = %f, atau = %f, diagnostics = %s",
+                flying, flight_plan, calibrate_0g, hover_target, vdp_gain, vdi_gain, vdd_gain, vvp_gain, vvi_gain, vvd_gain, hdp_gain, hdi_gain, hdd_gain, hvp_gain, hvi_gain, hvd_gain, prp_gain, pri_gain, prd_gain, rrp_gain, rri_gain, rrd_gain, yrp_gain, yri_gain, yrd_gain, test_case, rtf_period, atau, diagnostics)
 
         #-------------------------------------------------------------------------------------------
         # Calibrate gravity or use previous settings
@@ -1840,7 +2066,6 @@ class Quadcopter:
         #===========================================================================================
         if test_case == 1:
             print "TESTCASE 1: Check props are spinning as expected"
-            elapsed_time = 0
             for esc in self.esc_list:
                 print "%s prop should rotate %s." % (esc.name, "anti-clockwise" if esc.motor_rotation == self.MOTOR_ROTATION_ACW else "clockwise")
                 for count in range(0, hover_target, 10):
@@ -1851,8 +2076,8 @@ class Quadcopter:
                     time.sleep(0.01)
 
                 #-----------------------------------------------------------------------------------
-                # The prop is now up to the configured spin rate.  Start a 5s loop based upon the
-                # sampling_rate logging the noise from the accelerometer.
+                # The prop is now up to the configured spin rate.  Sleep for 5s then stop and move
+                # on to the next prop.
                 #-----------------------------------------------------------------------------------
                 time.sleep(5)
                 esc.set(0)
@@ -1865,29 +2090,51 @@ class Quadcopter:
         #===========================================================================================
         # OK, we're in flight mode, better get on with it
         #===========================================================================================
+        edx_target = 0.0
+        edy_target = 0.0
+        edz_target = 0.0
+
         evx_target = 0.0
         evy_target = 0.0
         evz_target = 0.0
+
+        evx_input = 0.0
+        evy_input = 0.0
+        evz_input = 0.0
+
+        qdx_increment = 0.0
+        qdy_increment = 0.0
+        qdz_increment = 0.0
+
+        qvx_increment = 0.0
+        qvy_increment = 0.0
+        qvz_increment = 0.0
+
+        ############################################################################################
+        # HACK HACK HACK HACK HACK HACK HACK HACK HACK HACK HACK HACK HACK HACK HACK HACK HACK HACK
+        ############################################################################################
+        qdx_integral = 0.0
+        qdy_integral = 0.0
+        qdz_integral = 0.0
+
+        qvx_integral = 0.0
+        qvy_integral = 0.0
+        qvz_integral = 0.0
+        ############################################################################################
+        # HACK HACK HACK HACK HACK HACK HACK HACK HACK HACK HACK HACK HACK HACK HACK HACK HACK HACK
+        ############################################################################################
 
         qvx_input = 0.0
         qvy_input = 0.0
         qvz_input = 0.0
 
-        edx_target = 0.0
-        edy_target = 0.0
-        edz_target = 0.0
+        edx_input = 0.0
+        edy_input = 0.0
+        edz_input = 0.0
 
         qdx_input = 0.0
         qdy_input = 0.0
         qdz_input = 0.0
-
-        qvx_diags = "0.0, 0.0, 0.0"
-        qvy_diags = "0.0, 0.0, 0.0"
-        qvz_diags = "0.0, 0.0, 0.0"
-        ya_diags = "0.0, 0.0, 0.0"
-        pr_diags = "0.0, 0.0, 0.0"
-        rr_diags = "0.0, 0.0, 0.0"
-        yr_diags = "0.0, 0.0, 0.0"
 
         #-------------------------------------------------------------------------------------------
         # Set up the global constants - gravity in meters per second squared
@@ -1908,7 +2155,8 @@ class Quadcopter:
         #-------------------------------------------------------------------------------------------
         mpu6050.flushFIFO()
         time.sleep(20 / sampling_rate)
-        qax, qay, qaz, qrx, qry, qrz, dt = mpu6050.readFIFO()
+        nfb = mpu6050.numFIFOBatches()
+        qax, qay, qaz, qrx, qry, qrz, dt = mpu6050.readFIFO(nfb)
 
         #-------------------------------------------------------------------------------------------
         # Feed back the gyro offset calibration
@@ -1925,9 +2173,8 @@ class Quadcopter:
         egz = math.pow(math.pow(qax, 2) + math.pow(qay, 2) + math.pow(qaz, 2), 0.5)
 
         pa, ra = GetRotationAngles(qax, qay, qaz)
+        apa, ara = GetAbsoluteAngles(qax, qay, qaz)
         ya = 0.0
-
-        tilt_ratio = qaz / egz
 
         #-------------------------------------------------------------------------------------------
         # Log the critical parameters from this warm-up: the take-off surface tilt, and gravity.
@@ -1939,6 +2186,16 @@ class Quadcopter:
         logger.warning("based upon %d samples", dt * sampling_rate)
 
         #-------------------------------------------------------------------------------------------
+        # Initialize the base setting of the URF or LEDDAR sensor height from the ground, or an estimate if
+        # neither are installed.
+        #-------------------------------------------------------------------------------------------
+        clear_cube = True
+        if clear_cube:
+            ta_height = 0.20
+        else:
+            ta_height = 0.05
+
+        #-------------------------------------------------------------------------------------------
         # Read the initial height of the URF from the ground
         #-------------------------------------------------------------------------------------------
         urfz = 0
@@ -1948,17 +2205,25 @@ class Quadcopter:
             if not srf02.pingProcessed():
                 print "URF FMR FECK"
             else:
-                urfz = srf02.readProximity()
+                ta_height = srf02.readProximity()
                 srf02.pingProximity()
 
         #-------------------------------------------------------------------------------------------
         # Get an initial set of readings from the LEDDAR thus clearing the DR interrupt
         #-------------------------------------------------------------------------------------------
         l_dist = 0.0
+        l_dd = 0.0
         l_dt = 0.0
-        l_vel = 0.0
         if self.leddar_installed:
-            leddar.reset(tilt_ratio)
+            ta_height = leddar.reset()
+
+        #-------------------------------------------------------------------------------------------
+        # Reset the take-off height
+        #-------------------------------------------------------------------------------------------
+        px_qvx = 0.0
+        px_qvy = 0.0
+        if self.px4flow_installed:
+            px4flow.get()
 
         #-------------------------------------------------------------------------------------------
         # Prime the direction vector of the earth's magnotic core to provide long term yaw stability.
@@ -1967,27 +2232,15 @@ class Quadcopter:
         magy = 0.0
         magz = 0.0
         if self.compass_installed:
-            magx, magy, magz = mpu6050.readCompass()
-
-        #-------------------------------------------------------------------------------------------
-        # Start up the video camera if required - this runs from take-off through to shutdown
-        # automatically.  Run it in its own process group so that Ctrl-C for QC doesn't get through and
-        # stop the video
-        #-------------------------------------------------------------------------------------------
-        def Daemonize():
-            os.setpgrp()
-
-        if self.shoot_video:
-            now = datetime.now()
-            now_string = now.strftime("%y%m%d-%H:%M:%S")
-            video = subprocess.Popen(["raspivid", "-rot", "180", "-w", "1280", "-h", "720", "-o", "/home/pi/Videos/qcvid_" + now_string + ".h264", "-n", "-t", "0", "-fps", "30", "-b", "5000000"], preexec_fn =  Daemonize)
+            mpu6050.initCompass()
 
         #===============================================================================================
         # Tuning: Set up the PID gains - some are hard coded mathematical approximations, some come
-        # from the CLI parameters to allow for tuning  - 7 in all
-        # - Quad X axis speed speed
-        # - Quad Y axis speed speed
-        # - Quad Z axis speed speed
+        # from the CLI parameters to allow for tuning  - 8 in all
+        # - Quad Z axis distance
+        # - Quad X axis velocity
+        # - Quad Y axis velocity
+        # - Quad Z axis velocity
         # - Pitch rotation rate
         # - Roll Rotation rate
         # - Yaw angle
@@ -1995,21 +2248,42 @@ class Quadcopter:
         #===============================================================================================
 
         #-----------------------------------------------------------------------------------------------
-        # The quad X axis speed controls forward / backward speed
+        # The quad X axis PID controls up / down distance
+        #-----------------------------------------------------------------------------------------------
+        PID_QDX_P_GAIN = hdp_gain
+        PID_QDX_I_GAIN = hdi_gain
+        PID_QDX_D_GAIN = hdd_gain
+
+        #-----------------------------------------------------------------------------------------------
+        # The quad Y axis PID controls up / down distance
+        #-----------------------------------------------------------------------------------------------
+        PID_QDY_P_GAIN = hdp_gain
+        PID_QDY_I_GAIN = hdi_gain
+        PID_QDY_D_GAIN = hdd_gain
+
+        #-----------------------------------------------------------------------------------------------
+        # The quad Z axis PID controls up / down distance
+        #-----------------------------------------------------------------------------------------------
+        PID_QDZ_P_GAIN = vdp_gain
+        PID_QDZ_I_GAIN = vdi_gain
+        PID_QDZ_D_GAIN = vdd_gain
+
+        #-----------------------------------------------------------------------------------------------
+        # The quad Y axis speed controls left / right speed
         #-----------------------------------------------------------------------------------------------
         PID_QVX_P_GAIN = hvp_gain
         PID_QVX_I_GAIN = hvi_gain
         PID_QVX_D_GAIN = hvd_gain
 
         #-----------------------------------------------------------------------------------------------
-        # The quad Y axis speed controls left / right speed
+        # The quad Y axis speed PID controls left / right speed
         #-----------------------------------------------------------------------------------------------
         PID_QVY_P_GAIN = hvp_gain
         PID_QVY_I_GAIN = hvi_gain
         PID_QVY_D_GAIN = hvd_gain
 
         #-----------------------------------------------------------------------------------------------
-        # The quad Z axis speed controls rise / fall speed
+        # The quad Z axis speed PID controls rise / fall speed
         #-----------------------------------------------------------------------------------------------
         PID_QVZ_P_GAIN = vvp_gain
         PID_QVZ_I_GAIN = vvi_gain
@@ -2033,8 +2307,8 @@ class Quadcopter:
         # The yaw angle PID controls stable angles around the Z-axis
         #-------------------------------------------------------------------------------------------
         PID_YA_P_GAIN = 6.0 # yap_gain
-        PID_YA_I_GAIN = 3.0 # yai_gain
-        PID_YA_D_GAIN = 1.0 # yad_gain
+        PID_YA_I_GAIN = 0.0 # yai_gain
+        PID_YA_D_GAIN = 0.0 # yad_gain
 
         #-------------------------------------------------------------------------------------------
         # The yaw rate PID controls stable rotation speed around the Z-axis
@@ -2043,15 +2317,18 @@ class Quadcopter:
         PID_YR_I_GAIN = yri_gain
         PID_YR_D_GAIN = yrd_gain
 
-        ############################################################################################
-        print "Thunderbirds are go!"
-        ############################################################################################
-
         #-------------------------------------------------------------------------------------------
         # Diagnostic log header
         #-------------------------------------------------------------------------------------------
         if diagnostics:
-            logger.warning('time, dt, loops, sleep, temp, urf, l_dist, l_time, l_velocity, magx, magy, magz, qrx, qry, qrz, qax, qay, qaz, efrgv_x, efrgv_y, efrgv_z, qfrgv_x, qfrgv_y, qfrgv_z, qvx_input, qvy_input, qvz_input, pitch, roll, yaw, evx_target, qvx_target, pr_target, pr_out, evy_yarget, qvy_target, rr_target, rr_out, evz_target, qvz_target, qvz_out, yr_target, yr_out, FL spin, FR spin, BL spin, BR spin')
+            logger.warning('time, dt, loops, temp, happy, sad, urf, l_dist, l_dd, l_dt, magx, magy, magz, edx_input, edy_input, edz_input, evx_input, evy_input, evz_input, qrx, qry, qrz, qax, qay, qaz, egx, egy, egz, qgx, qgy, qgz, qdx_input, qdy_input, qdz_input, qvx_input, qvy_input, qvz_input, pitch, roll, yaw, evx_target, qvx_target, pr_target, pr_out, evy_yarget, qvy_target, rr_target, rr_out, evz_target, qvz_target, qvz_out, yr_target, yr_out, FL spin, FR spin, BL spin, BR spin')
+
+        #-------------------------------------------------------------------------------------------
+        # Start the X, Y (horizontal) and Z (vertical) distance PID
+        #-------------------------------------------------------------------------------------------
+        qdx_pid = PID(PID_QDX_P_GAIN, PID_QDX_I_GAIN, PID_QDX_D_GAIN)
+        qdy_pid = PID(PID_QDY_P_GAIN, PID_QDY_I_GAIN, PID_QDY_D_GAIN)
+        qdz_pid = PID(PID_QDZ_P_GAIN, PID_QDZ_I_GAIN, PID_QDZ_D_GAIN)
 
         #-------------------------------------------------------------------------------------------
         # Start the X, Y (horizontal) and Z (vertical) velocity PIDs
@@ -2080,7 +2357,6 @@ class Quadcopter:
         #------------------------------------------------------------------------------------------
         for esc in self.esc_list:
             esc.set(base_pwm)
-        time.sleep(0.5)
 
         hover_speed = base_pwm
         hsf = float(base_pwm)
@@ -2089,17 +2365,88 @@ class Quadcopter:
         #-------------------------------------------------------------------------------------------
         # Set up the various timing constants and stats.
         #-------------------------------------------------------------------------------------------
-        i_time = 0.0
-        sleep_time = 0.0
+        motion_dt = 0.0
+        fusion_dt = 0.0
         sampling_loops = 0
         motion_loops = 0
 
         #-------------------------------------------------------------------------------------------
-        # Constrain the maximum sleep time per motion loop to prevent FIFO overflow
+        # Set up the video macro-block parameters
+        # Video supported upto 1080p @ 30Hz
         #-------------------------------------------------------------------------------------------
-        FIFO_SIZE = 512
-        SAMPLE_SIZE = 12
-        max_sleep_time = (sampling_rate / samples_per_motion) / (FIFO_SIZE / SAMPLE_SIZE) / 2
+        frame_rate = 20
+        frame_period = 1 / frame_rate
+        frame_width = 400    # an exact multiple of mb_size
+        frame_height = 400   # an exact multiple of mb size
+        mb_size = 16
+        bytes_per_mb = 4
+        mbs_per_frame = int((frame_width / mb_size + 1) * (frame_height / mb_size))
+        mbs_frame_bytes = mbs_per_frame * bytes_per_mb
+
+        #------------------------------------------------------------------------------------------
+        # Scale is the number of macro-blocks per meter at 1 meter height.  This is obtained from
+        # passive calibration testing
+        #------------------------------------------------------------------------------------------
+        scale = 1181
+
+        happy = 0
+        sad = 0.0
+
+        format = '=' + 'bbH' * mbs_per_frame
+
+        read_list = []
+        write_list = []
+        exception_list = []
+
+        mbx = 0.0
+        mby = 0.0
+
+        vvf = False
+        hvf = False
+        vdf = False
+        hdf = False
+
+        zero_sads = 0
+        camera_data_update = False
+
+        if self.camera_installed:
+            #---------------------------------------------------------------------------------------
+            # Setup a shared memory based data stream for the PiCamera video motion output
+            #---------------------------------------------------------------------------------------
+            os.mkfifo("/dev/shm/motion_stream")
+
+            def Daemonize():
+                os.setpgrp()
+
+            video = subprocess.Popen(["python", __file__, str(frame_width), str(frame_height), str(frame_rate)], preexec_fn =  Daemonize)
+            # video = subprocess.Popen(["raspivid", "-w", "320", "-h", "320", "-fps", "10", "-fl", "-n", "-t", "0", "-o", "/dev/null", "-x", "/dev/shm/motion_stream"], preexec_fn = Daemonize)
+            while True:
+                try:
+                    py_fifo = open("/dev/shm/motion_stream", "rb")
+                except:
+                    continue
+                else:
+                    break
+            read_list = [py_fifo]
+
+            #---------------------------------------------------------------------------------------
+            # Capture a couple of seconds' samples to let the video settle
+            #---------------------------------------------------------------------------------------
+            for ii in range(int(2 * frame_rate)):
+                frame = py_fifo.read(mbs_frame_bytes)
+                if len(frame) != mbs_frame_bytes:
+                    print "Feck"
+                    return
+
+        else:
+            #--------------------------------------------------------------------------------------
+            # Sleep for a couple of seconds to ensure the motors are warmed up
+            #--------------------------------------------------------------------------------------
+            time.sleep(2.0)
+
+        ############################################################################################
+        print "Thunderbirds are go!"
+        ############################################################################################
 
         #-------------------------------------------------------------------------------------------
         # Used for flight stats only
@@ -2109,8 +2456,8 @@ class Quadcopter:
         #-------------------------------------------------------------------------------------------
         # Flush the FIFO and enable the FIFO overflow interrupt
         #-------------------------------------------------------------------------------------------
-        mpu6050.enableFIFOOverflowISR()
         mpu6050.flushFIFO()
+        mpu6050.enableFIFOOverflowISR()
 
         #===========================================================================================
         #
@@ -2129,11 +2476,72 @@ class Quadcopter:
         while self.keep_looping:
 
             #---------------------------------------------------------------------------------------
-            # Sleep for a while waiting for the FIFO to collect several batches of data.
+            # Check on the number of batches already stashed in the FIFO, and if not enough, wait for
+            # more or for camera motion batch info.
             #---------------------------------------------------------------------------------------
-            sleep_time += (samples_per_motion / sampling_rate - i_time)
-            if sleep_time > 0.0:
-                time.sleep(sleep_time if sleep_time < max_sleep_time else max_sleep_time)
+            nfb = mpu6050.numFIFOBatches()
+
+            #---------------------------------------------------------------------------------------
+            # Select on the camera FIFO is priorited over the IMU FIFO timeout
+            #---------------------------------------------------------------------------------------
+            timeout = (samples_per_motion - nfb) / sampling_rate
+            timeout = 0.0 if timeout < 0.0 else timeout
+            read_out, write_out, exception_out = select.select(read_list, write_list, exception_list, timeout)
+            if len(read_out) != 0:
+
+                #-------------------------------------------------------------------------------
+                # 1680 = (frame_width / macro_block_size + 1) * (frame_height / macro_block_size) * 4 bytes per macro-block
+                #-------------------------------------------------------------------------------
+                frame = py_fifo.read(mbs_frame_bytes)
+                if len(frame) != mbs_frame_bytes:
+                    print "ERROR: incomplete frame received"
+                    break
+
+                #---------------------------------------------------------------------------------------
+                # Convert to byte, byte, ushort of x, y, sad
+                #---------------------------------------------------------------------------------------
+                iframe = struct.unpack(format, frame)
+
+                #-------------------------------------------------------------------------------
+                # Iterate through the 21 x 20 macro blocks averaging the X and Y vectors of the
+                # frame based upon the SAD (sum of absolute differences, higher is better).
+                #-------------------------------------------------------------------------------
+                mbx = 0.0
+                mby = 0.0
+                happy = 0
+                sad_sum = 0
+
+                #-------------------------------------------------------------------------------
+                # 420 = (frame_width / macro_block_size + 1) * (frame_height / macro_block_size)
+                # 3 = number of 'bbH' structure fields
+                # happy = good SAD score = valid macro block motion
+                #-------------------------------------------------------------------------------
+                for ii in range(0, mbs_per_frame * 3, 3):
+                    sad = iframe[ii + 2]
+                    if sad != 0:
+                        mby += iframe[ii]
+                        mbx += iframe[ii + 1]
+                        happy += 1
+                        sad_sum += sad
+
+                if happy == 0:
+                    continue
+
+                sad = sad_sum / happy
+
+                #-------------------------------------------------------------------------------
+                # Scale the macro block values to the speed increment in meters per second
+                #-------------------------------------------------------------------------------
+                mbx /= (scale * happy)
+                mby /= (scale * happy)
+                mbt = frame_period
+
+                happy /= mbs_per_frame
+
+                camera_data_update = True
+
+            if nfb < samples_per_motion:
+                continue
 
             #---------------------------------------------------------------------------------------
             # Before proceeding further, check the FIFO overflow interrupt to ensure we didn't sleep
@@ -2141,17 +2549,15 @@ class Quadcopter:
             #---------------------------------------------------------------------------------------
             if GPIO.input(GPIO_FIFO_OVERFLOW_INTERRUPT):
                 print "FIFO OVERFLOW, ABORT!"
-                keep_looping = False
                 break
 
             #---------------------------------------------------------------------------------------
             # Now get the batch of averaged data from the FIFO.
             #---------------------------------------------------------------------------------------
             try:
-                qax, qay, qaz, qrx, qry, qrz, i_time = mpu6050.readFIFO()
+                qax, qay, qaz, qrx, qry, qrz, motion_dt = mpu6050.readFIFO(nfb)
             except IOError, err:
                 logger.critical("ABORT: %s", err)
-                keep_looping = False
                 break
 
             #---------------------------------------------------------------------------------------
@@ -2169,38 +2575,44 @@ class Quadcopter:
             # missed samples or sampling errors.
             #---------------------------------------------------------------------------------------
             motion_loops += 1
-            sampling_loops += i_time * sampling_rate
+            sampling_loops += motion_dt * sampling_rate
+            fusion_dt += motion_dt
+
+
+            ################################## ANGLES PROCESSING ###################################
+
 
             #---------------------------------------------------------------------------------------
-            # Angular predication: Now we know the time since the last batch of samples, update the
-            # previous angles with the 'integral' of the previous euler rotation rates.
+            # Euler angle fusion: Merge the 'integral' of the previous euler rotation rates with
+            # the noisy accelermeter current values.
             #---------------------------------------------------------------------------------------
             urp, urr, ury = Body2EulerRates(qry, qrx, qrz, pa, ra)
-            pa += urp * i_time
-            ra += urr * i_time
-            ya += ury * i_time
+            pa += urp * motion_dt
+            ra += urr * motion_dt
+            ya += ury * motion_dt
 
-            #---------------------------------------------------------------------------------------
-            # Using a complementary filter,  merge the short-term noise free predicted angles with the
-            # long-term accurate acclerometer which short term are tainted with acceleration as well as
-            # gravity. tau is the period during which we expect acceleration to average out leading
-            # only the net gravity value. tau can be small if acceleration is short and sharp.  There is
-            # a balance here between the period to trust the integrated, reorientated gyro readings and
-            # the period where accelerometer spikes average out.
-            #---------------------------------------------------------------------------------------
             upa, ura = GetRotationAngles(qax, qay, qaz)
 
-            atau_fraction = atau / (atau + i_time)
+            atau_fraction = atau / (atau + motion_dt)
             pa = atau_fraction * pa + (1 - atau_fraction) * upa
             ra = atau_fraction * ra + (1 - atau_fraction) * ura
 
             #---------------------------------------------------------------------------------------
-            # Read the compass to determine yaw but not just yet.  Yaw from the compass will be fused
-            # (using another complementary filter) with integrated gyro Z axis yaw to provide long term
-            # stability.  For now though, we're just collecting the data for logging.
+            # Absolute angle fusion: Merge the 'integral' of the gyro rotation rates with
+            # the noisy accelermeter current values.
             #---------------------------------------------------------------------------------------
-            if self.compass_installed:
-                magx, magy, magz = mpu6050.readCompass()
+            apa += qry * motion_dt
+            ara += qrx * motion_dt
+
+            upa, ura = GetAbsoluteAngles(qax, qay, qaz)
+
+            atau_fraction = atau / (atau + motion_dt)
+            apa = atau_fraction * apa + (1 - atau_fraction) * upa
+            ara = atau_fraction * ara + (1 - atau_fraction) * ura
+
+
+            ############################### IMU VELOCITY / DISTANCE ################################
+
 
             #---------------------------------------------------------------------------------------
             # Rotate gravity to the new quadframe
@@ -2218,30 +2630,75 @@ class Quadcopter:
             #---------------------------------------------------------------------------------------
             tilt_ratio = qgz / egz
 
-            #---------------------------------------------------------------------------------------
-            # Check if there's a URF reading available, and if so, read and re-ping.  Note that the 
-            # SRF02 doesn't support I2C baudrate of 400kbps required for the IMU, so is not enabled
-            #---------------------------------------------------------------------------------------
-            if self.urf_installed and srf02.pingProcessed():
-                urfz = srf02.readProximity() * tilt_ratio
-                srf02.pingProximity()
-
-            # =================== Velocity and Distance PID input processing =======================
+            # =================== Velocity and Distance Increment processing =======================
 
             #---------------------------------------------------------------------------------------
             # Delete reorientated gravity from raw accelerometer readings and integrate over time
-            # to make velocity all in quad frame
+            # to make velocity all in quad frame.  Rotate to earth frame for possible later use for
+            # earth-frame sensor filtering.
             #---------------------------------------------------------------------------------------
-            qvx_input += (qax - qgx) * i_time * GRAV_ACCEL
-            qvy_input += (qay - qgy) * i_time * GRAV_ACCEL
-            qvz_input += (qaz - qgz) * i_time * GRAV_ACCEL
+            qvx_increment = (qax - qgx) * GRAV_ACCEL * motion_dt
+            qvy_increment = (qay - qgy) * GRAV_ACCEL * motion_dt
+            qvz_increment = (qaz - qgz) * GRAV_ACCEL * motion_dt
+
+            qvx_integral += qvx_increment
+            qvy_integral += qvy_increment
+            qvz_integral += qvz_increment
 
             #---------------------------------------------------------------------------------------
-            # Integrate again the velocities to get distance
+            # Integrate again the velocities to get distance. Rotate to earth frame for possible later
+            # use for earth-frame sensor filtering.
             #---------------------------------------------------------------------------------------
-            qdx_input += qvx_input * i_time
-            qdy_input += qvy_input * i_time
-            qdz_input += qvz_input * i_time
+            qdx_increment = qvx_integral * motion_dt
+            qdy_increment = qvy_integral * motion_dt
+            qdz_increment = qvz_integral * motion_dt
+
+            qdx_integral += qdx_increment
+            qdy_integral += qdy_increment
+            qdz_integral += qdz_increment
+
+            ########################################################################################
+            # HACK HACK HACK HACK HACK HACK HACK HACK HACK HACK HACK HACK HACK HACK HACK HACK HACK
+            ########################################################################################
+            __, __, edz_input = RotateQ2E(qdx_integral, qdy_integral, qdz_integral, pa, ra, ya)
+            __, __, evz_input = RotateQ2E(qvx_integral, qvy_integral, qvz_integral, pa, ra, ya)
+
+            vvf = True
+            vdf = True
+            ########################################################################################
+            # HACK HACK HACK HACK HACK HACK HACK HACK HACK HACK HACK HACK HACK HACK HACK HACK HACK
+            ########################################################################################
+
+
+            ############################### ABSOLUTE DISTANCE SENSORS ##############################
+
+
+            #---------------------------------------------------------------------------------------
+            # Read the compass to determine yaw and orientation wrt GPS.  Yaw from the compass will be fused
+            # (using another complementary filter) with integrated gyro Z axis yaw to provide long term
+            # stability.  For now though, we're just collecting the data for logging.
+            #---------------------------------------------------------------------------------------
+            if self.compass_installed:
+                magx, magy, magz = mpu6050.readCompass()
+
+            #---------------------------------------------------------------------------------------
+            # Check if there's a URF reading available, and if so, read and re-ping.
+            # DUE TO THE FACT SRF02 DOES NOT SUPPORT THE REQUIRED 400,000 BAUDRATE,
+            # THIS CODE IS HERE FOR REFERENCE ONLY AND IS INCOMPLETE.
+            #---------------------------------------------------------------------------------------
+            if self.urf_installed and srf02.pingProcessed():
+                urf_z, urf_dt = srf02.readProximity()
+                srf02.pingProximity()
+
+                #-------------------------------------------------------------------------------
+                # Compensate for tilt
+                #-------------------------------------------------------------------------------
+                edz_input = urfz * tilt_ratio
+
+                #-------------------------------------------------------------------------------
+                # Set the flags for vertical distance fusion
+                #-------------------------------------------------------------------------------
+                vdf = True
 
             #---------------------------------------------------------------------------------------
             # Get the latest set of LEDDAR velocities if available
@@ -2249,7 +2706,7 @@ class Quadcopter:
             if self.leddar_installed and GPIO.input(GPIO_LEDDAR_DR_INTERRUPT):
                 error = ""
                 try:
-                    l_dist, l_dt, l_vel = leddar.read(tilt_ratio)
+                    l_dist, l_dd, l_dt = leddar.read()
                 except IOError, e:
                     error = "IOError"
                 except RuntimeError, e:
@@ -2259,36 +2716,144 @@ class Quadcopter:
                 except Exception, e:
                     error = "OtherError"
                 else:
-                    #---------------------------------------------------------------------------------------
-                    # Pass the integrated accelerometer and differentiated leddar velocities through a
-                    # complementary filter. LEDDAR produces outputs at about 8Hz, hence 1s ltau
-                    #---------------------------------------------------------------------------------------
-                    vtau = 1.0
-                    vtau_fraction = vtau / (vtau + l_dt)
-                    qvz_input = vtau_fraction * qvz_input + (1 - vtau_fraction) * l_vel
+                    #-------------------------------------------------------------------------------
+                    # Compensate for tilt
+                    #-------------------------------------------------------------------------------
+                    edz_input = l_dist * tilt_ratio
+                    evz_input = l_dd / l_dt * tilt_ratio
 
-                    dtau = 1.0
-                    dtau_fraction = dtau / (dtau + l_dt)
-                    qdz_input = dtau_fraction * qdz_input + (1 - dtau_fraction) * l_dist
+                    #-------------------------------------------------------------------------------
+                    # Set the flags for vertical velocity and distance fusion
+                    #-------------------------------------------------------------------------------
+                    vvf = True
+                    vdf = True
 
                 finally:
-                    if error != "":    
+                    if error != "":
+                        l_dist = 0.0
+                        l_dd = 0.0
+                        l_dt = 0.0
+                        logger.critical("############# LEDDAR ERROR (%s)#################" % error)
+                        break
+
+            #---------------------------------------------------------------------------------------
+            # Get the latest set of PX4FLOW velocities if available.
+            #
+            # DUE TO THE FAULTY BEHAVIOUR OF THREE DIFFERENT PX4FLOWS TESTED, THIS CODE IS HERE FOR
+            # REFERENCE ONLY AND IS INCOMPLETE.
+            #---------------------------------------------------------------------------------------
+            if self.px4flow_installed:
+                error = ""
+                try:
+                    x_rps, y_rps = px4flow.get()
+                except IOError, e:
+                    error = "IOError"
+                except RuntimeError, e:
+                    error = "RuntimeError"
+                except ZeroDivisionError, e:
+                    error = "ZeroDivisionError"
+                except Exception, e:
+                    error = "OtherError"
+                else:
+                    #-------------------------------------------------------------------------------
+                    # Convert the X and Y axis radians per second values to velocities using the height
+                    # obtained ideally from the LEDDAR, but worst case, from integration.
+                    # Note that a full functional PX4FLOW could provide distance and velocity increments
+                    # and absolutes for X, Y and Z axes, but only one of the 3 I have does - the faulty
+                    # URFs on two models prevent height being use.  What's below is what can be achieved
+                    # with the minimum common support across all 3.
+                    #-------------------------------------------------------------------------------
+                    evx_input = 2 * (edz_input + ta_height) * math.tan(x_rps / 2)
+                    evy_input = 2 * (edz_input + ta_height) * math.tan(y_rps / 2)
+
+                    #-------------------------------------------------------------------------------
+                    # Set the flags for horizontal velocity fusion
+                    #-------------------------------------------------------------------------------
+                    hvf = True
+
+                finally:
+                    if error != "":
                         l_dist = 0.0
                         l_dt = 0.0
                         l_vel = 0.0
-                        logger.critical("############# LEDDAR CONNECTION FAILED (%s)#################" % error)
-                        self.keep_looping = False
+                        logger.critical("############# PX4FLOW ERROR (%s)#################" % error)
                         break
-            '''
-            #---------------------------------------------------------------------------------------
-            # For diagnostic comparison against the LEDDAR or URF readings, take the quad frame
-            # velocity vector and rotate to earth coordintates to compare the evz value against the
-            # d(urf cos(tilt)/dt velocity. #AB: comparison not implemented.
-            #---------------------------------------------------------------------------------------
-            evx, evy, evz = RotateQ2E(qvx_input, qvy_input, qvz_input, pa, ra, ya)
-            '''
 
-            # ======================= Velocity PID target processing ===============================
+
+            #---------------------------------------------------------------------------------------
+            # If the camera is installed, and we have an absolute height measurement, get the horizontal
+            # distance and velocity
+            #---------------------------------------------------------------------------------------
+            if self.camera_installed and camera_data_update:
+
+                #-----------------------------------------------------------------------------------
+                # Take the increment of the scaled X and Y distance, and divide by the height to
+                # get the absolute position, allowing for errors due to tilt.
+                #-----------------------------------------------------------------------------------
+                mbh = edz_input + ta_height
+                edx_increment = mbh * (mbx + math.tan(qry * mbt))
+                edy_increment = mbh * (mby - math.tan(qrx * mbt))
+
+                edx_input += edx_increment
+                edy_input += edy_increment
+
+                evx_input = edx_increment / mbt
+                evy_input = edy_increment / mbt
+
+                #-------------------------------------------------------------------------------
+                # Set the flags for horizontal distance and velocity fusion
+                #-------------------------------------------------------------------------------
+                hdf = True
+                hvf = True
+
+                camera_data_update = False
+
+
+            ######################################## FUSION ########################################
+
+
+            #---------------------------------------------------------------------------------------
+            # Reorientate the values from the long term sensors only when we have a full set and overwrite
+            # as the dominant factor to be updated incrementally by the accelerometer readings
+            #---------------------------------------------------------------------------------------
+            if hdf and hvf and vvf and vdf:
+                qvx_fuse, qvy_fuse, qvz_fuse = RotateE2Q(evx_input, evy_input, evz_input, pa, ra, ya)
+                qdx_fuse, qdy_fuse, qdz_fuse = RotateE2Q(edx_input, edy_input, edz_input, pa, ra, ya)
+
+                vtau = 0.5
+                vtau_fraction = vtau / (vtau + fusion_dt)
+                qvx_input = vtau_fraction * qvx_input + (1 - vtau_fraction) * qvx_fuse
+                qvy_input = vtau_fraction * qvy_input + (1 - vtau_fraction) * qvy_fuse
+                qvz_input = vtau_fraction * qvz_input + (1 - vtau_fraction) * qvz_fuse
+
+                dtau = 0.5
+                dtau_fraction = dtau / (dtau + fusion_dt)
+                qdx_input = dtau_fraction * qdx_input + (1 - dtau_fraction) * qdx_fuse
+                qdy_input = dtau_fraction * qdy_input + (1 - dtau_fraction) * qdy_fuse
+                qdz_input = dtau_fraction * qdz_input + (1 - dtau_fraction) * qdz_fuse
+
+                fusion_dt = 0.0
+
+                hdf = False
+                hvf = False
+                vdf = False
+                vvf = False
+
+            else:
+                #---------------------------------------------------------------------------------------
+                # Update the dominant sensors last reading with the intermediate IMU increments
+                #---------------------------------------------------------------------------------------
+                qvx_input += qvx_increment
+                qvy_input += qvy_increment
+                qvz_input += qvz_increment
+
+                qdx_input += qdx_increment
+                qdy_input += qdy_increment
+                qdz_input += qdz_increment
+
+
+            ########################### VELOCITY / DISTANCE PID TARGETS ############################
+
 
             #---------------------------------------------------------------------------------------
             # Check the flight plan for earth frame velocity and distance targets.
@@ -2300,11 +2865,11 @@ class Quadcopter:
                     logger.critical("RTF @ %fs", motion_loops * samples_per_motion / sampling_rate)
 
                 else:
-                    hsf += (hover_target - base_pwm) * i_time / rtf_period
+                    hsf += (hover_target - base_pwm) * motion_dt / rtf_period
                     hover_speed = int(math.trunc(hsf))
 
             else:
-                evx_target, evy_target, evz_target, edx_target, edy_target, edz_target = fp.getTargets(i_time)
+                evx_target, evy_target, evz_target, edx_target, edy_target, edz_target = fp.getTargets(motion_dt)
 
             #---------------------------------------------------------------------------------------
             # Convert earth-frame distance targets to quadcopter frame.
@@ -2312,47 +2877,50 @@ class Quadcopter:
             qdx_target, qdy_target, qdz_target = RotateE2Q(edx_target, edy_target, edz_target, pa, ra, ya)
 
             #---------------------------------------------------------------------------------------
-            # Convert earth-frame velocity targets to quadcopter frame.  
+            # Convert earth-frame velocity targets to quadcopter frame.
             #---------------------------------------------------------------------------------------
             qvx_target, qvy_target, qvz_target = RotateE2Q(evx_target, evy_target, evz_target, pa, ra, ya)
 
-            #---------------------------------------------------------------------------------------
-            # A stripped down PID is used to produce correctional velocity from distance error.  PID 
-            # gain of 1 means a 1m distance error corresponds to a 1m/s corrective velocity which seems 
-            # safe and sensible.  With this commented out, the code runs exactly as before.
-            #---------------------------------------------------------------------------------------
-            '''
-            PID_QDX_P_GAIN = 1.0
-            PID_QDY_P_GAIN = 1.0
-            PID_QDZ_P_GAIN = 1.0
-            qvx_target = (qdx_target - qdx_input) * PID_QDX_P_GAIN 
-            qvy_target = (qdy_target - qdy_input) * PID_QDY_P_GAIN 
-            qvz_target = (qdz_target - qdz_input) * PID_QDZ_P_GAIN 
 
-            if qvx_target > 0.5:
-                qvx_target = 0.5
-            if qvy_target > 0.5:
-                qvy_target = 0.5
-            if qvz_target > 0.5:
-                qvz_target = 0.5
-            '''
-            #---------------------------------------------------------------------------------------
-            # Boost the quad frame velocity target by the tilt ratio.  HACK?
-            #---------------------------------------------------------------------------------------
-            qvz_target /= tilt_ratio
+            ################### QUAD FRAME VELOCITY / DISTANCE PID PROCESSING ####################
+
 
             #=======================================================================================
-            # Motion PIDs: Run the horizontal speed PIDs to determine targets for rotation rate PIDs
-            # and the vertical speed PID to control height.
+            # Distance PIDs
             #=======================================================================================
-            [p_out, i_out, d_out] = qvx_pid.Compute(qvx_input, qvx_target, i_time)
+            [p_out, i_out, d_out] = qdx_pid.Compute(qdx_input, qdx_target, motion_dt)
+            qvx_target = p_out + i_out + d_out
+
+            [p_out, i_out, d_out] = qdy_pid.Compute(qdy_input, qdy_target, motion_dt)
+            qvy_target = p_out + i_out + d_out
+
+            [p_out, i_out, d_out] = qdz_pid.Compute(qdz_input, qdz_target, motion_dt)
+            qvz_target = p_out + i_out + d_out
+
+            #---------------------------------------------------------------------------------------
+            # Put an upper limit on the velocity targets of 0.5m/s
+            #---------------------------------------------------------------------------------------
+            '''
+            qvx_target = 0.5 if qvx_target > 0.5 else qvx_target
+            qvy_target = 0.5 if qvy_target > 0.5 else qvy_target
+            qvz_target = 0.5 if qvz_target > 0.5 else qvz_target
+            '''
+
+            #=======================================================================================
+            # Velocity PIDs
+            #=======================================================================================
+            [p_out, i_out, d_out] = qvx_pid.Compute(qvx_input, qvx_target, motion_dt)
             qvx_out = p_out + i_out + d_out
 
-            [p_out, i_out, d_out] = qvy_pid.Compute(qvy_input, qvy_target, i_time)
+            [p_out, i_out, d_out] = qvy_pid.Compute(qvy_input, qvy_target, motion_dt)
             qvy_out =  p_out + i_out + d_out
 
-            [p_out, i_out, d_out] = qvz_pid.Compute(qvz_input, qvz_target, i_time)
+            [p_out, i_out, d_out] = qvz_pid.Compute(qvz_input, qvz_target, motion_dt)
             qvz_out = p_out + i_out + d_out
+
+
+            ####################### VERTICAL PWM / FRAME SHIFT FOR ANGLES #########################
+
 
             #---------------------------------------------------------------------------------------
             # Convert the horizontal velocity PID output i.e. the horizontal acceleration target in
@@ -2364,9 +2932,6 @@ class Quadcopter:
             # - A left unintentional drift is a positive input and negative output from the velocity
             #   PID.  To achieve corrective right acceleration, the negative velocity PID output needs
             #   to trigger a positive roll rotation rate target.
-            #---------------------------------------------------------------------------------------
-
-            #---------------------------------------------------------------------------------------
             # Use a bit of hokey trigonometry to convert desired quad frame acceleration (qv*_out)
             # into the target quad frame rotation rate that provides that acceleration (*r_target)
             #---------------------------------------------------------------------------------------
@@ -2378,25 +2943,26 @@ class Quadcopter:
             #---------------------------------------------------------------------------------------
             vert_out = hover_speed - base_pwm + int(round(qvz_out))
 
+
+            ############################ ROTATION / ANGLES PID PROCESSING ##########################
+
+
             #=======================================================================================
             # START TESTCASE 3 CODE: Override motion processing results; instead use angles to maintain
             #                        horizontal flight regardless of take-off platform angle.
-            # NOTE: This code is currently using the wrong type of angles (rotation versus absolute) so
-            #       will not work safely.  Work needs to be done above to also produce absolute angles
-            #       as a fusion of gyro and absolute accelerometer angles.
-            #---------------------------------------------------------------------------------------
+            #=======================================================================================
             if test_case == 3:
-                    pa_target = 0.0
-                    [p_out, i_out, d_out] = pa_pid.Compute(pa, pa_target, i_time)
-                    pa_diags = "%f, %f, %f" % (p_out, i_out, d_out)
-                    pa_out = p_out + i_out + d_out
-                    pr_target = pa_out
+                pa_target = 0.0
+                [p_out, i_out, d_out] = pa_pid.Compute(apa, pa_target, motion_dt)
+                pa_diags = "%f, %f, %f" % (p_out, i_out, d_out)
+                pa_out = p_out + i_out + d_out
+                pr_target = pa_out
 
-                    ra_target = 0.0
-                    [p_out, i_out, d_out] = ra_pid.Compute(ra, ra_target, i_time)
-                    ra_diags = "%f, %f, %f" % (p_out, i_out, d_out)
-                    ra_out = p_out + i_out + d_out
-                    rr_target = ra_out
+                ra_target = 0.0
+                [p_out, i_out, d_out] = ra_pid.Compute(ara, ra_target, motion_dt)
+                ra_diags = "%f, %f, %f" % (p_out, i_out, d_out)
+                ra_out = p_out + i_out + d_out
+                rr_target = ra_out
             #=======================================================================================
             # END TESTCASE 3 CODE: Override motion processing results; instead use angles to maintain
             #                      horizontal flight regardless of take-off platform angle.
@@ -2404,11 +2970,10 @@ class Quadcopter:
 
             #---------------------------------------------------------------------------------------
             # For the moment, we just want yaw to not exist.  It's only required if we want the front
-            # of the quad to face the direction it's travelling.  This only really becomes important
-            # if videoing a flight.
+            # of the quad to face the direction it's travelling.
             #---------------------------------------------------------------------------------------
             ya_target = 0.0
-            [p_out, i_out, d_out] = ya_pid.Compute(ya, ya_target, i_time)
+            [p_out, i_out, d_out] = ya_pid.Compute(ya, ya_target, motion_dt)
             ya_out = p_out + i_out + d_out
             yr_target = ya_out
 
@@ -2431,14 +2996,18 @@ class Quadcopter:
             # Attitude PIDs: Run the rotation rate PIDs each rotation axis to determine overall PWM
             # output.
             #=======================================================================================
-            [p_out, i_out, d_out] = pr_pid.Compute(qry, pr_target, i_time)
+            [p_out, i_out, d_out] = pr_pid.Compute(qry, pr_target, motion_dt)
             pr_out = p_out + i_out + d_out
 
-            [p_out, i_out, d_out] = rr_pid.Compute(qrx, rr_target, i_time)
+            [p_out, i_out, d_out] = rr_pid.Compute(qrx, rr_target, motion_dt)
             rr_out = p_out + i_out + d_out
 
-            [p_out, i_out, d_out] = yr_pid.Compute(qrz, yr_target, i_time)
+            [p_out, i_out, d_out] = yr_pid.Compute(qrz, yr_target, motion_dt)
             yr_out = p_out + i_out + d_out
+
+
+            ################################## PID -> PWM CONVERTION ###############################
+
 
             #---------------------------------------------------------------------------------------
             # Convert the rotation rate PID outputs direct to PWM pulse width
@@ -2497,8 +3066,8 @@ class Quadcopter:
             #---------------------------------------------------------------------------------------
             if diagnostics:
                 temp = mpu6050.readTemperature()
-                logger.warning('%f, %f, %d, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %d, %f, %f, %f, %d, %f, %f, %d, %f, %d, %d, %d, %d, %d',
-                                sampling_loops / sampling_rate, i_time, sampling_loops, sleep_time, temp / 333.86 + 21, urfz, l_dist, l_dt, l_vel, magx, magy, magz, qrx, qry, qrz, qax, qay, qaz, egx, egy, egz, qgx, qgy, qgz, qvx_input, qvy_input, qvz_input, math.degrees(pa), math.degrees(ra), math.degrees(ya), evx_target, qvx_target, math.degrees(pr_target), pr_out, evy_target, qvy_target, math.degrees(rr_target), rr_out, evz_target, qvz_target, qvz_out, math.degrees(yr_target), yr_out, self.esc_list[0].pulse_width, self.esc_list[1].pulse_width, self.esc_list[2].pulse_width, self.esc_list[3].pulse_width)
+                logger.warning('%f, %f, %d, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %d, %f, %f, %f, %d, %f, %f, %d, %f, %d, %d, %d, %d, %d',
+                                sampling_loops / sampling_rate, motion_dt, sampling_loops, temp / 333.86 + 21, happy, sad, urfz, l_dist, l_dd, l_dt, magx, magy, magz, edx_input, edy_input, edz_input, evx_input, evy_input, evz_input, qrx, qry, qrz, qax, qay, qaz, egx, egy, egz, qgx, qgy, qgz, qdx_input, qdy_input, qdz_input, qvx_input, qvy_input, qvz_input, math.degrees(pa), math.degrees(ra), math.degrees(ya), evx_target, qvx_target, math.degrees(pr_target), pr_out, evy_target, qvy_target, math.degrees(rr_target), rr_out, evz_target, qvz_target, qvz_out, math.degrees(yr_target), yr_out, self.esc_list[0].pulse_width, self.esc_list[1].pulse_width, self.esc_list[2].pulse_width, self.esc_list[3].pulse_width)
 
         print "flight time %f" % (time.time() - start_flight)
 
@@ -2517,10 +3086,12 @@ class Quadcopter:
             esc.set(0)
 
         #-------------------------------------------------------------------------------------------
-        # Stop the video if it's running
+        # Stop the camera motion processing
         #-------------------------------------------------------------------------------------------
-        if self.shoot_video:
+        if self.camera_installed:
             video.send_signal(signal.SIGINT)
+            py_fifo.close()
+            os.unlink("/dev/shm/motion_stream")
 
 
     ################################################################################################
@@ -2600,3 +3171,18 @@ class Quadcopter:
     def LEDDARDataReadyISR(self, pin):
         print "LEDDAR ISR"
         self.leddar_dr = True
+
+
+####################################################################################################
+# If we've been called directly, this is the spawned video process for gathering and FIFOing macro-block
+# frames
+####################################################################################################
+if __name__ == '__main__':
+    if len(sys.argv) == 4:
+        frame_width = int(sys.argv[1])
+        frame_height = int(sys.argv[2])
+        frame_rate = int(sys.argv[3])
+
+        print "Videoing %d, %d at %d" % (frame_width, frame_height, frame_rate)
+        RecordVideo(frame_width, frame_height, frame_rate)
+        print "Video stopped"
