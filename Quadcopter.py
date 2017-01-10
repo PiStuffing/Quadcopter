@@ -486,8 +486,7 @@ class MPU6050:
         #-------------------------------------------------------------------------------------------
         fifo_bytes = self.i2c.readU16(self.__MPU6050_RA_FIFO_COUNTH)
         fifo_batches = int(fifo_bytes / 12)  # This rounds down
-        if fifo_batches > int(512 / 12 / 2):
-            raise ValueError("%d" % fifo_batches)
+
         return fifo_batches
 
     def readFIFO(self, fifo_batches):
@@ -529,11 +528,9 @@ class MPU6050:
         gy /= fifo_batches
         gz /= fifo_batches
 
-
         '''
         if az < (65536 / 8 * 0.8) or az > (65536 / 8 * 2.25):               #AB! +/-4g
             error_text = "FIFO, %d, %f, %f, %f, %f, %f, %f" % (fifo_batches, ax * self.__SCALE_ACCEL, ay * self.__SCALE_ACCEL, az * self.__SCALE_ACCEL, gx * self.__SCALE_GYRO, gy * self.__SCALE_GYRO, gz * self.__SCALE_GYRO)
-            print error_text
             raise IOError(error_text)
         '''
 
@@ -615,9 +612,15 @@ class MPU6050:
             self.az_offset = float(az_offset)
 
         except EnvironmentError:
+            #---------------------------------------------------------------------------------------
+            # For a while, I thought this might help, but actually, it doesn't, so it always returns
+            # default values now.
+            #---------------------------------------------------------------------------------------
+            '''
             offs_rc = False
+            '''
+            pass
 
-        #AB! Overwritten as the offset values actually make things worse
         self.ax_offset = 0.0
         self.ay_offset = 0.0
         self.az_offset = 0.0
@@ -635,7 +638,7 @@ class MPU6050:
 #  Barometer / Altimeter - from DroTek MPU-9250 breakout
 #
 ####################################################################################################
-class MS5611 :
+class MS5611:
     i2c = None
 
     # Registers/etc.
@@ -1366,7 +1369,7 @@ def CheckCLI(argv):
         cli_yri_gain = 30.0
         cli_yrd_gain = 0.0
 
-    elif i_am_chloe or i_am_hermione:
+    elif i_am_chloe:
         #-------------------------------------------------------------------------------------------
         # Chloe's PID configuration due to using her frame / ESCs / motors / props
         #-------------------------------------------------------------------------------------------
@@ -1421,9 +1424,64 @@ def CheckCLI(argv):
         cli_yri_gain = 15.0
         cli_yrd_gain = 0.0
 
+    elif i_am_hermione:
+        #-------------------------------------------------------------------------------------------
+        # Chloe's PID configuration due to using her frame / ESCs / motors / props
+        #-------------------------------------------------------------------------------------------
+        cli_hover_target = 500 # 500 = CCF 1355 + Quadframe; 420 = T-motor 1240 + F450 Alloy Arms; 370 = CCF 1355
+
+        #-------------------------------------------------------------------------------------------
+        # Defaults for vertical distance PIDs
+        #-------------------------------------------------------------------------------------------
+        cli_vdp_gain = 1.0
+        cli_vdi_gain = 0.0
+        cli_vdd_gain = 0.0
+
+        #-------------------------------------------------------------------------------------------
+        # Defaults for vertical velocity PIDs
+        #-------------------------------------------------------------------------------------------
+        cli_vvp_gain = 360.0
+        cli_vvi_gain = 180.0
+        cli_vvd_gain = 0.0
+
+        #-------------------------------------------------------------------------------------------
+        # Defaults for horizontal distance PIDs
+        #-------------------------------------------------------------------------------------------
+        cli_hdp_gain = 1.0
+        cli_hdi_gain = 0.0
+        cli_hdd_gain = 0.0
+
+        #-------------------------------------------------------------------------------------------
+        # Defaults for horizontal velocity PIDs
+        #-------------------------------------------------------------------------------------------
+        cli_hvp_gain = 1.6
+        cli_hvi_gain = 0.0
+        cli_hvd_gain = 0.0
+
+        #-------------------------------------------------------------------------------------------
+        # Defaults for pitch angle PIDs
+        #-------------------------------------------------------------------------------------------
+        cli_prp_gain = 125.0
+        cli_pri_gain = 0.0
+        cli_prd_gain = 0.0
+
+        #-------------------------------------------------------------------------------------------
+        # Defaults for roll angle PIDs
+        #-------------------------------------------------------------------------------------------
+        cli_rrp_gain = 125.0
+        cli_rri_gain = 0.0
+        cli_rrd_gain = 0.0
+
+        #-------------------------------------------------------------------------------------------
+        # Defaults for yaw angle PIDs
+        #-------------------------------------------------------------------------------------------
+        cli_yrp_gain = 150.0
+        cli_yri_gain = 15.0
+        cli_yrd_gain = 0.0
+
     elif i_am_zoe:
         #-------------------------------------------------------------------------------------------
-        # Phoebe's PID configuration due to using her ESCs / motors / props
+        # Zoe's PID configuration due to using her ESCs / motors / props
         #-------------------------------------------------------------------------------------------
         cli_hover_target = 300 # 300 = CCF | AirGear 0903; 380 = AirGear Floppy props
 
@@ -1458,14 +1516,14 @@ def CheckCLI(argv):
         #-------------------------------------------------------------------------------------------
         # Defaults for pitch angle PIDs
         #-------------------------------------------------------------------------------------------
-        cli_prp_gain = 25.0  # Floppy props: 100.0
+        cli_prp_gain = 20.0  # Floppy props: 100.0
         cli_pri_gain = 0.0   # Floppy props: 10.0
         cli_prd_gain = 0.0
 
         #-------------------------------------------------------------------------------------------
         # Defaults for roll angle PIDs
         #-------------------------------------------------------------------------------------------
-        cli_rrp_gain = 25.0  # Floppy props: 90.0
+        cli_rrp_gain = 20.0  # Floppy props: 90.0
         cli_rri_gain = 0.0   # Floppy props: 9.0
         cli_rrd_gain = 0.0
 
@@ -1756,6 +1814,91 @@ def RecordVideo(frame_width, frame_height, frame_rate):
 
 ####################################################################################################
 #
+# Two phase video frame macro-block processing.  The first phase (__init__) takes a frame of macro-blocks and
+# dumps them into a dictionary indexed by the vector, and the value is the count of macro-blocks at
+# this vector point in the frame.  The second phase (process) takes the dictionary, and for each entry,
+# checks for neighbouring entries, adding half their value to the current directory area.  It also tracks
+# the highest value so far.  At the end, merges one or more vectors with the maximum score.
+#
+####################################################################################################
+class VideoFrameProcessor:
+
+    def __init__(self, iframe, num_mbs):
+        self.vector_dict = {}
+
+        #-----------------------------------------------------------------------------------
+        # Built the vector dictionary of scores.  The mapping from each iframe in idy, idy depends
+        # on how the camera is orientated WRT the frame.  This must be checked callibrated.
+        #-----------------------------------------------------------------------------------
+        for ii in range(0, num_mbs * 3, 3):
+            idy = iframe[ii]
+            idx = iframe[ii + 1]
+            sad = iframe[ii + 2]
+
+            if idx == 0 and idy == 0: # and sad == 0:
+                continue
+
+            #-------------------------------------------------------------------------------
+            # We're incrementing the number of each vector here by two.  When we add in the
+            # neighbours below, we only add one.
+            #-------------------------------------------------------------------------------
+            if (idx, idy) in self.vector_dict:
+                self.vector_dict[(idx, idy)] += 2
+            else:
+                self.vector_dict[(idx, idy)] = 2
+
+        if len(self.vector_dict) == 0:
+            raise ValueError("Empty Video Frame Object")
+
+    def __del__(self):
+        self.vector_dict = {}
+
+    def process(self):
+        #-----------------------------------------------------------------------------------
+        # Now walk the dictionary entries, checking the neighbours scores to find maxima of
+        # clusters
+        #-----------------------------------------------------------------------------------
+        best_score = 0
+        best_vectors = {}
+
+        for vector in self.vector_dict.keys():
+            vector_score = self.vector_dict[vector]
+            for ii in range(-1, 2):
+                for jj in range(-1, 2):
+                    if ii == 0 and jj == 0:
+                        continue
+
+                    vector_x, vector_y = vector
+                    neighbour = (vector_x + ii, vector_y + jj)
+                    if neighbour in self.vector_dict:
+                        vector_score += self.vector_dict[neighbour]
+
+            if vector_score > best_score:
+                best_score = vector_score
+                best_vectors = [(vector, vector_score)]
+
+            elif vector_score == best_score:
+                best_vectors.append((vector, vector_score))
+
+        #-----------------------------------------------------------------------------------
+        # Now we've collected the clusters of the best score vectors in the frame, average
+        #-----------------------------------------------------------------------------------
+        sum_score = 0
+        sum_x = 0
+        sum_y = 0
+        for (vector_x, vector_y), vector_score in best_vectors:
+            sum_x += vector_x * vector_score
+            sum_y += vector_y * vector_score
+            sum_score += vector_score
+
+        best_x = sum_x / sum_score
+        best_y = sum_y / sum_score
+
+        return best_x, best_y
+
+
+####################################################################################################
+#
 # Class to split initialation, flight startup and flight control
 #
 ####################################################################################################
@@ -1795,7 +1938,7 @@ class Quadcopter:
         elif my_name == "chloe.local" or my_name == "chloe":
             print "Hi, I'm Chloe.  Nice to meet you!"
             i_am_chloe = True
-        elif my_name == "zoe.local" or my_name == "zoe" or my_name == "arctic":
+        elif my_name == "zoe.local" or my_name == "zoe":
             print "Hi, I'm Zoe.  Nice to meet you!"
             i_am_zoe = True
         elif my_name == "hermione.local" or my_name == "hermione":
@@ -1994,8 +2137,8 @@ class Quadcopter:
                      'back right underside']
 
         #-------------------------------------------------------------------------------------------
-        # Prime the ESCs to stop their anonying beeping!  All 4 of P,C, H & Z  use the same ESCs
-        # so have the same base_pwm
+        # Prime the ESCs to stop their anonying beeping!  All 4 of P, C, H & Z  use the T-motor ESCs
+        # with the same ESC firmware so have the same base_pwm
         #-------------------------------------------------------------------------------------------
         global base_pwm
         base_pwm = 0
@@ -2036,7 +2179,7 @@ class Quadcopter:
         adc_frequency = 1000        #AB! defined by dlpf >= 1; DO NOT USE ZERO => 8000 adc_frequency
 
         if self.leddar_installed or self.camera_installed or self.gll_installed:
-            sampling_rate = 500        #AB! <= 500 to prevent FIFO overflow with diagnostics enabled
+            sampling_rate = 500        #AB! <= 500 to prevent FIFO overflow with extra sensors
             samples_per_motion = 5
         else:
             sampling_rate = 1000
@@ -2044,6 +2187,13 @@ class Quadcopter:
 
         global mpu6050
         mpu6050 = MPU6050(0x68, alpf, glpf)
+
+        #-------------------------------------------------------------------------------------------
+        # 512 is the FIFO length, 12 is batch size, 3 is the fraction of fullness of the FIFO (i.e. 1/3)
+        # and sampling_rate / 1000 reduces the criteria for faster samples where 1000 is the fastest
+        # sampling rate.
+        #-------------------------------------------------------------------------------------------
+        self.FIFO_SAFETY_LIMIT = int(512 * 1000 / (12 * 2 * sampling_rate))
 
         #-------------------------------------------------------------------------------------------
         # Initialize the barometer / altimeter I2C object
@@ -2229,7 +2379,11 @@ class Quadcopter:
         #-------------------------------------------------------------------------------------------
         mpu6050.flushFIFO()
         time.sleep(20 / sampling_rate)
-        nfb = mpu6050.numFIFOBatches()
+        try:
+            nfb = mpu6050.numFIFOBatches()
+        except ValueError as e:
+            print "Whee!"
+            nfb = int(e.args[0])
         qax, qay, qaz, qrx, qry, qrz, dt = mpu6050.readFIFO(nfb)
 
         #-------------------------------------------------------------------------------------------
@@ -2367,7 +2521,7 @@ class Quadcopter:
             g_dist, g_vel = gll.read()
             eftoh = g_dist * tilt_ratio
 
-        logger.warning("EFTOH:, %d", eftoh)
+        logger.critical("EFTOH:, %f", eftoh)
 
         #===========================================================================================
         # Tuning: Set up the PID gains - some are hard coded mathematical approximations, some come
@@ -2543,14 +2697,15 @@ class Quadcopter:
         # Video supported upto 1080p @ 30Hz
         #-------------------------------------------------------------------------------------------
         camera_version = 2
-        frame_rate = 20
-        frame_period = 1 / frame_rate
+        frame_rate = 10
+        vvt = 1 / frame_rate
         frame_width = 400    # an exact multiple of mb_size
         frame_height = 400   # an exact multiple of mb size
         mb_size = 16
         bytes_per_mb = 4
         mbs_per_frame = int((frame_width / mb_size + 1) * (frame_height / mb_size))
         mbs_frame_bytes = mbs_per_frame * bytes_per_mb
+        vfp = None
 
         #------------------------------------------------------------------------------------------
         # Scale is the convertion from macro-blocks to meters at a given height.
@@ -2567,7 +2722,7 @@ class Quadcopter:
         # horizontal movement in meters.
         #------------------------------------------------------------------------------------------
         aov = (48.8 if camera_version == 2 else 41) * math.pi / 180
-        scale = 2 * math.tan(aov / 2) / frame_width 
+        scale = 2 * math.tan(aov / 2) / frame_width
 
         format = '=' + 'bbH' * mbs_per_frame
 
@@ -2656,101 +2811,72 @@ class Quadcopter:
             # Check on the number of batches already stashed in the FIFO, and if not enough, wait for
             # more or for camera motion batch info.
             #---------------------------------------------------------------------------------------
-            try:
-                nfb = mpu6050.numFIFOBatches()
-            except ValueError as e:
+            nfb = mpu6050.numFIFOBatches()
+            if nfb < self.FIFO_SAFETY_LIMIT:
                 #-----------------------------------------------------------------------------------
-                # Prioritize motion processing if the FIFO is filling up too much
-                #-----------------------------------------------------------------------------------
-                nfb = int(e.args[0])
-            else:
-                #-----------------------------------------------------------------------------------
-                # ee who wins between video and FIFO
+                # See who wins between video processing and FIFO sleep time
                 #-----------------------------------------------------------------------------------
                 timeout = (samples_per_motion - nfb) / sampling_rate
-                timeout = 0.0 if timeout < 0.0 else timeout
-                try:
-                    read_out, write_out, exception_out = select.select(read_list, write_list, exception_list, timeout)
-                except:
-                    break
-                        
-                if len(read_out) != 0:
 
-                    #-------------------------------------------------------------------------------
-                    # 1680 = (frame_width / macro_block_size + 1) * (frame_height / macro_block_size)
-                    # * 4 bytes per macro-block
-                    #-------------------------------------------------------------------------------
-                    frame = py_fifo.read(mbs_frame_bytes)
-                    if len(frame) != mbs_frame_bytes:
-                        print "ERROR: incomplete frame received"
+                if timeout > 0.0:
+                    #-----------------------------------------------------------------------------------
+                    # We have some spare time before we need to run the next motion processing; see if there's
+                    # any processing we can do.  First, have we already got a video frame that
+                    # now needs processing?
+                    #-----------------------------------------------------------------------------------
+                    if vfp != None:
+                        try:
+                            vvx, vvy = vfp.process()
+                        except ValueError as e:
+                            logger.critical("%s" % e)
+                            break
+                        vvx *= scale
+                        vvy *= scale
+                        camera_data_update = True
+                        del vfp
+                        vfp = None
+                        continue
+
+                    #-----------------------------------------------------------------------------------
+                    # See who wins between video and FIFO
+                    #-----------------------------------------------------------------------------------
+                    timeout = (samples_per_motion - nfb) / sampling_rate
+                    timeout = 0.0 if timeout < 0.0 else timeout
+                    try:
+                        read_out, write_out, exception_out = select.select(read_list, write_list, exception_list, timeout)
+                    except:
+                        logger.critical("ERROR: select error")
                         break
 
-                    #-------------------------------------------------------------------------------
-                    # Convert to byte, byte, ushort of x, y, sad
-                    #-------------------------------------------------------------------------------
-                    iframe = struct.unpack(format, frame)
+                    if len(read_out) != 0:
 
-                    valid_count = 0
-                    count = 0
-                    x = []
-                    y = []
-                    s = []
-                    sad_average = 0.0
+                        #-------------------------------------------------------------------------------
+                        # 1680 = (frame_width / macro_block_size + 1) * (frame_height / macro_block_size)
+                        # * 4 bytes per macro-block
+                        #-------------------------------------------------------------------------------
+                        frame = py_fifo.read(mbs_frame_bytes)
+                        if len(frame) != mbs_frame_bytes:
+                            logger.critical("ERROR: incomplete frame received")
+                            break
 
-                    #-------------------------------------------------------------------------------
-                    # 420 = (frame_width / macro_block_size + 1) * (frame_height / macro_block_size)
-                    # 3 = number of 'bbH' structure fields
-                    #-------------------------------------------------------------------------------
-                    for ii in range(0, mbs_per_frame * 3, 3):
-                        idy = iframe[ii]
-                        idx = iframe[ii + 1]
-                        sad = iframe[ii + 2]
-                        if idx == 0 and idy == 0 and sad == 0:
-                            continue
+                        #-------------------------------------------------------------------------------
+                        # Convert to byte, byte, ushort of x, y, sad
+                        #-------------------------------------------------------------------------------
+                        iframe = struct.unpack(format, frame)
+                        try:
+                            vfp = VideoFrameProcessor(iframe, mbs_per_frame)
+                        except ValueError as e:
+                            del vfp
+                            vfp = None
 
-                        count += 1
-                        sad_average += sad
-                        x.append(idx)
-                        y.append(idy)
-                        s.append(sad)
-
-                    if count == 0:
-                        continue
-                    sad_average /= count
-
-                    for ii in range(count):
-                        if s[ii] < sad_average:
-                            idx += x[ii]
-                            idy += y[ii]
-                            valid_count += 1
-
-                    if valid_count == 0:
-                        continue
-
-                    idx /= valid_count
-                    idy /= valid_count
-
-                    #-------------------------------------------------------------------------------
-                    # Scale the macro block values to the speed increment in meters per second
-                    #-------------------------------------------------------------------------------
-                    vvx = idx * scale
-                    vvy = idy * scale
-                    vvt = frame_period
-
-                    camera_data_update = True
-
-                if nfb < samples_per_motion:
                     continue
-
-            finally:
-                pass
 
             #---------------------------------------------------------------------------------------
             # Before proceeding further, check the FIFO overflow interrupt to ensure we didn't sleep
             # too long
             #---------------------------------------------------------------------------------------
             if GPIO.event_detected(GPIO_FIFO_OVERFLOW_INTERRUPT):
-                print "FIFO OVERFLOW, ABORT!"
+                logger.critical("FIFO OVERFLOW, ABORT!")
                 break
 
             #---------------------------------------------------------------------------------------
@@ -2781,7 +2907,7 @@ class Quadcopter:
             '''
 
             #---------------------------------------------------------------------------------------
-            # Track the number of motion loops and sampling loops; any discrepancy between these are 
+            # Track the number of motion loops and sampling loops; any discrepancy between these are
             # the missed samples or sampling errors.
             #---------------------------------------------------------------------------------------
             motion_loops += 1
@@ -2831,7 +2957,7 @@ class Quadcopter:
             qgx, qgy, qgz = RotateE2Q(egx, egy, egz, pa, ra, ya)
 
             #---------------------------------------------------------------------------------------
-            # The tilt ratio is used to compensate both LEDDAR height (and thus velocity) and the
+            # The tilt ratio is used to compensate both LiDAR height (and thus velocity) and the
             # flight plan vertical target for the fact the sensors are leaning.
             #
             # tilt ratio is derived from cos(tilt angle);
@@ -3045,7 +3171,9 @@ class Quadcopter:
 
             #---------------------------------------------------------------------------------------
             # Reorientate the values from the long term sensors only when we have a full set and overwrite
-            # as the dominant factor to be updated incrementally by the accelerometer readings
+            # as the dominant factor to be updated incrementally by the accelerometer readings.
+            #AB! vtau and htau are both based in the fact the Garmin LiDAR-Lite V3 and the RaspiCam are
+            #AB! running at 10Hz
             #---------------------------------------------------------------------------------------
             #AB! if False:
             if hdf and hvf and vvf and vdf:
@@ -3066,6 +3194,9 @@ class Quadcopter:
 
                 fusion_dt = 0.0
 
+                #-----------------------------------------------------------------------------------
+                # Clear the flags for horizontal and vertical distance and velocity fusion
+                #-----------------------------------------------------------------------------------
                 hdf = False
                 hvf = False
                 vdf = False

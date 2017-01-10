@@ -1,0 +1,110 @@
+sudo apt-get install hostapd udhcpd i2c-tools python-smbus ftp python-dev python-setuptools python-picamera
+
+https://github.com/metachris/RPIO/archive/v2.zip
+unzip v2.zip
+cd RPIO
+sudo python ./setup.py install
+
+/etc/network/interfaces
+=======================
+auto wlan0
+iface wlan0 inet static
+address 192.168.42.1
+netmask 255.255.255.0
+
+# allow-hotplug wlan0
+# wpa-roam /etc/wpa_supplicant/wpa_supplicant.conf
+# iface default inet dhcp
+
+/etc/udhcpd.conf
+================
+start 192.168.42.20 # This is the range of IPs that the hostspot will give to client devices.
+end 192.168.42.254
+interface wlan0 # The device uDHCP listens on.
+remaining yes
+opt domain local
+# opt dns 8.8.8.8 4.2.2.2 # The DNS servers client devices will use.
+opt subnet 255.255.255.0
+opt router 192.168.42.1 # The Pi's IP address on wlan0 which we have set up.
+opt lease 864000 # 10 day DHCP lease time in seconds
+
+/etc/hostapd/hostapd.conf
+=========================
+interface=wlan0
+# driver=rtl871xdrv
+driver=nl80211
+ssid=HoGWAP
+channel=1
+wmm_enabled=0
+wpa=1
+wpa_passphrase=HoG3.141592654
+wpa_key_mgmt=WPA-PSK
+wpa_pairwise=TKIP
+rsn_pairwise=CCMP
+auth_algs=1
+macaddr_acl=0
+
+sudo touch /var/lib/misc/udhcpd.leases
+sudo chmod 666 /var/lib/misc/udhcpd.leases
+
+/etc/default/udhcpd
+===================
+# DHCPD_ENABLED="no"
+
+/etc/default/hostapd
+====================
+DAEMON_CONF="/etc/hostapd/hostapd.conf"
+
+/etc/hostname
+=============
+hog.local
+
+/etc/hosts
+==========
+192.168.42.1 hog.local
+
+sudo reboot
+
+!JESSIE: /etc/default/ifplugd
+==============================================
+# This file may be changed either manually or by running dpkg-reconfigure.
+#
+# N.B.: dpkg-reconfigure deletes everything from this file except for
+# the assignments to variables INTERFACES, HOTPLUG_INTERFACES, ARGS and
+# SUSPEND_ACTION.  When run it uses the current values of those variables
+# as their default values, thus preserving the administrator's changes.
+#
+# This file is sourced by both the init script /etc/init.d/ifplugd and
+# the udev script /lib/udev/ifplugd.agent to give default values.
+# The init script starts ifplugd for all interfaces listed in
+# INTERFACES, and the udev script starts ifplugd for all interfaces
+# listed in HOTPLUG_INTERFACES. The special value all starts one
+# ifplugd for all interfaces being present.
+INTERFACES=""
+HOTPLUG_INTERFACES=""
+ARGS="-q -f -u0 -d10 -w -I"
+SUSPEND_ACTION="stop"
+
+!JESSIE: /etc/resolv.config
+================================
+domain local
+search local
+nameserver 192.168.1.254
+
+======================================================================================
+
+BACK OUT FOR INTERNET ACCESS UPGRADES ETC
+
+======================================================================================
+/etc/default/hostapd
+/etc/default/udhcpd
+/etc/network/interfaces
+/etc/dhcpcd.conf 
+/ets/hosts
+/etc/hostname
+
+sudo reboot
+
+!JESSIE: /etc/default/ifplugd
+!JESSIE: /etc/resolv.conf - not jessie
+!JESSIE: /etc/wpa_supplicant/wpa_supplicant.conf
