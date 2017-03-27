@@ -16,6 +16,7 @@ Index
 <li>LICENCE       - Usage definition</li>
 <li>qc.py         - Python wrapper code</li>
 <li>Quadcopter.py - Core flight controller code</li>
+<li>fp.csv        - Example simple flight plan CSV input file</li>
 <li>RPIO.tgz      - RPIO library with minor tweaks to include B2 and Zero</li>
 <li>ZeroSparkfun.zip - Eagle board + Gerbers for SparkFun MPU-9250 breakout</li>
 <li>A+-X8-Sparkfun.zip - Eagle board + Gerbers for SparkFun MPU-9250 breakout</li>
