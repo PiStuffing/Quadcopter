@@ -14,6 +14,7 @@ Index
 <ul>
 <li>README.md     - This file</li>
 <li>LICENCE       - Usage definition</li>
+<li>Installation.html - Installation instructions for Quadcopter prerequisites</li>
 <li>qc.py         - Python wrapper code</li>
 <li>Quadcopter.py - Core flight controller code</li>
 <li>fp.csv        - Example simple flight plan CSV input file</li>
