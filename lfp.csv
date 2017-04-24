@@ -1,0 +1,20 @@
+# - evx is fore / aft velocity in m/s; fore is positive
+# - evy is port / starboard velocity in m/s; port is positive
+# - evz is up / down velocity in m/s; up is positive
+# - time is how long to maintain that speed in seconds
+# - name is an arbitrary name put out to console to show flight progress
+
+# evx, evy, evz, time, name
+
+ 0.0,  0.0,  0.3,  3.0, ASCENT
+ 0.0,  0.0,  0.0,  1.0, HOVER
+ 0.25, 0.0,  0.0,  4.0, FORE
+ 0.0,  0.0,  0.0,  1.0, HOVER
+ 0.0, 0.25,  0.0,  4.0, PORT
+ 0.0,  0.0,  0.0,  1.0, HOVER
+-0.25, 0.0,  0.0,  4.0, AFT
+ 0.0,  0.0,  0.0,  1.0, HOVER
+ 0.0,-0.25,  0.0,  4.0, STARBOARD
+ 0.0,  0.0,  0.0,  1.0, HOVER
+ 0.0,  0.0,  0.0,  1.0, HOVER
+ 0.0,  0.0, -0.3,  4.0, DESCENT

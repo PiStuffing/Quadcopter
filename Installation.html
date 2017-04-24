@@ -17,6 +17,14 @@ Here's the installation steps I took to install Hermione from scratch today.
 <pre><code>dtparam=audio=off
 start_x=0</code></pre>
 </li>
+    <li>If you are using a Pi3 or Zero-W, you may want to disable Bluetooth in /etc/modprobe.d/raspi-blacklist.conf thus:
+        <pre># WiFi
+# blacklist brcmfmac
+# blacklist brcmutil
+
+# Bluetooth
+blacklist btbcm
+blacklist hci_uart</pre></li>
     <li><del>git clone https://github.com/pyhys/minimalmodbus</del></li>
     <li><del>cd minimalmodbus</del></li>
     <li><del>sudo python ./setup install</del></li>
