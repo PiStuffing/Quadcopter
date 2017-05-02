@@ -40,6 +40,7 @@ from ctypes.util import find_library
 #AB! import minimalmodbus # Only for LEDDAR
 import picamera
 import struct
+import gps
 
 
 ####################################################################################################
@@ -152,7 +153,7 @@ class I2C:
 #  - MPU-9150
 #  - MPU-9250
 #
-#  The compass / magnetometer of the MPU-9250 is not used
+#  IN ACTIVE SERVICE
 #
 ####################################################################################################
 class MPU6050:
@@ -300,7 +301,7 @@ class MPU6050:
     __AK893_RA_ASAZ = 0x12
 
     __SCALE_GYRO = (500.0 * math.pi) / (65536 * 180)
-    __SCALE_ACCEL = 8.0 / 65536                                                           #AB! +/-4g
+    __SCALE_ACCEL = 8.0 / 65536                                                           #AB: +/-4g
 
     def __init__(self, address=0x68, alpf=2, glpf=1):
         self.i2c = I2C(address)
@@ -396,7 +397,7 @@ class MPU6050:
         # See SCALE_ACCEL for convertion from raw data to units of meters per second squared
         #-------------------------------------------------------------------------------------------
         # int(math.log(g / 2, 2)) << 3
-        self.i2c.write8(self.__MPU6050_RA_ACCEL_CONFIG, 0x08)                             #AB! +/-4g
+        self.i2c.write8(self.__MPU6050_RA_ACCEL_CONFIG, 0x08)                             #AB: +/-4g
         time.sleep(0.1)
 
         #-------------------------------------------------------------------------------------------
@@ -406,7 +407,7 @@ class MPU6050:
         time.sleep(0.1)
 
         #-------------------------------------------------------------------------------------------
-        # Initialize the FIFO overflow interrupt 0x10 (turned off at startup).                  #AB!
+        # Initialize the FIFO overflow interrupt 0x10 (turned off at startup).
         #-------------------------------------------------------------------------------------------
         self.i2c.write8(self.__MPU6050_RA_INT_ENABLE, 0x00)
         time.sleep(0.1)
@@ -499,7 +500,7 @@ class MPU6050:
         gz /= fifo_batches
 
         '''
-        if az < (65536 / 8 * 0.8) or az > (65536 / 8 * 2.25):               #AB! +/-4g
+        if az < (65536 / 8 * 0.8) or az > (65536 / 8 * 2.25):                             #AB: +/-4g
             error_text = "FIFO, %d, %f, %f, %f, %f, %f, %f" % (fifo_batches, ax * self.__SCALE_ACCEL, ay * self.__SCALE_ACCEL, az * self.__SCALE_ACCEL, gx * self.__SCALE_GYRO, gy * self.__SCALE_GYRO, gz * self.__SCALE_GYRO)
             raise IOError(error_text)
         '''
@@ -565,7 +566,8 @@ class MPU6050:
         compass_bytes = self.i2c_compass.readList(self.__AK893_RA_X_LO, 7)
 
         #-------------------------------------------------------------------------------------------
-        # Convert the array of 6 bytes to 3 shorts - 7th byte kicks off another read
+        # Convert the array of 6 bytes to 3 shorts - 7th byte kicks off another read.
+        # Note compass X, Y, Z are aligned with GPS not IMU i.e. positive compass X = pointing east.
         #-------------------------------------------------------------------------------------------
         compass_data = []
         for ii in range(0, 6, 2):
@@ -634,7 +636,7 @@ class MPU6050:
                     yaw = 0.0
                     total_dt = 0.0
 
-                    print "YAW: ",
+                    print "ROTATION:    ",
                     number_len = 0
 
                     while abs(yaw) < 2 * math.pi:
@@ -643,6 +645,7 @@ class MPU6050:
                         nfb = mpu6050.numFIFOBatches()
                         ax, ay, az, gx, gy, gz, dt = self.readFIFO(nfb)
                         ax, ay, az, gx, gy, gz = self.scaleSensors(ax, ay, az, gx, gy, gz)
+
                         yaw += gz * dt
                         total_dt += dt
 
@@ -656,17 +659,20 @@ class MPU6050:
                         if total_dt > 0.2:
                             total_dt %= 0.2
 
+                            number_text = str(abs(int(yaw * 180 / math.pi)))
+                            if len(number_text) == 2:
+                                number_text = " " + number_text
+                            elif len(number_text) == 1:
+                                number_text = "  " + number_text    
 
-                            number_text = str(int(yaw * 180 / math.pi))
-#                            print "\b" * number_len,
-#                            print " " * number_len,
-#                            print "\b" * number_len,
-                            print "YAW: %s" % number_text
-                            number_len = len(number_str)
+                            print "\b\b\b\b%s" % number_text,
+                            sys.stdout.flush()
+
                             GPIO.output(GPIO_LED, not GPIO.input(GPIO_LED))
+                    print        
 
                     #-------------------------------------------------------------------------------
-                    # Collect compass X. Z values
+                    # Collect compass Z values
                     #-------------------------------------------------------------------------------
                     GPIO.output(GPIO_LED, GPIO.HIGH)
                     print "\nGreat!  Now do the same but with my nose down."
@@ -674,20 +680,20 @@ class MPU6050:
 
                     self.flushFIFO()
 
-                    pitch = 0.0
+                    rotation = 0.0
                     total_dt = 0.0
 
-                    print "PITCH: ",
+                    print "ROTATION:    ",
                     number_len = 0
 
-                    while abs(pitch) < 2 * math.pi:
+                    while abs(rotation) < 2 * math.pi:
                         time.sleep(10 / sampling_rate)
 
                         nfb = self.numFIFOBatches()
                         ax, ay, az, gx, gy, gz, dt = self.readFIFO(nfb)
                         ax, ay, az, gx, gy, gz = self.scaleSensors(ax, ay, az, gx, gy, gz)
 
-                        pitch += gy * dt
+                        rotation += math.power(math.power(qx, 2) + math.power(gy, 2), 0.5) * dt
                         total_dt += dt
 
                         mgx, mgy, mgz = self.readCompass()
@@ -698,14 +704,17 @@ class MPU6050:
                         if total_dt > 0.2:
                             total_dt %= 0.2
 
-                            number_text = str(int(pitch * 180 / math.pi))
-#                            print "\b" * number_len,
-#                            print " " * number_len,
-#                            print "\b" * number_len,
-                            print "YAW: %s" % number_text
-                            number_len = len(number_str)
-                            GPIO.output(GPIO_LED, not GPIO.input(GPIO_LED))
+                            number_text = str(abs(int(rotation * 180 / math.pi)))
+                            if len(number_text) == 2:
+                                number_text = " " + number_text
+                            elif len(number_text) == 1:
+                                number_text = "  " + number_text    
 
+                            print "\b\b\b\b%s" % number_text,
+                            sys.stdout.flush()                            
+
+                            GPIO.output(GPIO_LED, not GPIO.input(GPIO_LED))
+                    print        
 
                 except KeyboardInterrupt as e:
                     print "Patience is a virtue!  All good things come to he who waits!"
@@ -758,25 +767,25 @@ class MPU6050:
         except EnvironmentError:
             #---------------------------------------------------------------------------------------
             # Compass calibration is essential to exclude soft magnetic fields such as from local
-            # metal; enfore a recalibration if not found.
+            # metal; enforce a recalibration if not found.
             #---------------------------------------------------------------------------------------
-            # print "Oops, something went wrong reading the compass offsets file 'CompassOffsets'"
-            pass
-        else:
-            #---------------------------------------------------------------------------------------
-            # Once the testing is completed successfully, the finally code moves to here.  Normally
-            # this would be the place setting offs_rc = True, as as the compass calibration is not
-            # working properly yet, it happens down in the finally branch instead.
-            #---------------------------------------------------------------------------------------
-            pass
-        finally:
-            #---------------------------------------------------------------------------------------
-            # Currently just fill in zero offsets until the whole  process has been tested
-            #---------------------------------------------------------------------------------------
+            print "Oops, something went wrong reading the compass offsets file 'CompassOffsets'"
+            print "Have you calibrated it?"
+
+            #AB!------------------------------------------------------------------------------------
+            #AB! For the moment pass blank offsets just so this doesn't block other testing elsewhere
+            #AB!------------------------------------------------------------------------------------
             self.mgx_offset = 0.0
             self.mgy_offset = 0.0
             self.mgz_offset = 0.0
             offs_rc = True
+        else:
+            #---------------------------------------------------------------------------------------
+            # Calibration results were successful.
+            #---------------------------------------------------------------------------------------
+            offs_rc = True
+        finally:
+            pass
 
         logger.warning("Compass Offsets:, %f, %f, %f", self.mgx_offset, self.mgy_offset, self.mgz_offset)
         return offs_rc
@@ -840,7 +849,9 @@ class MPU6050:
 
 ####################################################################################################
 #
-#  Barometer / Altimeter - from DroTek MPU-9250 breakout
+#  Barometer / Altimeter.
+#
+#  RETIRED DUE TO SWAP FROM DROTEK TO SPARKFUN IMU BREAKOUT
 #
 ####################################################################################################
 class MS5611:
@@ -872,7 +883,9 @@ class MS5611:
 
 ####################################################################################################
 #
-#  Ultrasonic range finder - only supports up to 100kbps baudrate
+#  Ultrasonic range finder
+#
+#  RETIRED DUE TO NOT SUPPORTING 400kbps I2C BAUDRATE REQUIRED BY IMU
 #
 ####################################################################################################
 class SRF02:
@@ -916,6 +929,8 @@ class SRF02:
 ####################################################################################################
 #
 #  LEDDAR range finder
+#
+#  RETIRED DUE TO OVERSIDE PHYSICAL FORM AND USE OF BIZARRE MODBUS OVER SERIAL.
 #
 ####################################################################################################
 class LEDDAR:
@@ -971,6 +986,8 @@ class LEDDAR:
 ####################################################################################################
 #
 #  PIX4FLOW 3D motion
+#
+#  RETIRED DUE TO LACK OF PRODUCTION AND INCONSISTENCY BETWEEN 3 CLONE MODELS
 #
 ####################################################################################################
 class PX4FLOW:
@@ -1089,6 +1106,8 @@ class PX4FLOW:
 ####################################################################################################
 #
 #  Garmin LIDAR-Lite V3 range finder
+#
+#  IN ACTIVE SERVICE
 #
 ####################################################################################################
 class GLL:
@@ -1507,7 +1526,6 @@ def CheckCLI(argv):
     cli_hvi_gain = 0.0
     cli_hvd_gain = 0.0
 
-
     #-------------------------------------------------------------------------------------------
     # Per frame specific values
     #-------------------------------------------------------------------------------------------
@@ -1874,6 +1892,168 @@ def munlockall():
     if result != 0:
         raise Exception("cannot lock memory, errno=%s" % ctypes.get_errno())
 
+####################################################################################################
+#
+# Start the Scanse Sweep reading process.
+#
+####################################################################################################
+def RecordSS():
+    pass
+
+####################################################################################################
+#
+# Process the Scanse Sweep data.
+#
+####################################################################################################
+def SSProcessor(ss_fifo):
+    pass
+
+
+####################################################################################################
+#
+# Start the GPS reading process.
+#
+####################################################################################################
+def RecordGPS():
+    session = gps.gps()
+    session.stream(gps.WATCH_ENABLE | gps.WATCH_NEWSTYLE)
+
+    num_sats = 0
+    latitude = 0.0
+    longitude = 0.0
+    time = ""
+    epx = 0.0
+    epy = 0.0
+    epv = 0.0
+    ept = 0.0
+    eps = 0.0
+    climb = 0.0
+    altitude = 0.0
+    speed = 0.0
+    direction = 0.0
+
+    new_lat = False
+    new_lon = False
+    new_alt = False
+
+    with io.open("/dev/shm/gps_stream", mode = "wb", buffering = 0) as fp:
+        while True:
+            try:
+                report = session.next()
+                if report['class'] == 'TPV':
+                    if hasattr(report, 'time'):  # Time
+                        time = report.time
+
+                    if hasattr(report, 'ept'):   # Estimated timestamp error - seconds
+                        ept = report.ept
+
+                    if hasattr(report, 'lon'):   # Longitude in degrees
+                        longitude = report.lon
+                        new_lon = True
+
+                    if hasattr(report, 'epx'):   # Estimated longitude error - meters
+                        epx = report.epx
+
+                    if hasattr(report, 'lat'):   # Latitude in degrees
+                        latitude = report.lat
+                        new_lat = True
+
+                    if hasattr(report, 'epy'):   # Estimated latitude error - meters
+                        epy = report.epy
+
+                    if hasattr(report, 'alt'):   # Altitude - meters
+                        altitude = report.alt
+                        new_alt = True
+
+                    if hasattr(report, 'epv'):   # Estimated altitude error - meters
+                        epv = report.epv
+
+                    if hasattr(report, 'track'): # Direction - degrees from true north
+                        direction = report.track
+
+                    if hasattr(report, 'epd'):   # Estimated direction error - degrees
+                        epd = report.epd
+
+                    if hasattr(report, 'climb'): # Climb velocity - meters per second
+                        climb = report.climb
+
+                    if hasattr(report, 'epc'):   # Estimated climb error - meters per seconds
+                        epc = report.epc
+
+                    if hasattr(report, 'speed'): # Speed over ground - meters per second
+                        speed = report.speed
+
+                    if hasattr(report, 'eps'):   # Estimated speed error - meters per second
+                        eps = report.eps
+
+
+                if report['class'] == 'SKY':
+                    if hasattr(report, 'satellites'):
+                        num_sats = 0
+                        for satellite in report.satellites:
+                            if hasattr(satellite, 'used') and satellite.used:
+                                num_sats += 1
+
+                #-----------------------------------------------------------------------------
+                # Calculate the X,Y coordinates in meters
+                #-----------------------------------------------------------------------------
+                if new_lon and new_lat and new_alt:
+
+                    new_lon = False
+                    new_lat = False
+                    new_alt = False
+
+                    output = "%f %f %f %d\n" % (latitude,
+                                                longitude,
+                                                altitude,
+                                                num_sats)
+                    fp.write(output)
+            except KeyError:
+                pass
+            except KeyboardInterrupt:
+                break
+            except StopIteration:
+                session = None
+                break
+
+
+####################################################################################################
+#
+# Process the GPS data.
+#
+# Latitude = North (+) / South (-) - 0.0 running E/W around the equator; range is +/- 90 degrees
+# Longitude = East (+) / West (-) - 0.0 running N/S through Greenwich; range is +/- 180 degrees
+# R = Radius of the Earth in meters = 6,371,000m
+#
+# With a base level longitude and latitude in degrees, we can calculate the current X and Y coordinates
+# in meters using equirectangular approximation:
+#
+# dNS = movement North / South - movement in a northerly direction is positive
+# dNS = movement East / West - movement in an easterly direction is positive
+# R = average radius of earth in meters = 6,371,000 meters
+#
+# dNS = (long2 - long1) * cos ((lat1 + lat2) / 2) * R meters
+# dEW = (lat2 - lat1) * R meters
+# distance = (dNS*dNS + dEW*dEW) ^ 0.5
+#
+# Note longitude / latitude are in degrees and need to be converted into radians i.e degrees * pi / 180
+# Similarly distance in meters needs to know the radius of the spherical Earth 
+#
+# More at http://www.movable-type.co.uk/scripts/latlong.html
+#
+####################################################################################################
+def GPSProcessor(gps_fifo):
+
+        gps_row = gps_fifo.readline()    
+        gps_list = gps_row.split()
+        assert (len(gps_list) == 4), "Incorrect GPS data received"
+        latitude = float(gps_list[0])
+        longitude = float(gps_list[1])
+        altitude = float(gps_list[2])
+        satellites = int(gps_list[3])
+
+        return latitude, longitude, altitude, satellites
+
 
 ####################################################################################################
 #
@@ -1889,10 +2069,8 @@ def RecordVideo(frame_width, frame_height, frame_rate):
         camera.framerate = frame_rate
         camera.contrast = 100
 
-        vofi = io.open("/dev/shm/motion_stream", mode = "wb", buffering = 0)
-        try:
+        with io.open("/dev/shm/motion_stream", mode = "wb", buffering = 0) as vofi:
             camera.start_recording('/dev/null', format='h264', motion_output=vofi, quality=23)
-
             try:
                 while True:
                     camera.wait_recording(1.0)
@@ -1900,72 +2078,116 @@ def RecordVideo(frame_width, frame_height, frame_rate):
                 pass
             finally:
                 camera.stop_recording()
-        finally:
-            vofi.close()
 
 ####################################################################################################
 #
-# Two phase video frame macro-block processing.  The first phase (__init__) takes a frame of macro-blocks and
-# dumps them into a dictionary indexed by the vector, and the value is the count of macro-blocks at
-# this vector point in the frame.  The second phase (process) takes the dictionary, and for each entry,
-# checks for neighbouring entries, adding half their value to the current directory area.  It also tracks
-# the highest value so far.  At the end, merges one or more vectors with the maximum score.
+# Class to process video frame macro-block motion tracking.
 #
 ####################################################################################################
-class VideoFrameProcessor:
+class VideoMotionProcessor:
 
-    def __init__(self, iframe, yaw_increment):
-        self.vector_dict = {}
-        self.vector_list = []
+    def __init__(self, motion_fifo, yaw_increment):
+        self.motion_fifo = motion_fifo
         self.yaw_increment = yaw_increment
         self.phase = 0
-        self.c_yaw = math.cos(yaw_increment)
-        self.s_yaw = math.sin(yaw_increment)
 
-        assert (len(iframe) % 3 == 0), "iFrame size error"
+    def flush(self):
+        #-------------------------------------------------------------------------------------------
+        # Read what should be the backlog of frames, and return how many there are.
+        #AB! THIS BLOCKS, BUT OMMITTING IT SEEMS FINE
+        #-------------------------------------------------------------------------------------------
+        frame_bytes = self.motion_fifo.read()
+        assert (len(frame_bytes) % self.mbs_bytes_per_frame == 0), "Incomplete frame received"
+        return int(len(frame_bytes) / self.mbs_bytes_per_frame)
 
-        self.num_mbs = int(len(iframe) / 3)
+    def phase0(self):
+        #-------------------------------------------------------------------------------------------
+        # Read the video stream and parse into a list of macro-block vectors
+        #-------------------------------------------------------------------------------------------
+        self.vector_dict = {}
+        self.vector_list = []
+        self.c_yaw = math.cos(self.yaw_increment)
+        self.s_yaw = math.sin(self.yaw_increment)
+
+        mb_size = 16           # 16 x 16 pixels are combined to make a macro-block
+        bytes_per_mb = 4       # Each macro-block is 4 bytes, 1 X, 1 Y and 2 SAD
+        mbs_per_frame = int((frame_width / mb_size + 1) * (frame_height / mb_size))
+        self.mbs_bytes_per_frame = mbs_per_frame * bytes_per_mb
+
         sign = -1 if i_am_chloe else 1
+        mb_dict = {}
 
-        #-----------------------------------------------------------------------------------
-        # Split the iframe into a list of macro-block vectors.  The mapping from each iframe
-        # in idy, idy depends on how the camera is orientated WRT the frame.
-        # This must be checked callibrated.
-        #
-        # Note: all macro-block vectors are even integers, so we divide them by 2 here for use
-        #       walking the vector dictionary for neighbours; we reinstate this at the end.
-        #
-        #-----------------------------------------------------------------------------------
-        for ii in range(self.num_mbs):
+        '''
+        #AB! I'd love this to be read() thus emptying the FIFO, catching multiple frames if there
+        #AB! is a backlog, but it just seems to block
+        '''
+        frames = self.motion_fifo.read(self.mbs_bytes_per_frame)                
+        assert (len(frames) != 0), "Shouldn't be here, no bytes to read"
+        assert(len(frames) % self.mbs_bytes_per_frame == 0), "Incomplete frame bytes read"
+        num_frames = int(len(frames) / self.mbs_bytes_per_frame)
 
-            idx = iframe[3 * ii + 1]
-            idy = iframe[3 * ii]
+        #-------------------------------------------------------------------------------------------
+        # Convert the data to byte, byte, ushort of x, y, sad structure and process them.  The
+        # exception here happens when a macro-block is filled with zeros, indicating either a full
+        # reset or no movement, and hence no processing required.
+        #-------------------------------------------------------------------------------------------
+        format = '=' + 'bbH' * mbs_per_frame * num_frames
+        iframe = struct.unpack(format, frames)
+        assert (len(iframe) % 3 == 0), "iFrame size error"
+        self.mbs_per_frame = int(len(iframe) / 3 / num_frames)
 
-            assert (idx % 2 == 0 and idy % 2 == 0), "Odd (not even) MB vector"
+        for jj in range(num_frames):
+            #---------------------------------------------------------------------------------------
+            # Split the iframe into a list of macro-block vectors.  The mapping from each iframe
+            # in idy, idy depends on how the camera is orientated WRT the frame.
+            # This must be checked callibrated.
+            #
+            # Note: all macro-block vectors are even integers, so we divide them by 2 here for use
+            #       walking the vector dictionary for neighbours; we reinstate this at the end.
+            #
+            #---------------------------------------------------------------------------------------
+            for ii in range(self.mbs_per_frame):
+                idx = iframe[jj * self.mbs_per_frame + 3 * ii + 1]
+                idy = iframe[jj * self.mbs_per_frame + 3 * ii]
+                assert (idx % 2 == 0 and idy % 2 == 0), "Odd (not even) MB vector"
+                idx = int(sign * idx / 2)
+                idy = int(sign * idy / 2)
 
-            idx = int(sign * idx / 2)
-            idy = int(sign * idy / 2)
-            sad = sign * iframe[3 * ii + 2]
+                if idx == 0 and idy == 0: # and sad == 0:
+                    continue
 
-            if idx == 0 and idy == 0: # and sad == 0:
-                continue
+                if ii not in mb_dict:
+                    mb_dict[ii] = (idx, idy)
+                else:
+                    pidx, pidy = mb_dict[ii]
+                    mb_dict[ii] = (pidx + idx, pidy + idy)
 
-            self.vector_list.append((idx, idy))
 
-        if len(self.vector_list) == 0:
+        #-------------------------------------------------------------------------------------------
+        # If the dictionary is empty, this indicates a new frame; this is not an error strictly,
+        # more of a reset to tell the outer world about.
+        #-------------------------------------------------------------------------------------------
+        if len(mb_dict) == 0:
             raise ValueError("Empty Video Frame Object")
 
-        self.phase = 1
+        #-------------------------------------------------------------------------------------------
+        # Now walk the dictionary building the vector list from the combined frames for processing in
+        # the next phase.
+        #-------------------------------------------------------------------------------------------
+        for ii in range(self.mbs_per_frame):
+            if ii in mb_dict:
+                idx, idy = mb_dict[ii]
+                self.vector_list.append((idx, idy))
 
     def phase1(self):
-        #----------------------------------------------------------------------------------
+        #-------------------------------------------------------------------------------------------
         # Unyaw the list of vectors, overwriting the yaw list
-        #----------------------------------------------------------------------------------
+        #-------------------------------------------------------------------------------------------
         unyawed_vectors = []
 
-        #----------------------------------------------------------------------------------
+        #-------------------------------------------------------------------------------------------
         # Undo the yaw increment
-        #----------------------------------------------------------------------------------
+        #-------------------------------------------------------------------------------------------
         for vector in self.vector_list:
             idx, idy = vector
             '''
@@ -1979,9 +2201,9 @@ class VideoFrameProcessor:
         self.vector_list = unyawed_vectors
 
     def phase2(self):
-        #-----------------------------------------------------------------------------------
+        #-------------------------------------------------------------------------------------------
         # Build the dictionary of unyawed vectors; they score 2 because of the next phase
-        #-----------------------------------------------------------------------------------
+        #-------------------------------------------------------------------------------------------
         for (idx, idy) in self.vector_list:
             if (idx, idy) in self.vector_dict:
                 self.vector_dict[(idx, idy)] += 2
@@ -1989,9 +2211,9 @@ class VideoFrameProcessor:
                 self.vector_dict[(idx, idy)] = 2
 
     def phase3(self):
-        #-----------------------------------------------------------------------------------
+        #-------------------------------------------------------------------------------------------
         # Pass again through the dictionary of vectors, building up clusters based on neighbours.
-        #-----------------------------------------------------------------------------------
+        #-------------------------------------------------------------------------------------------
         best_score = 0
         self.best_vectors = []
 
@@ -2015,10 +2237,10 @@ class VideoFrameProcessor:
                 self.best_vectors.append((vector, vector_score))
 
     def phase4(self):
-        #-----------------------------------------------------------------------------------
-        # Now we've collected the clusters of the best score vectors in the frame, average
-        # and reyaw it before returning the result.
-        #-----------------------------------------------------------------------------------
+        #-------------------------------------------------------------------------------------------
+        # Now we've collected the clusters of the best score vectors in the frame, average and reyaw
+        # it before returning the result.
+        #-------------------------------------------------------------------------------------------
         sum_score = 0
         sum_x = 0
         sum_y = 0
@@ -2031,9 +2253,9 @@ class VideoFrameProcessor:
         best_x = sum_x / sum_score
         best_y = sum_y / sum_score
 
-        #-----------------------------------------------------------------------------------
+        #-------------------------------------------------------------------------------------------
         # Reinstate yaw increment
-        #-----------------------------------------------------------------------------------
+        #-------------------------------------------------------------------------------------------
         '''
         best_z = 0.0
         idx, idy, idz = RotateVector(best_x, best_y, best_z, 0.0, 0.0, self.yaw_increment)
@@ -2044,39 +2266,42 @@ class VideoFrameProcessor:
         return 2 * idx, 2 * idy
 
     def process(self):
-        #------------------------------------------------------------------------------------
+        assert(self.phase < 5), "Phase shift in motion vector processing"
+
+        #-------------------------------------------------------------------------------------------
+        # Phase 0 - load the data and convert into a macro-block vector list 
+        #-------------------------------------------------------------------------------------------
+        if self.phase == 0:
+            self.phase0()
+            rv = None
+
+        #-------------------------------------------------------------------------------------------
         # Phase 1 - take the list of macro blocks and undo yaw
-        #------------------------------------------------------------------------------------
-        if self.phase == 1:
+        #-------------------------------------------------------------------------------------------
+        elif self.phase == 1:
             self.phase1()
             rv = None
 
-        #------------------------------------------------------------------------------------
+        #-------------------------------------------------------------------------------------------
         # Phase 2 - build the dictionary of int rounded unyawed vectors
-        #------------------------------------------------------------------------------------
+        #-------------------------------------------------------------------------------------------
         elif self.phase == 2:
             self.phase2()
             rv = None
 
-        #------------------------------------------------------------------------------------
+        #-------------------------------------------------------------------------------------------
         # Phase 3 - walk the dictionary, looking for neighbouring clusters and score them
-        #------------------------------------------------------------------------------------
+        #-------------------------------------------------------------------------------------------
         elif self.phase == 3:
             self.phase3()
             rv = None
 
-        #------------------------------------------------------------------------------------
+        #-------------------------------------------------------------------------------------------
         # Phase 4 - average highest peak clusters, redo yaw, and return result
-        #------------------------------------------------------------------------------------
+        #-------------------------------------------------------------------------------------------
         elif self.phase == 4:
             idx, idy = self.phase4()
             rv = idx, idy
-
-        #------------------------------------------------------------------------------------
-        # Phase ? - abort
-        #------------------------------------------------------------------------------------
-        else:
-            raise ValueError("Invalid phase error: %d" % self.phase)
 
         self.phase += 1
         return rv
@@ -2144,6 +2369,7 @@ class Quadcopter:
             self.camera_installed = True
             self.barometer_installed = False
             self.gll_installed = True
+            self.gps_installed = False
         elif i_am_chloe:
             self.urf_installed = False
             self.leddar_installed = False
@@ -2152,6 +2378,7 @@ class Quadcopter:
             self.camera_installed = True
             self.barometer_installed = False
             self.gll_installed = True
+            self.gps_installed = False
         elif i_am_hermione:
             self.urf_installed = False
             self.leddar_installed = False
@@ -2160,6 +2387,7 @@ class Quadcopter:
             self.camera_installed = True
             self.barometer_installed = False
             self.gll_installed = True
+            self.gps_installed = True
             X8 = True
 
         #-------------------------------------------------------------------------------------------
@@ -2345,7 +2573,7 @@ class Quadcopter:
         global adc_frequency
         global sampling_rate
         global motion_rate
-        adc_frequency = 1000        #AB! defined by dlpf >= 1; DO NOT USE ZERO => 8000 adc_frequency
+        adc_frequency = 1000        #AB: defined by dlpf >= 1; DO NOT USE ZERO => 8000 adc_frequency
 
         if self.leddar_installed or self.camera_installed or self.gll_installed:
             if i_am_hermione:
@@ -2553,6 +2781,7 @@ class Quadcopter:
         qvy_fuse = 0.0
         qvz_fuse = 0.0
 
+        '''
         qdx_increment = 0.0
         qdy_increment = 0.0
         qdz_increment = 0.0
@@ -2568,154 +2797,7 @@ class Quadcopter:
         qvx_integral = 0.0
         qvy_integral = 0.0
         qvz_integral = 0.0
-
-        #-------------------------------------------------------------------------------------------
-        # Set up the global constants - gravity in meters per second squared
-        #-------------------------------------------------------------------------------------------
-        GRAV_ACCEL = 9.80665
-
-        #-------------------------------------------------------------------------------------------
-        # Register the flight plan with the authorities
-        #-------------------------------------------------------------------------------------------
-        try:
-            fp = FlightPlan(self, flight_plan)
-        except Exception, err:
-            print "%s error: %s" % (flight_plan, err)
-            return
-
-        #-------------------------------------------------------------------------------------------
-        # Flush the FIFO, collect roughly half a FIFO full of samples
-        #-------------------------------------------------------------------------------------------
-        mpu6050.flushFIFO()
-        time.sleep(20 / sampling_rate)
-        nfb = mpu6050.numFIFOBatches()
-        qax, qay, qaz, qrx, qry, qrz, dt = mpu6050.readFIFO(nfb)
-
-        #-------------------------------------------------------------------------------------------
-        # Feed back the gyro offset calibration
-        #-------------------------------------------------------------------------------------------
-        mpu6050.setGyroOffsets(qrx, qry, qrz)
-
-        #-------------------------------------------------------------------------------------------
-        # Read the IMU acceleration to obtain angles and gravity.
-        #-------------------------------------------------------------------------------------------
-        qax, qay, qaz, qrx, qry, qrz = mpu6050.scaleSensors(qax, qay, qaz, qrx, qry, qrz)
-
-        #-------------------------------------------------------------------------------------------
-        # Calculate the angles - ideally takeoff should be on a horizontal surface but a few degrees
-        # here or there won't matter.
-        #-------------------------------------------------------------------------------------------
-        pa, ra = GetRotationAngles(qax, qay, qaz)
-        ya = 0.0
-
-        apa, ara = GetAbsoluteAngles(qax, qay, qaz)
-        aya = 0.0
-
-        papa = apa
-        para = ara
-        paya = aya
-
-        #-------------------------------------------------------------------------------------------
-        # Get the value for gravity.
-        #-------------------------------------------------------------------------------------------
-        egx = 0.0
-        egy = 0.0
-        egz = math.pow(math.pow(qax, 2) + math.pow(qay, 2) + math.pow(qaz, 2), 0.5)
-
         '''
-        egx, egy, egz = RotateVector(qax, qay, qaz, -pa, -ra, -ya)
-        '''
-        '''
-        g_scale = 1 / math.pow(math.pow(qax, 2) + math.pow(qay, 2) + math.pow(qaz, 2), 0.5)
-
-        qax *= g_scale
-        qay *= g_scale
-        qaz *= g_scale
-        '''
-        '''
-        egx = 0.0
-        egy = 0.0
-        egz = 1.0
-        '''
-
-        #-------------------------------------------------------------------------------------------
-        # The tilt ratio is used to compensate sensor height (and thus velocity) for the fact the
-        # sensors are leaning.
-        #
-        # tilt ratio is derived from cos(tilt angle);
-        # - tilt angle a = arctan(sqrt(x*x + y*y) / z)
-        # - cos(arctan(a)) = 1 / (sqrt(1 + a*a))
-        # This all collapses down to the following.  0 <= Tilt ratio <= 1
-        #-------------------------------------------------------------------------------------------
-        tilt_ratio = qaz / egz
-
-        #-------------------------------------------------------------------------------------------
-        # Log the critical parameters from this warm-up: the take-off surface tilt, and gravity.
-        # Note that some of the variables used above are used in the main processing loop.  Messing
-        # with the above code can have very unexpected effects in flight.
-        #-------------------------------------------------------------------------------------------
-        logger.warning("pitch, %f, roll, %f", math.degrees(pa), math.degrees(ra))
-        logger.warning("egx, %f, egy, %f, egz %f", egx, egy, egz)
-        logger.warning("based upon %d samples", dt * sampling_rate)
-
-        #-------------------------------------------------------------------------------------------
-        # Initialize the base setting of earth frame take-off height - i.e. the vertical distance from
-        # the height sensor or the take-off platform / leg height if no sensor is available.
-        #-------------------------------------------------------------------------------------------
-        eftoh = 0.0
-
-        #-------------------------------------------------------------------------------------------
-        # Read the initial height of the URF from the ground
-        #-------------------------------------------------------------------------------------------
-        urfz = 0
-        if self.urf_installed:
-            srf02.pingProximity()
-            time.sleep(0.070)  # 70ms sleep guarantees a valid result
-            if not srf02.pingProcessed():
-                print "URF FMR FECK"
-                return
-            else:
-                eftoh = srf02.readProximity()
-                eftoh *= tilt_ratio
-                srf02.pingProximity()
-
-        #-------------------------------------------------------------------------------------------
-        # Get an initial set of readings from the LEDDAR thus clearing the DR interrupt
-        #-------------------------------------------------------------------------------------------
-        l_dist = 0.0
-        l_dd = 0.0
-        l_dt = 0.0
-        if self.leddar_installed:
-            eftoh = leddar.reset() * tilt_ratio
-
-        #-------------------------------------------------------------------------------------------
-        # Reset the take-off height
-        #-------------------------------------------------------------------------------------------
-        px_qvx = 0.0
-        px_qvy = 0.0
-        if self.px4flow_installed:
-            px4flow.get()
-
-        #-------------------------------------------------------------------------------------------
-        # Get an initial take-off height
-        #-------------------------------------------------------------------------------------------
-        g_dist = 0.0
-        if self.gll_installed:
-            print "Couple of seconds to let the LiDAR settle..."
-            for ii in range(2 * self.tracking_rate):
-                time.sleep(1 / self.tracking_rate)
-                g_dist, g_vel = gll.read()
-                eftoh += g_dist * tilt_ratio
-            eftoh /= (2 * self.tracking_rate)
-
-        logger.warning("EFTOH:, %f", eftoh)
-
-        #-------------------------------------------------------------------------------------------
-        # Prime the direction vector of the earth's magnotic core to provide long term yaw stability.
-        #-------------------------------------------------------------------------------------------
-        magx = 0.0
-        magy = 0.0
-        magz = 0.0
 
         #===========================================================================================
         # Tuning: Set up the PID gains - some are hard coded mathematical approximations, some come
@@ -2845,100 +2927,116 @@ class Quadcopter:
         yr_pid = PID(PID_YR_P_GAIN, PID_YR_I_GAIN, PID_YR_D_GAIN)
 
         #-------------------------------------------------------------------------------------------
-        # Set up the video macro-block parameters
-        # Video supported upto 1080p @ 30Hz but restricted by processing speed.
+        # Set up the global constants - gravity in meters per second squared
         #-------------------------------------------------------------------------------------------
-        camera_version = 2
+        GRAV_ACCEL = 9.80665
 
-        if i_am_hermione:
-            frame_width = 720    # an exact multiple of mb_size
-            frame_height = 720   # an exact multiple of mb size
-        elif i_am_chloe:
-            frame_width = 480    # an exact multiple of mb_size
-            frame_height = 480   # an exact multiple of mb size
-        elif i_am_zoe:
-            frame_width = 400    # an exact multiple of mb_size
-            frame_height = 400   # an exact multiple of mb size
+        #-------------------------------------------------------------------------------------------
+        # Register the flight plan with the authorities
+        #-------------------------------------------------------------------------------------------
+        try:
+            fp = FlightPlan(self, flight_plan)
+        except Exception, err:
+            print "%s error: %s" % (flight_plan, err)
+            return
 
-        frame_rate = self.tracking_rate
-        mb_size = 16
-        bytes_per_mb = 4
-        mbs_per_frame = int((frame_width / mb_size + 1) * (frame_height / mb_size))
-        mbs_frame_bytes = mbs_per_frame * bytes_per_mb
-        vfp = None
+        #-------------------------------------------------------------------------------------------
+        # Flush the IMU FIFO, collect roughly half a FIFO full of samples
+        #-------------------------------------------------------------------------------------------
+        mpu6050.flushFIFO()
+        time.sleep(20 / sampling_rate)
+        nfb = mpu6050.numFIFOBatches()
+        qax, qay, qaz, qrx, qry, qrz, dt = mpu6050.readFIFO(nfb)
 
-        #------------------------------------------------------------------------------------------
-        # The complementary filter for vertical and horizontal fusion processing depends on the
-        # Garmin LiDAR-lite sampling frequency and video fps.  Only Hermione can manage these higher
-        # resolutions.
-        #------------------------------------------------------------------------------------------
-        vtau = 20 / frame_rate
-        dtau = 20 / frame_rate
+        #-------------------------------------------------------------------------------------------
+        # Feed back the gyro offset calibration
+        #-------------------------------------------------------------------------------------------
+        mpu6050.setGyroOffsets(qrx, qry, qrz)
 
-        #------------------------------------------------------------------------------------------
-        # Scale is the convertion from macro-blocks to meters at a given height.
-        # - V1 camera angle of view (aov): 54 x 41 degrees
-        # - V2 camera angle of view (aov): 62.2 x 48.8 degrees.
-        # Because we're shooting a 400 x 400 video from with a V2 camera this means a macro-block is
-        # 2 x height x tan ( aov / 2) / 400 meters.
+        #-------------------------------------------------------------------------------------------
+        # Read the IMU acceleration to obtain angles and gravity.
+        #-------------------------------------------------------------------------------------------
+        qax, qay, qaz, qrx, qry, qrz = mpu6050.scaleSensors(qax, qay, qaz, qrx, qry, qrz)
+
+        #-------------------------------------------------------------------------------------------
+        # Calculate the angles - ideally takeoff should be on a horizontal surface but a few degrees
+        # here or there won't matter.
+        #-------------------------------------------------------------------------------------------
+        pa, ra = GetRotationAngles(qax, qay, qaz)
+        ya = 0.0
+
+        apa, ara = GetAbsoluteAngles(qax, qay, qaz)
+        aya = 0.0
+
+        papa = apa
+        para = ara
+        paya = aya
+
+        #-------------------------------------------------------------------------------------------
+        # Get the value for gravity.
+        #-------------------------------------------------------------------------------------------
+        egx = 0.0
+        egy = 0.0
+        egz = math.pow(math.pow(qax, 2) + math.pow(qay, 2) + math.pow(qaz, 2), 0.5)
+
+        '''
+        egx, egy, egz = RotateVector(qax, qay, qaz, -pa, -ra, -ya)
+        '''
+        '''
+        g_scale = 1 / math.pow(math.pow(qax, 2) + math.pow(qay, 2) + math.pow(qaz, 2), 0.5)
+
+        qax *= g_scale
+        qay *= g_scale
+        qaz *= g_scale
+        '''
+        '''
+        egx = 0.0
+        egy = 0.0
+        egz = 1.0
+        '''
+
+        #-------------------------------------------------------------------------------------------
+        # The tilt ratio is used to compensate sensor height (and thus velocity) for the fact the
+        # sensors are leaning.
         #
-        # The macro-block vectors represent the movement of a macro-block between frames.  This is
-        # implied by the fact that each vector can only be between +/- 128 in X and Y which allows for
-        # shifts up to +/- 2048 pixels in a frame which seems reasonable given the h.264 compression.
-        #
-        # scale just needs to be multiplied by (macro-block shift x height) to produce the increment of
-        # horizontal movement in meters.
-        #------------------------------------------------------------------------------------------
-        aov = (48.8 if camera_version == 2 else 41) * math.pi / 180
-        scale = 2 * math.tan(aov / 2) / frame_width
+        # tilt ratio is derived from cos(tilt angle);
+        # - tilt angle a = arctan(sqrt(x*x + y*y) / z)
+        # - cos(arctan(a)) = 1 / (sqrt(1 + a*a))
+        # This all collapses down to the following.  0 <= Tilt ratio <= 1
+        #-------------------------------------------------------------------------------------------
+        tilt_ratio = qaz / egz
 
-        format = '=' + 'bbH' * mbs_per_frame
+        #-------------------------------------------------------------------------------------------
+        # Log the critical parameters from this warm-up: the take-off surface tilt, and gravity.
+        # Note that some of the variables used above are used in the main processing loop.  Messing
+        # with the above code can have very unexpected effects in flight.
+        #-------------------------------------------------------------------------------------------
+        logger.warning("pitch, %f, roll, %f", math.degrees(pa), math.degrees(ra))
+        logger.warning("egx, %f, egy, %f, egz %f", egx, egy, egz)
+        logger.warning("based upon %d samples", dt * sampling_rate)
 
-        read_list = []
-        write_list = []
-        exception_list = []
+        #-------------------------------------------------------------------------------------------
+        # Set up the constants for motion fusion if we have lateral and vertical distance / velocity
+        # sensors.
+        # - vmp = video motion processor object
+        # - vvf, hvf, vdf, hdf flag which must all be set to true for fusion to be triggered
+        # - fusion_tau used for the fusion complementary filter - it's set to 2s
+        #-------------------------------------------------------------------------------------------
+        if (self.gll_installed or self.leddar_installed or self.urf_installed) and self.camera_installed:
+            vmp = None
+            vvf = False
+            hvf = False
+            vdf = False
+            hdf = False
+            fusion_tau = 20 / self.tracking_rate
 
-        mbx = 0.0
-        mby = 0.0
-
-        vvf = False
-        hvf = False
-        vdf = False
-        hdf = False
-
-        camera_data_update = False
-
-        if self.camera_installed:
-            #---------------------------------------------------------------------------------------
-            # Setup a shared memory based data stream for the PiCamera video motion output
-            #---------------------------------------------------------------------------------------
-            os.mkfifo("/dev/shm/motion_stream")
-
-            def Daemonize():
-                os.setpgrp()
-
-            video = subprocess.Popen(["python", __file__, str(frame_width), str(frame_height), str(frame_rate)], preexec_fn =  Daemonize)
-            # video = subprocess.Popen(["raspivid", "-w", "320", "-h", "320", "-fps", "10", "-fl", "-n", "-t", "0", "-o", "/dev/null", "-x", "/dev/shm/motion_stream"], preexec_fn = Daemonize)
-            while True:
-                try:
-                    py_fifo = open("/dev/shm/motion_stream", "rb")
-                except:
-                    continue
-                else:
-                    break
-            read_list = [py_fifo]
-
-            #---------------------------------------------------------------------------------------
-            # Capture a couple of seconds' samples to let the video settle
-            #---------------------------------------------------------------------------------------
-            print "Couple of seconds to let the video settle..."
-            for ii in range(int(2 * frame_rate)):
-                frame = py_fifo.read(mbs_frame_bytes)
-                if len(frame) != mbs_frame_bytes:
-                    print "Feck"
-                    return
-
-            logger.warning("Video @, %d, %d,  pixels, %d, fps", frame_width, frame_height, frame_rate)
+        #-------------------------------------------------------------------------------------------
+        # Prime the direction vector of the earth's magnetic core to provide long term yaw stability.
+        #-------------------------------------------------------------------------------------------
+        magx = 0.0
+        magy = 0.0
+        magz = 0.0
+        compass_angle = 0.0
 
         #------------------------------------------------------------------------------------------
         # Set the props spinning at their base rate to ensure initial kick-start doesn't get spotted
@@ -2955,6 +3053,185 @@ class Quadcopter:
         hsf = float(base_pwm)
         ready_to_fly = False
         time.sleep(2.0)
+    
+        #-------------------------------------------------------------------------------------------
+        # Initialize the base setting of earth frame take-off height - i.e. the vertical distance from
+        # the height sensor or the take-off platform / leg height if no sensor is available.
+        #-------------------------------------------------------------------------------------------
+        eftoh = 0.0
+
+        #-------------------------------------------------------------------------------------------
+        # Read the initial height of the URF from the ground
+        #-------------------------------------------------------------------------------------------
+        urfz = 0
+        if self.urf_installed:
+            srf02.pingProximity()
+            time.sleep(0.070)  # 70ms sleep guarantees a valid result
+            if not srf02.pingProcessed():
+                print "URF FMR FECK"
+                return
+            else:
+                eftoh = srf02.readProximity()
+                eftoh *= tilt_ratio
+                srf02.pingProximity()
+
+        #-------------------------------------------------------------------------------------------
+        # Get an initial set of readings from the LEDDAR thus clearing the DR interrupt
+        #-------------------------------------------------------------------------------------------
+        l_dist = 0.0
+        l_dd = 0.0
+        l_dt = 0.0
+        if self.leddar_installed:
+            eftoh = leddar.reset() * tilt_ratio
+
+        #-------------------------------------------------------------------------------------------
+        # Reset the take-off height
+        #-------------------------------------------------------------------------------------------
+        px_qvx = 0.0
+        px_qvy = 0.0
+        if self.px4flow_installed:
+            px4flow.get()
+
+        #-------------------------------------------------------------------------------------------
+        # Get an initial take-off height
+        #-------------------------------------------------------------------------------------------
+        g_dist = 0.0
+        if self.gll_installed:
+            print "Couple of seconds to let the LiDAR settle..."
+            for ii in range(2 * self.tracking_rate):
+                time.sleep(1 / self.tracking_rate)
+                g_dist, g_vel = gll.read()
+                eftoh += g_dist * tilt_ratio
+            eftoh /= (2 * self.tracking_rate)
+
+        logger.warning("EFTOH:, %f", eftoh)
+
+        #-------------------------------------------------------------------------------------------
+        # Set up the select() input lists to be filling in by external video, GPS and scanse sensors'
+        # FIFOs
+        #-------------------------------------------------------------------------------------------
+        readlist = []
+        writelist = []
+        exceptlist = []
+
+        def Daemonize():
+            os.setpgrp()
+
+        #-------------------------------------------------------------------------------------------
+        # Set up the video macro-block parameters
+        # Video supported upto 1080p @ 30Hz but restricted by processing speed.
+        #-------------------------------------------------------------------------------------------
+        if self.camera_installed:
+            print "Couple of seconds to let the video settle..."
+
+            global frame_width
+            global frame_height
+
+            if i_am_hermione:
+                frame_width = 720    # an exact multiple of mb_size
+                frame_height = 720   # an exact multiple of mb size
+            elif i_am_chloe:
+                frame_width = 480    # an exact multiple of mb_size
+                frame_height = 480   # an exact multiple of mb size
+            elif i_am_zoe:
+                frame_width = 400    # an exact multiple of mb_size
+                frame_height = 400   # an exact multiple of mb size
+
+            frame_rate = self.tracking_rate
+
+            camera_data_update = False
+
+            #------------------------------------------------------------------------------------------
+            # Scale is the convertion from macro-blocks to meters at a given height.
+            # - V1 camera angle of view (aov): 54 x 41 degrees
+            # - V2 camera angle of view (aov): 62.2 x 48.8 degrees.
+            # Because we're shooting a 400 x 400 video from with a V2 camera this means a macro-block is
+            # 2 x height x tan ( aov / 2) / 400 meters.
+            #
+            # The macro-block vectors represent the movement of a macro-block between frames.  This is
+            # implied by the fact that each vector can only be between +/- 128 in X and Y which allows for
+            # shifts up to +/- 2048 pixels in a frame which seems reasonable given the h.264 compression.
+            #
+            # scale just needs to be multiplied by (macro-block shift x height) to produce the increment of
+            # horizontal movement in meters.
+            #------------------------------------------------------------------------------------------
+            camera_version = 2
+            aov = (48.8 if camera_version == 2 else 41) * math.pi / 180
+            scale = 2 * math.tan(aov / 2) / frame_width
+
+            #---------------------------------------------------------------------------------------
+            # Setup a shared memory based data stream for the PiCamera video motion output
+            #---------------------------------------------------------------------------------------
+            os.mkfifo("/dev/shm/motion_stream")
+
+            video = subprocess.Popen(["python", __file__, "MOTION", str(frame_width), str(frame_height), str(frame_rate)], preexec_fn =  Daemonize)
+            # video = subprocess.Popen(["raspivid", "-w", "320", "-h", "320", "-fps", "10", "-fl", "-n", "-t", "0", "-o", "/dev/null", "-x", "/dev/shm/motion_stream"], preexec_fn = Daemonize)
+
+            while True:
+                try:
+                    '''
+                    #AB! RawIOBase should provide readall to allow read of all contents of motion stream
+                    #AB! but I get an exception of RawIOBase has no attribute readinto() - needs further
+                    #AB! investigation when I have the time.  This may be why:
+                    #AB! http://stackoverflow.com/questions/34768958/should-i-use-readinto-method-of-python-file-or-not
+                    motion_fifo = io.RawIOBase("/dev/shm/motion_stream", mode="rb")
+                    '''
+                    motion_fifo = io.open("/dev/shm/motion_stream", mode="rb")
+                except:
+                    continue
+                else:
+                    break
+            readlist.append(motion_fifo)
+
+            #---------------------------------------------------------------------------------------
+            # Capture a couple of seconds' samples to let the video settle                     #GPS!
+            #---------------------------------------------------------------------------------------
+            frame_count = 0
+            '''
+            #AB! flush blocks permanently
+            time.sleep(2.0)
+            frame_count = VideoMotionProcessor(motion_fifo, 0).flush()
+            '''
+            logger.warning("Video @, %d, %d,  pixels, %d, fps, 2s frame count, %d", frame_width, frame_height, frame_rate, frame_count)
+
+
+        #-------------------------------------------------------------------------------------------
+        # Set up the GPS receiver process.                                                     #GPS!
+        #-------------------------------------------------------------------------------------------
+        gps_lat = 0.0
+        gps_long = 0.0
+        gps_alt = 0.0
+        gps_sats = 0
+        if self.gps_installed:
+            print "Couple of seconds to set up the GPS..."
+
+            #---------------------------------------------------------------------------------------
+            # Setup a shared memory based data stream for the GPS output
+            #---------------------------------------------------------------------------------------
+            os.mkfifo("/dev/shm/gps_stream")
+
+            gps = subprocess.Popen(["python", __file__, "GPS"], preexec_fn =  Daemonize)
+            while True:
+                try:
+                    gps_fifo = io.open("/dev/shm/gps_stream", mode="rb")
+                except:
+                    continue
+                else:
+                    break
+            readlist.append(gps_fifo)
+
+            #---------------------------------------------------------------------------------------
+            # Get an initial GPS result                                                        #GPS!
+            #---------------------------------------------------------------------------------------
+            gps_sats = 0
+            print "Couple of seconds to acquire satellites... 0",
+            while gps_sats < 7:
+                gps_lat, gps_long, gps_alt, gps_sats = GPSProcessor(gps_fifo)
+                print "\b\b%d" % gps_sats,
+                sys.stdout.flush()
+            print
+            logger.warning("GPS location: latitude %f; longitude %f; altitude %f, satellites %d.", gps_long, gps_lat, gps_alt, gps_sats)
+
 
         print ""
         print "################################################################################"
@@ -2970,7 +3247,8 @@ class Quadcopter:
         if diagnostics:
             logger.warning("time, dt, loops, " +
                             "temperature, " +
-                            "magx, magy, magz, " +
+                            "latitude, longitude, altitude, satellites, " +
+                            "magx, magy, magz, compass_angle, " +
                             "qdx_fuse, qdy_fuze, qdz_fuse, " +
                             "qvx_fuse, qvy_fuse, qvz_fuse, " +
                             "edx_target, edy_target, edz_target, " +
@@ -2991,7 +3269,18 @@ class Quadcopter:
         start_flight = time.time()
 
         #-------------------------------------------------------------------------------------------
-        # Flush the FIFO and enable the FIFO overflow interrupt
+        # Flush the motion video stream
+        #-------------------------------------------------------------------------------------------
+        if self.camera_installed:
+            '''
+            #AB! flush blocks permanently
+            VideoMotionProcessor(motion_fifo, 0).flush()
+            '''
+            vmpt = 0.0
+            pvmpt = 0.0
+
+        #-------------------------------------------------------------------------------------------
+        # Flush the IMU FIFO and enable the FIFO overflow interrupt
         #-------------------------------------------------------------------------------------------
         GPIO.event_detected(GPIO_FIFO_OVERFLOW_INTERRUPT)
         mpu6050.flushFIFO()
@@ -3006,7 +3295,7 @@ class Quadcopter:
         motion_loops = 0
         fusion_loops = 0
         garmin_loops = 0
-        video_count = 0
+        video_loops = 0
 
         #===========================================================================================
         #
@@ -3032,8 +3321,8 @@ class Quadcopter:
 
             if nfb >= self.FIFO_OVERFLOW:
                 logger.critical("ABORT: FIFO too full risking overflow: %d.", nfb)
-                if vfp != None:
-                    logger.critical("       Next VFP phase: %d", vfp.phase)
+                if vmp != None:
+                    logger.critical("       Next VFP phase: %d", vmp.phase)
                 break
 
             if nfb < self.FIFO_PRIORITY:
@@ -3043,16 +3332,17 @@ class Quadcopter:
                 # if there's any processing we can do.  First, have we already got a video frame
                 # we can continue processing?
                 #-------------------------------------------------------------------------------
-                if vfp != None:
+                if vmp != None:
                     try:
-                        vvx, vvy = vfp.process()
+                        vvx, vvy = vmp.process()
                     except TypeError as e:
                         #-----------------------------------------------------------------------
-                        # An exception occurs when the processing is not complete.  Processing is
-                        # broken into 4 phases, all but the final stage returning None.
+                        # An exception occurs when the processing is not complete. Processing is
+                        # broken into 5 phases, all but the final stage returning None thus 
+                        # raising this TypeError exception.
                         #-----------------------------------------------------------------------
                         continue
-                    except ValueError as e:
+                    except AssertionError as e:
                         #-----------------------------------------------------------------------
                         # We've hit a bug - somehow the processor is to process a phase which
                         # doesn't exist.  Abort.
@@ -3064,8 +3354,8 @@ class Quadcopter:
                     vvx *= scale
                     vvy *= scale
                     camera_data_update = True
-                    vfp = None
-                    video_count += 1
+                    vmp = None
+                    video_loops += 1
                     continue
 
                 #-------------------------------------------------------------------------------
@@ -3074,46 +3364,44 @@ class Quadcopter:
                 #-------------------------------------------------------------------------------
                 timeout = (self.FIFO_PRIORITY - nfb) / sampling_rate
                 try:
-                    read_out, write_out, exception_out = select.select(read_list, write_list, exception_list, timeout)
+                    readable, writeable, exceptable = select.select(readlist, writelist, exceptlist, timeout)
                 except:
                     logger.critical("ERROR: select error")
                     break
 
-                if len(read_out) != 0:
 
+                if self.camera_installed and motion_fifo in readable:
                     #---------------------------------------------------------------------------
-                    # 1680 = (frame_width / macro_block_size + 1) * (frame_height / macro_block_size)
-                    # * 4 bytes per macro-block
+                    # Run the Video Frame Processor
                     #---------------------------------------------------------------------------
-                    frame = py_fifo.read(mbs_frame_bytes)
-                    if len(frame) != mbs_frame_bytes:
-                        logger.critical("ERROR: incomplete frame received")
-                        break
-
-                    #---------------------------------------------------------------------------
-                    # Convert the data to byte, byte, ushort of x, y, sad structure and process them.
-                    # The exception here happens when a macro-block is filled with zeros, indicating
-                    # either a full reset or no movement, and hence no processing required,
-                    #---------------------------------------------------------------------------
-                    iframe = struct.unpack(format, frame)
+                    apa_increment = apa - papa
+                    ara_increment = ara - para
+                    aya_increment = aya - paya
+                    vmp_dt = vmpt - pvmpt
+                    papa = apa
+                    para = ara
+                    paya = aya
+                    pvmpt = vmpt
                     try:
-                        apa_increment = apa - papa
-                        ara_increment = ara - para
-                        aya_increment = aya - paya
-                        papa = apa
-                        para = ara
-                        paya = aya
-                        vfp = VideoFrameProcessor(iframe, aya_increment)
+                        vmp = VideoMotionProcessor(motion_fifo, aya_increment)
+                        vmp.process()
                     except ValueError as e:
                         #-----------------------------------------------------------------------
                         # First pass of the video frame shows no movement detected, and thus no
                         # further processing.
                         #-----------------------------------------------------------------------
-                        video_count += 1
-                        vfp = None
+                        video_loops += 1
+                        vmp = None
+
+                elif self.gps_installed and gps_fifo in readable:
+                    #---------------------------------------------------------------------------
+                    # Run the GPS Processor
+                    #---------------------------------------------------------------------------
+                    try:
+                        gps_lat, gps_long, gps_alt, gps_sats = GPSProcessor(gps_fifo)
                     except AssertionError as e:
-                        logger.critical("ERROR: %s",  e) 
-                        break   
+                        print "FMR GPS"
+                        break
 
                 #-------------------------------------------------------------------------------
                 # We had free time, do we still?  Better check.
@@ -3169,6 +3457,7 @@ class Quadcopter:
             motion_loops += 1
             sampling_loops += motion_dt * sampling_rate
             fusion_dt += motion_dt
+            vmpt += motion_dt
 
 
             ################################## ANGLES PROCESSING ###################################
@@ -3239,20 +3528,20 @@ class Quadcopter:
             qvy_increment = (qay - qgy) * GRAV_ACCEL * motion_dt
             qvz_increment = (qaz - qgz) * GRAV_ACCEL * motion_dt
 
-            qvx_integral += qvx_increment
-            qvy_integral += qvy_increment
-            qvz_integral += qvz_increment
+            qvx_input += qvx_increment
+            qvy_input += qvy_increment
+            qvz_input += qvz_increment
 
             #---------------------------------------------------------------------------------------
             # Integrate again the velocities to get distance.
             #---------------------------------------------------------------------------------------
-            qdx_increment = qvx_integral * motion_dt
-            qdy_increment = qvy_integral * motion_dt
-            qdz_increment = qvz_integral * motion_dt
+            qdx_increment = qvx_input * motion_dt
+            qdy_increment = qvy_input * motion_dt
+            qdz_increment = qvz_input * motion_dt
 
-            qdx_integral += qdx_increment
-            qdy_integral += qdy_increment
-            qdz_integral += qdz_increment
+            qdx_input += qdx_increment
+            qdy_input += qdy_increment
+            qdz_input += qdz_increment
 
 
             ######################## ABSOLUTE DISTANCE / ORIENTATION SENSORS #######################
@@ -3265,6 +3554,7 @@ class Quadcopter:
             #---------------------------------------------------------------------------------------
             if self.compass_installed:
                 magx, magy, magz = mpu6050.readCompass()
+                compass_angle = math.atan2(magy, magz) * 180 / math.pi
 
             #=======================================================================================
             # Acquire vertical distance (height) first, prioritizing the best sensors,
@@ -3285,10 +3575,12 @@ class Quadcopter:
                 vdf = True
 
             #---------------------------------------------------------------------------------------
-            # Get the latest set of LEDDAR velocities if available.
             # DUE TO THE FACT LEDDAR USES THE MODBUS INTERFACE, IT'S BEEN RETIRED IN PREFERENCE FOR
-            # THE I2C USED BY THE GARMIN LIDAT LITE ABOVE.
+            # THE I2C USED BY THE GARMIN LIDAR LITE ABOVE.
             # THIS CODE IS HERE FOR REFERENCE ONLY.
+            #
+            # Get the latest set of LEDDAR velocities if available.
+            #
             #---------------------------------------------------------------------------------------
             elif self.leddar_installed and GPIO.input(GPIO_LEDDAR_DR_INTERRUPT):
                 error = ""
@@ -3324,9 +3616,10 @@ class Quadcopter:
                         break
 
             #---------------------------------------------------------------------------------------
-            # Check if there's a URF reading available, and if so, read and re-ping.
-            # DUE TO THE FACT SRF02 DOES NOT SUPPORT THE REQUIRED 400kbps BAUDRATE,
+            # DUE TO THE FACT SRF02 DOES NOT SUPPORT THE 400kbps I2C BAUDRATE REQUIRED BY THE IMU,
             # THIS CODE IS HERE FOR REFERENCE ONLY.
+            #
+            # Check if there's a URF reading available, and if so, read and re-ping.
             #---------------------------------------------------------------------------------------
             elif self.urf_installed and srf02.pingProcessed():
                 urf_z, urf_dt = srf02.readProximity()
@@ -3355,13 +3648,13 @@ class Quadcopter:
                 error = ""
                 try:
                     x_rps, y_rps = px4flow.get()
-                except IOError, e:
+                except IOError as e:
                     error = "IOError"
-                except RuntimeError, e:
+                except RuntimeError as e:
                     error = "RuntimeError"
-                except ZeroDivisionError, e:
+                except ZeroDivisionError as e:
                     error = "ZeroDivisionError"
-                except Exception, e:
+                except Exception as e:
                     error = "OtherError"
                 else:
                     #-------------------------------------------------------------------------------
@@ -3385,7 +3678,7 @@ class Quadcopter:
                         l_dist = 0.0
                         l_dt = 0.0
                         l_vel = 0.0
-                        logger.critical("############# PX4FLOW ERROR (%s)#################" % error)
+                        logger.critical("############# PX4FLOW ERROR (%s) #################" % error)
                         break
 
             #---------------------------------------------------------------------------------------
@@ -3400,7 +3693,7 @@ class Quadcopter:
                 # get the absolute position, allowing for errors due to tilt.
                 #-----------------------------------------------------------------------------------
                 '''
-                Don't like the nomenclature of ed?_increment and vv?
+                #AB! Don't like the nomenclature of ed?_increment and vv?
                 '''
 
                 edx_increment = (edz_fuse + eftoh) * (vvx + apa_increment / (2 * math.pi))
@@ -3414,8 +3707,8 @@ class Quadcopter:
                 qdx_fuse += edx_increment
                 qdy_fuse += edy_increment
 
-                qvx_fuse = edx_increment * frame_rate #AB: should frame rate be measured not assumed?  We only seem to get about 6Hz
-                qvy_fuse = edy_increment * frame_rate
+                qvx_fuse = edx_increment / vmp_dt
+                qvy_fuse = edy_increment / vmp_dt
 
                 #-----------------------------------------------------------------------------------
                 # Set the flags for horizontal distance and velocity fusion
@@ -3429,6 +3722,63 @@ class Quadcopter:
             ######################################## FUSION ########################################
 
 
+            #---------------------------------------------------------------------------------------
+            # If we have new vertical data, fuse it.
+            #---------------------------------------------------------------------------------------
+            if vvf and vdf:
+                #-----------------------------------------------------------------------------------
+                # We need to rotate e*z_fuse into the quad frame.  First get best estimates of e?x + 
+                # e?y by rotations of the q?x / q?y values back to the earth frame.  Then use the new
+                # Z value as part of the rerotation back to quad frame.
+                #-----------------------------------------------------------------------------------
+                edx_fuse, edy_fuse, __ = RotateVector(qdx_input, qdy_input, qdz_input, -pa, -ra, -ya)
+                evx_fuse, evy_fuse, __ = RotateVector(qvx_input, qvy_input, qvz_input, -pa, -ra, -ya)
+
+                __, __, qdz_fuse = RotateVector(edx_fuse, edy_fuse, edz_fuse, pa, ra, ya)
+                __, __, qvz_fuse = RotateVector(evx_fuse, evy_fuse, evz_fuse, pa, ra, ya)
+
+                #-----------------------------------------------------------------------------------
+                # Now fuse with complementary filters.
+                #AB! Note that because we always get an update from the GLL each motion cycle, we can
+                #AB! us the motion_dt.  If we ever get the GLL interrupt to work, this needs changing
+                #AB! to an equivalent of the fusion_dt used in the horizontal fusion lower down.
+                #-----------------------------------------------------------------------------------
+                fusion_fraction = fusion_tau / (fusion_tau + motion_dt)
+
+                qvz_input = fusion_fraction * qvz_input + (1 - fusion_fraction) * qvz_fuse
+                qdz_input = fusion_fraction * qdz_input + (1 - fusion_fraction) * qdz_fuse
+
+                #-----------------------------------------------------------------------------------
+                # Clear the flags for vertical distance and velocity fusion
+                #-----------------------------------------------------------------------------------
+                vdf = False
+                vvf = False
+
+            #---------------------------------------------------------------------------------------
+            # If we have new horizontal data, fuse it.
+            #---------------------------------------------------------------------------------------
+            if hdf and hvf:
+                #-----------------------------------------------------------------------------------
+                # Now fuse with complementary filters
+                #-----------------------------------------------------------------------------------
+                fusion_fraction = fusion_tau / (fusion_tau + fusion_dt)
+
+                qvx_input = fusion_fraction * qvx_input + (1 - fusion_fraction) * qvx_fuse
+                qvy_input = fusion_fraction * qvy_input + (1 - fusion_fraction) * qvy_fuse
+
+                qdx_input = fusion_fraction * qdx_input + (1 - fusion_fraction) * qdx_fuse
+                qdy_input = fusion_fraction * qdy_input + (1 - fusion_fraction) * qdy_fuse
+
+                fusion_loops += 1
+                fusion_dt = 0.0
+
+                #-----------------------------------------------------------------------------------
+                # Clear the flags for horizontal distance and velocity fusion
+                #-----------------------------------------------------------------------------------
+                hdf = False
+                hvf = False
+
+            '''            
             #---------------------------------------------------------------------------------------
             # Reorientate the values from the long term sensors only when we have a full set and overwrite
             # as the dominant factor to be updated incrementally by the accelerometer readings.
@@ -3453,15 +3803,15 @@ class Quadcopter:
                 #-----------------------------------------------------------------------------------
                 # Now fuse with complementary filters
                 #-----------------------------------------------------------------------------------
-                vtau_fraction = vtau / (vtau + fusion_dt)
-                qvx_input = vtau_fraction * qvx_input + (1 - vtau_fraction) * qvx_fuse
-                qvy_input = vtau_fraction * qvy_input + (1 - vtau_fraction) * qvy_fuse
-                qvz_input = vtau_fraction * qvz_input + (1 - vtau_fraction) * qvz_fuse
+                fusion_fraction = fusion_tau / (fusion_tau + fusion_dt)
 
-                dtau_fraction = dtau / (dtau + fusion_dt)
-                qdx_input = dtau_fraction * qdx_input + (1 - dtau_fraction) * qdx_fuse
-                qdy_input = dtau_fraction * qdy_input + (1 - dtau_fraction) * qdy_fuse
-                qdz_input = dtau_fraction * qdz_input + (1 - dtau_fraction) * qdz_fuse
+                qvx_input = fusion_fraction * qvx_input + (1 - fusion_fraction) * qvx_fuse
+                qvy_input = fusion_fraction * qvy_input + (1 - fusion_fraction) * qvy_fuse
+                qvz_input = fusion_fraction * qvz_input + (1 - fusion_fraction) * qvz_fuse
+
+                qdx_input = fusion_fraction * qdx_input + (1 - fusion_fraction) * qdx_fuse
+                qdy_input = fusion_fraction * qdy_input + (1 - fusion_fraction) * qdy_fuse
+                qdz_input = fusion_fraction * qdz_input + (1 - fusion_fraction) * qdz_fuse
 
                 fusion_loops += 1
                 fusion_dt = 0.0
@@ -3485,6 +3835,7 @@ class Quadcopter:
                 qdx_input += qdx_increment
                 qdy_input += qdy_increment
                 qdz_input += qdz_increment
+            '''    
 
 
             ########################### VELOCITY / DISTANCE PID TARGETS ############################
@@ -3733,7 +4084,8 @@ class Quadcopter:
                 temp = mpu6050.readTemperature()
                 logger.warning("%f, %f, %d, " % (sampling_loops / sampling_rate, motion_dt, sampling_loops) +
                                "%f, " % (temp / 333.86 + 21) +
-                               "%f, %f, %f, " % (magx, magy, magz) +
+                               "%f, %f, %f, %d, " % (gps_lat, gps_long, gps_alt, gps_sats) +
+                               "%f, %f, %f, %f, " % (magx, magy, magz, compass_angle) +
                                "%f, %f, %f, " % (qdx_fuse, qdy_fuse, qdz_fuse) +
                                "%f, %f, %f, " % (qvx_fuse, qvy_fuse, qvz_fuse) +
                                "%f, %f, %f, " % (edx_target, edy_target, edz_target) +
@@ -3749,15 +4101,15 @@ class Quadcopter:
                                "%d, %d, %d, %d, " % (self.esc_list[0].pulse_width, self.esc_list[1].pulse_width, self.esc_list[2].pulse_width, self.esc_list[3].pulse_width))
 
         logger.critical("Flight time %f", time.time() - start_flight)
-        logger.critical("Sampling_loops %d", sampling_loops)
-        logger.critical("Motion processing loops %d", motion_loops)
-        logger.critical("Fusion loops %d", fusion_loops)
-        logger.critical("Video frame rate: %f", video_count * sampling_rate / sampling_loops )
-        logger.critical("LiDAR processing loops %d", garmin_loops)
+        logger.critical("Sampling loops: %d", sampling_loops)
+        logger.critical("Motion processing loops: %d", motion_loops)
+        logger.critical("Fusion processing loops %d:", fusion_loops)
+        logger.critical("LiDAR processing loops: %d", garmin_loops)
+        logger.critical("Video frame rate: %f", video_loops * sampling_rate / sampling_loops )
 
         temp = mpu6050.readTemperature()
         logger.warning("IMU core temp: %f", temp / 333.86 + 21.0)
-        max_az = mpu6050.getStats() / 8 #AB! +/-4g
+        max_az = mpu6050.getStats() / 8                                                   #AB: +/-4g
         logger.warning("Max Z acceleration: %f", max_az)
 
         #-------------------------------------------------------------------------------------------
@@ -3768,11 +4120,19 @@ class Quadcopter:
             esc.set(0)
 
         #-------------------------------------------------------------------------------------------
+        # Stop the GPS processing                                                              #GPS!
+        #-------------------------------------------------------------------------------------------
+        if self.gps_installed:
+            gps.send_signal(signal.SIGINT)
+            gps_fifo.close()
+            os.unlink("/dev/shm/gps_stream")
+
+        #-------------------------------------------------------------------------------------------
         # Stop the camera motion processing
         #-------------------------------------------------------------------------------------------
         if self.camera_installed:
             video.send_signal(signal.SIGINT)
-            py_fifo.close()
+            motion_fifo.close()
             os.unlink("/dev/shm/motion_stream")
 
 
@@ -3860,9 +4220,15 @@ class Quadcopter:
 # frames
 ####################################################################################################
 if __name__ == '__main__':
-    if len(sys.argv) == 4:
-        frame_width = int(sys.argv[1])
-        frame_height = int(sys.argv[2])
-        frame_rate = int(sys.argv[3])
-
-        RecordVideo(frame_width, frame_height, frame_rate)
+    if len(sys.argv) >= 2:
+        if sys.argv[1] == "MOTION":
+            assert (len(sys.argv) == 5), "Bad parameters for MOTION"
+            frame_width = int(sys.argv[2])
+            frame_height = int(sys.argv[3])
+            frame_rate = int(sys.argv[4])
+            RecordVideo(frame_width, frame_height, frame_rate)
+        elif sys.argv[1] == "GPS":
+            assert (len(sys.argv) == 2), "Bad parameters for GPS"
+            RecordGPS()
+        else:
+            assert (False), "Invalid process request"
