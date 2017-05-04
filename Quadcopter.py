@@ -1520,11 +1520,12 @@ def CheckCLI(argv):
     cli_hdd_gain = 0.0
 
     #-------------------------------------------------------------------------------------------
-    # Defaults for horizontal velocity PIDs
+    # Defaults for horizontal velocity PIDs.  Note the D gain to enhance acceleration and breaking
+    # when the velocity _target_ changes rapidly.
     #-------------------------------------------------------------------------------------------
-    cli_hvp_gain = 1.6
+    cli_hvp_gain = 1.5   #AB! 1.6
     cli_hvi_gain = 0.0
-    cli_hvd_gain = 0.0
+    cli_hvd_gain = 0.01  #AB! 0.0
 
     #-------------------------------------------------------------------------------------------
     # Per frame specific values
@@ -1536,7 +1537,7 @@ def CheckCLI(argv):
         cli_hover_target = 500
 
         #-------------------------------------------------------------------------------------------
-        # Defaults for vertical velocity PIDs
+        # Defaults for vertical velocity PIDs.  
         #-------------------------------------------------------------------------------------------
         cli_vvp_gain = 360.0
         cli_vvi_gain = 180.0
@@ -1545,21 +1546,21 @@ def CheckCLI(argv):
         #-------------------------------------------------------------------------------------------
         # Defaults for pitch angle PIDs
         #-------------------------------------------------------------------------------------------
-        cli_prp_gain = 100.0
+        cli_prp_gain = 90.0 #AB! 100.0
         cli_pri_gain = 0.0
         cli_prd_gain = 0.0
 
         #-------------------------------------------------------------------------------------------
         # Defaults for roll angle PIDs
         #-------------------------------------------------------------------------------------------
-        cli_rrp_gain = 100.0
+        cli_rrp_gain = 90.0 #AB! 100.0
         cli_rri_gain = 0.0
         cli_rrd_gain = 0.0
 
         #-------------------------------------------------------------------------------------------
         # Defaults for yaw angle PIDs
         #-------------------------------------------------------------------------------------------
-        cli_yrp_gain = 200.0
+        cli_yrp_gain = 180.0 #AB! 200.0
         cli_yri_gain = 0.0
         cli_yrd_gain = 0.0
 
@@ -1613,21 +1614,21 @@ def CheckCLI(argv):
         #-------------------------------------------------------------------------------------------
         # Defaults for pitch angle PIDs
         #-------------------------------------------------------------------------------------------
-        cli_prp_gain = 100.0
+        cli_prp_gain = 80.0
         cli_pri_gain = 0.0
         cli_prd_gain = 0.0
 
         #-------------------------------------------------------------------------------------------
         # Defaults for roll angle PIDs
         #-------------------------------------------------------------------------------------------
-        cli_rrp_gain = 100.0
+        cli_rrp_gain = 80.0
         cli_rri_gain = 0.0
         cli_rrd_gain = 0.0
 
         #-------------------------------------------------------------------------------------------
         # Defaults for yaw angle PIDs
         #-------------------------------------------------------------------------------------------
-        cli_yrp_gain = 200.0
+        cli_yrp_gain = 160.0
         cli_yri_gain = 0.0
         cli_yrd_gain = 0.0
 
@@ -2029,7 +2030,7 @@ def RecordGPS():
 # in meters using equirectangular approximation:
 #
 # dNS = movement North / South - movement in a northerly direction is positive
-# dNS = movement East / West - movement in an easterly direction is positive
+# dEW = movement East / West - movement in an easterly direction is positive
 # R = average radius of earth in meters = 6,371,000 meters
 #
 # dNS = (long2 - long1) * cos ((lat1 + lat2) / 2) * R meters
@@ -2040,6 +2041,12 @@ def RecordGPS():
 # Similarly distance in meters needs to know the radius of the spherical Earth 
 #
 # More at http://www.movable-type.co.uk/scripts/latlong.html
+#
+#GPS! Do we split this into a class so we can add functions to 
+#GPS! - acquire the minimum number of satellites before anything happens (__init__?)
+#GPS! - capture the destination target triggered by a specific CLI - benefit here of starting up
+#GPS!   gpsd
+#GPS! - compute and return the earth frame distances and perhaps velocities during a flight.
 #
 ####################################################################################################
 def GPSProcessor(gps_fifo):
@@ -2186,14 +2193,11 @@ class VideoMotionProcessor:
         unyawed_vectors = []
 
         #-------------------------------------------------------------------------------------------
-        # Undo the yaw increment
+        # Undo the yaw increment - we could use the full rotation matrix here (as elsewhere), but 
+        # this is more efficient in this very time sensitive function.
         #-------------------------------------------------------------------------------------------
         for vector in self.vector_list:
             idx, idy = vector
-            '''
-            idz = 0.0
-            uvx, uvy, uvz = RotateVector(idx, idy, idz, 0.0, 0.0, -self.yaw_increment)
-            '''
             uvx = self.c_yaw * idx - self.s_yaw * idy
             uvy = self.s_yaw * idx + self.c_yaw * idy
             unyawed_vectors.append((int(round(uvx)), int(round(uvy))))
@@ -2254,12 +2258,9 @@ class VideoMotionProcessor:
         best_y = sum_y / sum_score
 
         #-------------------------------------------------------------------------------------------
-        # Reinstate yaw increment
+        # Redo the yaw increment - we could use the full rotation matrix here (as elsewhere), but 
+        # this is more efficient in this very time sensitive function.
         #-------------------------------------------------------------------------------------------
-        '''
-        best_z = 0.0
-        idx, idy, idz = RotateVector(best_x, best_y, best_z, 0.0, 0.0, self.yaw_increment)
-        '''
         idx = self.c_yaw * best_x + self.s_yaw * best_y
         idy = -self.s_yaw * best_x + self.c_yaw * best_y
 
@@ -2647,8 +2648,9 @@ class Quadcopter:
 
         #-------------------------------------------------------------------------------------------
         # Initialize the Garmin LiDAR-Lite V3 at 10Hz - this is also used for the camera frame rate.
+        #AB! The only time I tried 20 on a dimly lit lawn, it leapt up and crashed down.
         #-------------------------------------------------------------------------------------------
-        self.tracking_rate = 10
+        self.tracking_rate = 10                
         if self.gll_installed:
             global gll
             gll = GLL(rate = self.tracking_rate)
@@ -2780,24 +2782,6 @@ class Quadcopter:
         qvx_fuse = 0.0
         qvy_fuse = 0.0
         qvz_fuse = 0.0
-
-        '''
-        qdx_increment = 0.0
-        qdy_increment = 0.0
-        qdz_increment = 0.0
-
-        qdx_integral = 0.0
-        qdy_integral = 0.0
-        qdz_integral = 0.0
-
-        qvx_increment = 0.0
-        qvy_increment = 0.0
-        qvz_increment = 0.0
-
-        qvx_integral = 0.0
-        qvy_integral = 0.0
-        qvz_integral = 0.0
-        '''
 
         #===========================================================================================
         # Tuning: Set up the PID gains - some are hard coded mathematical approximations, some come
@@ -3018,12 +3002,10 @@ class Quadcopter:
         #-------------------------------------------------------------------------------------------
         # Set up the constants for motion fusion if we have lateral and vertical distance / velocity
         # sensors.
-        # - vmp = video motion processor object
         # - vvf, hvf, vdf, hdf flag which must all be set to true for fusion to be triggered
         # - fusion_tau used for the fusion complementary filter - it's set to 2s
         #-------------------------------------------------------------------------------------------
-        if (self.gll_installed or self.leddar_installed or self.urf_installed) and self.camera_installed:
-            vmp = None
+        if self.gll_installed or self.leddar_installed or self.urf_installed or self.camera_installed:
             vvf = False
             hvf = False
             vdf = False
@@ -3119,8 +3101,12 @@ class Quadcopter:
 
         #-------------------------------------------------------------------------------------------
         # Set up the video macro-block parameters
-        # Video supported upto 1080p @ 30Hz but restricted by processing speed.
+        # Video supported upto 1080p @ 30Hz but restricted by speed of macro-block processing.
         #-------------------------------------------------------------------------------------------
+        vmp = None
+        vmpt = 0.0
+        pvmpt = 0.0
+
         if self.camera_installed:
             print "Couple of seconds to let the video settle..."
 
@@ -3128,15 +3114,12 @@ class Quadcopter:
             global frame_height
 
             if i_am_hermione:
-                frame_width = 720    # an exact multiple of mb_size
-                frame_height = 720   # an exact multiple of mb size
+                frame_width = 800    #AB! 720   # an exact multiple of mb_size
             elif i_am_chloe:
                 frame_width = 480    # an exact multiple of mb_size
-                frame_height = 480   # an exact multiple of mb size
             elif i_am_zoe:
                 frame_width = 400    # an exact multiple of mb_size
-                frame_height = 400   # an exact multiple of mb size
-
+            frame_height = frame_width
             frame_rate = self.tracking_rate
 
             camera_data_update = False
@@ -3163,9 +3146,7 @@ class Quadcopter:
             # Setup a shared memory based data stream for the PiCamera video motion output
             #---------------------------------------------------------------------------------------
             os.mkfifo("/dev/shm/motion_stream")
-
             video = subprocess.Popen(["python", __file__, "MOTION", str(frame_width), str(frame_height), str(frame_rate)], preexec_fn =  Daemonize)
-            # video = subprocess.Popen(["raspivid", "-w", "320", "-h", "320", "-fps", "10", "-fl", "-n", "-t", "0", "-o", "/dev/null", "-x", "/dev/shm/motion_stream"], preexec_fn = Daemonize)
 
             while True:
                 try:
@@ -3225,7 +3206,7 @@ class Quadcopter:
             #---------------------------------------------------------------------------------------
             gps_sats = 0
             print "Couple of seconds to acquire satellites... 0",
-            while gps_sats < 7:
+            while gps_sats < 7:                                                                #GPS! - make number of sats configurable
                 gps_lat, gps_long, gps_alt, gps_sats = GPSProcessor(gps_fifo)
                 print "\b\b%d" % gps_sats,
                 sys.stdout.flush()
@@ -3276,8 +3257,7 @@ class Quadcopter:
             #AB! flush blocks permanently
             VideoMotionProcessor(motion_fifo, 0).flush()
             '''
-            vmpt = 0.0
-            pvmpt = 0.0
+            pass
 
         #-------------------------------------------------------------------------------------------
         # Flush the IMU FIFO and enable the FIFO overflow interrupt
@@ -3355,12 +3335,11 @@ class Quadcopter:
                     vvy *= scale
                     camera_data_update = True
                     vmp = None
-                    video_loops += 1
                     continue
 
                 #-------------------------------------------------------------------------------
                 # Nowt else to do; sleep until either we timeout, or more data comes in from the
-                # video process.
+                # video process or GPS.
                 #-------------------------------------------------------------------------------
                 timeout = (self.FIFO_PRIORITY - nfb) / sampling_rate
                 try:
@@ -3372,7 +3351,7 @@ class Quadcopter:
 
                 if self.camera_installed and motion_fifo in readable:
                     #---------------------------------------------------------------------------
-                    # Run the Video Frame Processor
+                    # Run the Video Motion Processor
                     #---------------------------------------------------------------------------
                     apa_increment = apa - papa
                     ara_increment = ara - para
@@ -3382,6 +3361,7 @@ class Quadcopter:
                     para = ara
                     paya = aya
                     pvmpt = vmpt
+                    video_loops += 1
                     try:
                         vmp = VideoMotionProcessor(motion_fifo, aya_increment)
                         vmp.process()
@@ -3390,7 +3370,6 @@ class Quadcopter:
                         # First pass of the video frame shows no movement detected, and thus no
                         # further processing.
                         #-----------------------------------------------------------------------
-                        video_loops += 1
                         vmp = None
 
                 elif self.gps_installed and gps_fifo in readable:
@@ -3548,9 +3527,9 @@ class Quadcopter:
 
 
             #---------------------------------------------------------------------------------------
-            # Read the compass to determine yaw and orientation wrt GPS.  Yaw from the compass will be fused
-            # (using another complementary filter) with integrated gyro Z axis yaw to provide long term
-            # stability.  For now though, we're just collecting the data for logging.
+            # Read the compass to determine yaw and orientation wrt GPS.  Yaw from the compass will 
+            # be fused (using another complementary filter) with integrated gyro Z axis yaw to 
+            # provide long term stability.  For now though, we're just collecting the data for logging.
             #---------------------------------------------------------------------------------------
             if self.compass_installed:
                 magx, magy, magz = mpu6050.readCompass()
@@ -3777,65 +3756,6 @@ class Quadcopter:
                 #-----------------------------------------------------------------------------------
                 hdf = False
                 hvf = False
-
-            '''            
-            #---------------------------------------------------------------------------------------
-            # Reorientate the values from the long term sensors only when we have a full set and overwrite
-            # as the dominant factor to be updated incrementally by the accelerometer readings.
-            #---------------------------------------------------------------------------------------
-            if hdf and hvf and vvf and vdf:
-
-                #-----------------------------------------------------------------------------------
-                # We need to rotate e*z_fuse into the quad frame.  First get best estimates of e?x
-                # and e?y by rotations of the latest values.
-                #-----------------------------------------------------------------------------------
-                edx_fuse, edy_fuse, __ = RotateVector(qdx_integral, qdy_integral, qdz_integral, -pa, -ra, -ya)
-                evx_fuse, evy_fuse, __ = RotateVector(qvx_integral, qvy_integral, qvz_integral, -pa, -ra, -ya)
-
-                #-----------------------------------------------------------------------------------
-                # Now import the e?z values from the sensors and rerotate.  e?z is updated every
-                # motion loop so we can don't need to remember angles.
-                #-----------------------------------------------------------------------------------
-                __, __, qdz_fuse = RotateVector(edx_fuse, edy_fuse, edz_fuse, pa, ra, ya)
-                __, __, qvz_fuse = RotateVector(evx_fuse, evy_fuse, evz_fuse, pa, ra, ya)
-
-
-                #-----------------------------------------------------------------------------------
-                # Now fuse with complementary filters
-                #-----------------------------------------------------------------------------------
-                fusion_fraction = fusion_tau / (fusion_tau + fusion_dt)
-
-                qvx_input = fusion_fraction * qvx_input + (1 - fusion_fraction) * qvx_fuse
-                qvy_input = fusion_fraction * qvy_input + (1 - fusion_fraction) * qvy_fuse
-                qvz_input = fusion_fraction * qvz_input + (1 - fusion_fraction) * qvz_fuse
-
-                qdx_input = fusion_fraction * qdx_input + (1 - fusion_fraction) * qdx_fuse
-                qdy_input = fusion_fraction * qdy_input + (1 - fusion_fraction) * qdy_fuse
-                qdz_input = fusion_fraction * qdz_input + (1 - fusion_fraction) * qdz_fuse
-
-                fusion_loops += 1
-                fusion_dt = 0.0
-
-                #-----------------------------------------------------------------------------------
-                # Clear the flags for horizontal and vertical distance and velocity fusion
-                #-----------------------------------------------------------------------------------
-                hdf = False
-                hvf = False
-                vdf = False
-                vvf = False
-
-            else:
-                #-----------------------------------------------------------------------------------
-                # Update the dominant sensors last reading with the intermediate IMU increments
-                #-----------------------------------------------------------------------------------
-                qvx_input += qvx_increment
-                qvy_input += qvy_increment
-                qvz_input += qvz_increment
-
-                qdx_input += qdx_increment
-                qdy_input += qdy_increment
-                qdz_input += qdz_increment
-            '''    
 
 
             ########################### VELOCITY / DISTANCE PID TARGETS ############################
@@ -4115,9 +4035,9 @@ class Quadcopter:
         #-------------------------------------------------------------------------------------------
         # Stop the PWM and FIFO overflow interrupt between flights
         #-------------------------------------------------------------------------------------------
-        mpu6050.disableFIFOOverflowISR()
         for esc in self.esc_list:
             esc.set(0)
+        mpu6050.disableFIFOOverflowISR()
 
         #-------------------------------------------------------------------------------------------
         # Stop the GPS processing                                                              #GPS!
