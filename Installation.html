@@ -24,7 +24,18 @@ start_x=0</code></pre>
 
 # Bluetooth
 blacklist btbcm
-blacklist hci_uart</pre></li>
+blacklist hci_uart</pre>
+Likewise if you're using an WiFi USB dongle, you can disable the internal one by removing the '#'s for that pair of lines.</li>
+    <li>If you are using a B2 V1.2, it can be overclockec to 1.2GHz thus in /boot/config.txt
+        <pre>arm_freq=1200
+core_freq=500
+sdram_freq=600
+over_voltage=6</pre></li>
+    <li>If you are using USB GPS and / or Scanse Sweep, it's worth linking the USB tty to a unique name for each.  In /etc/udev/rules.d add a file such as '99-usb-serial.rules containing something like this:
+<pre>SUBSYSTEM=="tty", ATTRS{idVendor}=="0403", ATTRS{idProduct}=="6015", ATTRS{serial}=="DO004VY5", SYMLINK+="ttySWEEP"
+SUBSYSTEM=="tty", ATTRS{idVendor}=="067b", ATTRS{idProduct}=="2303", SYMLINK+="ttyGPS"
+</pre>
+The details of what to fill in come from /var/log/messages as a USB UART is plugged in.  Also update /etc/default/gpsd and Quadcopter.py to reference these tty* names instead of ttyUSB*</li>        
     <li><del>git clone https://github.com/pyhys/minimalmodbus</del></li>
     <li><del>cd minimalmodbus</del></li>
     <li><del>sudo python ./setup install</del></li>

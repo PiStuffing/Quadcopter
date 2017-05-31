@@ -37,7 +37,6 @@ from datetime import datetime
 import shutil
 import ctypes
 from ctypes.util import find_library
-#AB! import minimalmodbus # Only for LEDDAR
 import picamera
 import struct
 import gps
@@ -152,8 +151,6 @@ class I2C:
 #  - MPU-6050
 #  - MPU-9150
 #  - MPU-9250
-#
-#  IN ACTIVE SERVICE
 #
 ####################################################################################################
 class MPU6050:
@@ -554,7 +551,7 @@ class MPU6050:
         # Set up the I2C master pass through.
         #-------------------------------------------------------------------------------------------
         int_bypass = self.i2c.readU8(self.__MPU6050_RA_INT_PIN_CFG)
-        self.i2c.write8(self.__MPU6050_RA_INT_PIN_CFG , int_bypass | 0x02)
+        self.i2c.write8(self.__MPU6050_RA_INT_PIN_CFG, int_bypass | 0x02)
 
         #-------------------------------------------------------------------------------------------
         # Connect directly to the bypassed magnetometer, and configured it for 16 bit continuous data
@@ -666,13 +663,13 @@ class MPU6050:
                             if len(number_text) == 2:
                                 number_text = " " + number_text
                             elif len(number_text) == 1:
-                                number_text = "  " + number_text    
+                                number_text = "  " + number_text
 
                             print "\b\b\b\b%s" % number_text,
                             sys.stdout.flush()
 
                             GPIO.output(GPIO_LED, not GPIO.input(GPIO_LED))
-                    print        
+                    print
 
                     #-------------------------------------------------------------------------------
                     # Collect compass Z values
@@ -711,13 +708,13 @@ class MPU6050:
                             if len(number_text) == 2:
                                 number_text = " " + number_text
                             elif len(number_text) == 1:
-                                number_text = "  " + number_text    
+                                number_text = "  " + number_text
 
                             print "\b\b\b\b%s" % number_text,
-                            sys.stdout.flush()                            
+                            sys.stdout.flush()
 
                             GPIO.output(GPIO_LED, not GPIO.input(GPIO_LED))
-                    print        
+                    print
 
                 except KeyboardInterrupt as e:
                     print "Patience is a virtue!  All good things come to he who waits!"
@@ -744,23 +741,23 @@ class MPU6050:
                     mgx, mgy, mgz = self.readCompass()
 
                     #-------------------------------------------------------------------------------
-                    # Convert compass vector into N, S, E, W variants.  Get the compass angle in the 
+                    # Convert compass vector into N, S, E, W variants.  Get the compass angle in the
                     # range of 0 - 359.99.
                     #-------------------------------------------------------------------------------
-                    compass_angle = math.atan2(mgx, mgy) * 180 / math.pi
+                    compass_angle = math.atan2(mgy, mgx) * 180 / math.pi
                     if compass_angle < 0:
                         compass_angle += 360
 
                     #-------------------------------------------------------------------------------
-                    # There are 16 possible compass directions when you include things like NNE at 
+                    # There are 16 possible compass directions when you include things like NNE at
                     # 22.5 degrees.
                     #-------------------------------------------------------------------------------
                     compass_points = ("N", "NNE", "NE", "ENE", "E", "ESE", "SE", "SSE", "S", "SSW", "SW", "WSW", "W", "WNW", "NW", "NNW")
                     num_compass_points = len(compass_points)
                     for ii in range(len(compass_points)):
-                        
-                        angle_range_min = 360 * (ii - 0.5) / num_compass_points 
-                        angle_range_max = 360 * (ii + 0.5) / num_compass_points 
+
+                        angle_range_min = 360 * (ii - 0.5) / num_compass_points
+                        angle_range_max = 360 * (ii + 0.5) / num_compass_points
                         if angle_range_max < angle_range_min:
                             angle_angle_min -= 360
 
@@ -829,14 +826,13 @@ class MPU6050:
         finally:
             pass
 
-        logger.warning("Compass Offsets:, %f, %f, %f, Compass Gains, %f, %f, %f", self.mgx_offset, 
+        logger.warning("Compass Offsets:, %f, %f, %f, Compass Gains, %f, %f, %f", self.mgx_offset,
                                                                                   self.mgy_offset,
                                                                                   self.mgz_offset,
-                                                                                  self.mgx_gain, 
+                                                                                  self.mgx_gain,
                                                                                   self.mgy_gain,
                                                                                   self.mgz_gain)
         return offs_rc
-
 
     def calibrate0g(self):
         ax_offset = 0
@@ -892,270 +888,12 @@ class MPU6050:
         return offs_rc
 
     def getStats(self):
-        return self.max_az * self.__SCALE_ACCEL 
-
-
-####################################################################################################
-#
-#  Barometer / Altimeter.
-#
-#  RETIRED DUE TO SWAP FROM DROTEK TO SPARKFUN IMU BREAKOUT
-#
-####################################################################################################
-class MS5611:
-    i2c = None
-
-    # Registers/etc.
-    __MS5611_RESET     = 0x1E
-    __MS5611_CONV_D1_1 = 0x40
-    __MS5611_CONV_D1_2 = 0x42
-    __MS5611_CONV_D1_3 = 0x44
-    __MS5611_CONV_D1_4 = 0x46
-    __MS5611_CONV_D1_5 = 0x48
-    __MS5611_CONV_D2_1 = 0x50
-    __MS5611_CONV_D2_2 = 0x52
-    __MS5611_CONV_D2_3 = 0x54
-    __MS5611_CONV_D2_4 = 0x56
-    __MS5611_CONV_D2_5 = 0x58
-
-    def __init__(self, address=0x77):
-        self.i2c = I2C(address)
-        self.address = address
-
-        #-------------------------------------------------------------------------------------------
-        # Reset all registers
-        #-------------------------------------------------------------------------------------------
-        self.i2c.writeByte(self.__MS5611_RESET)
-        time.sleep(0.1)
-
-
-####################################################################################################
-#
-#  Ultrasonic range finder
-#
-#  RETIRED DUE TO NOT SUPPORTING 400kbps I2C BAUDRATE REQUIRED BY IMU
-#
-####################################################################################################
-class SRF02:
-    i2c = None
-
-    #Reisters/etc
-    __SRF02_RA_CONFIG = 0x00
-    __SRF02_RA_RNG_HI = 0x02
-    __SRF02_RA_RNG_LO = 0x03
-    __SRF02_RA_AUTO_HI = 0x04
-    __SRF02_RA_AUTO_LO = 0x05
-
-    def __init__(self, address=0x70):
-        self.i2c = I2C(address)
-
-
-    def pingProximity(self):
-        #-------------------------------------------------------------------------------------------
-        # Set up range units as centimeters and ping
-        #-------------------------------------------------------------------------------------------
-        self.i2c.write8(self.__SRF02_RA_CONFIG, 0x51)
-
-    def pingProcessed(self):
-        #-------------------------------------------------------------------------------------------
-        # Check if data is available
-        #-------------------------------------------------------------------------------------------
-        rc = self.i2c.read8(self.__SRF02_RA_CONFIG)
-        if rc == 0xFF:
-            return False
-        else:
-            return True
-
-    def readProximity(self):
-        #-------------------------------------------------------------------------------------------
-        # Read proximity - sensor units are centimeters so convert to meters.
-        #-------------------------------------------------------------------------------------------
-        range = self.i2c.readU16(self.__SRF02_RA_RNG_HI)
-        return range / 100
-
-
-####################################################################################################
-#
-#  LEDDAR range finder
-#
-#  RETIRED DUE TO OVERSIDE PHYSICAL FORM AND USE OF BIZARRE MODBUS OVER SERIAL.
-#
-####################################################################################################
-class LEDDAR:
-
-    def __init__(self):
-        #-------------------------------------------------------------------------------------------
-        # Connect to the LEDDAR
-        #-------------------------------------------------------------------------------------------
-        minimalmodbus.BAUDRATE=115200
-        self.mmb = minimalmodbus.Instrument("/dev/ttyAMA0", 1, 'rtu')
-        self.mmb.BAUDRATE=115200
-        self.mmb.serial.baudrate = 115200
-
-    def reset(self):
-        #-------------------------------------------------------------------------------------------
-        # Set up the base readings
-        #-------------------------------------------------------------------------------------------
-        (time_lss, time_mss, temperature, num_detections, distance) = self.mmb.read_registers(20, 5, 4)
-
-        self.prev_timestamp = ((time_mss << 16) + time_lss) / 1000
-
-        distance /= 1000
-        self.init_distance = distance
-        self.prev_distance = self.init_distance
-
-        return self.init_distance
-
-    def read(self):
-        #-------------------------------------------------------------------------------------------
-        # Read the current height and timestamp registers
-        #-------------------------------------------------------------------------------------------
-        (time_lss, time_mss, temperature, num_detections, distance) = self.mmb.read_registers(20, 5, 4)
-
-        #-------------------------------------------------------------------------------------------
-        # Convert units for returned values.
-        #-------------------------------------------------------------------------------------------
-        timestamp = ((time_mss << 16) + time_lss) / 1000
-        distance /= 1000
-        dd = (distance - self.prev_distance)
-        dt = (timestamp - self.prev_timestamp)
-
-        self.prev_timestamp = timestamp
-        self.prev_distance = distance
-
-        #-------------------------------------------------------------------------------------------
-        # Finally remember to subtract the sensor height off the ground
-        #-------------------------------------------------------------------------------------------
-        distance -= self.init_distance
-
-        return distance, dd, dt
-
-
-####################################################################################################
-#
-#  PIX4FLOW 3D motion
-#
-#  RETIRED DUE TO LACK OF PRODUCTION AND INCONSISTENCY BETWEEN 3 CLONE MODELS
-#
-####################################################################################################
-class PX4FLOW:
-    i2c = None
-
-    # Registers/etc.
-    __PX4FLOW_FRAME_COUNT      = 0x0                  # 2 bytes unsigned - number
-    __PX4FLOW_PIXEL_FLOW_X     = 0x2                  # 2 bytes signed - latest x flow (pixels x 10)
-    __PX4FLOW_PIXEL_FLOW_Y     = 0x4                  # 2 bytes signed - latest y flow (pixels x 10)
-    __PX4FLOW_FLOW_COMP_M_X    = 0x6                  # 2 bytes signed - x velocity * 1000 (m/s)
-    __PX4FLOW_FLOW_COMP_M_Y    = 0x8                  # 2 bytes signed - y velocity * 1000 (m/s)
-    __PX4FLOW_QUAL_REG         = 0x0A                 # 2 bytes signed - optical flow quality (0:bad 255:max)
-    __PX4FLOW_GYRO_X_RATE      = 0x0C                 # 2 bytes signed - gyro x rate (rad/sec)
-    __PX4FLOW_GYRO_Y_RATE      = 0x0E                 # 2 bytes signed - gyro y rate (rad/sec)
-    __PX4FLOW_GYRO_Z_RATE      = 0x10                 # 2 bytes signed - gyro z rate (rad/sec)
-    __PX4FLOW_GYRO_RANGE       = 0x12                 # 1 byte unsigned - 0 - 7 = 50 - 2000 (degrees / second)
-    __PX4FLOW_SONAR_TIMESTAMP  = 0x13                 # 1 byte unsigned - time since last sonar sample (ms)
-    __PX4FLOW_GROUND_DISTANCE  = 0x14                 # 2 bytes signed  - ground distance (meters <0 = error)
-
-    #--------------------------------------------------------------------------------------------------------
-    # All integrals since the previous I2C read
-    #--------------------------------------------------------------------------------------------------------
-    __PX4FLOW_FRAME_COUNT_INTEGRAL        = 0x16      # 2 unsigned - number of reads since last I2C read
-    __PX4FLOW_PIXEL_FLOW_X_INTEGRAL       = 0x18      # 2 signed - integrated flow around x axis (rad * 1000)
-    __PX4FLOW_PIXEL_FLOW_Y_INTEGRAL       = 0x1A      # 2 signed - integrated flow around y axis (rad * 1000)
-    __PX4FLOW_GYRO_X_RATE_INTEGRAL        = 0x1C      # 2 signed - integrated gyro X axis roll (rad * 1000)          # Would this be better for incremental roll rather than rate * dt
-    __PX4FLOW_GYRO_Y_RATE_INTEGRAL        = 0x1E      # 2 signed - integrated gyro Y axis pitch (rad * 1000)         # Would this be better for incremental roll rather than rate * dt
-    __PX4FLOW_GYRO_Z_RATE_INTEGRAL        = 0x20      # 2 signed - integrated gyro Z axis yaw (rad * 1000)           # Would this be better for incremental roll rather than rate * dt
-    __PX4FLOW_TIMESPAN_INTEGRAL           = 0x22      # 4 unsigned - integrated time lapse (microseconds)
-    __PX4FLOW_SONAR_TIMESTAMP_2           = 0x26      # 4 unsigned - time since last sonar update (microseconds)
-    __PX4FLOW_GROUND_DISTANCE_2           = 0x2A      # 2 signed - ground distance (meters * 1000)
-    __PX4FLOW_GYRO_TEMPERATURE            = 0x2C      # 2 signed - temperature (celsius * 100)
-    __PX4FLOW_QUALITY_AVERAGE             = 0x2E      # 1 signed - averaged quality (0:bad 255:max)
-
-    def __init__(self, address=0x42):
-        self.i2c = I2C(address)
-        self.address = address
-
-    def read(self):
-            #AB! Isn't SMBUS limited to 32 bytes?
-            sensor_data =  self.i2c.readList(self.__PX4FLOW_FRAME_COUNT, 47)  # 22 if not using the integral registers
-
-            hibyte = sensor_data[self.__PX4FLOW_FLOW_COMP_M_X + 1]
-            if (hibyte > 127):
-               hibyte -= 256
-            x_velocity = ((hibyte << 8) + sensor_data[self.__PX4FLOW_FLOW_COMP_M_X]) / 1000
-
-            hibyte = sensor_data[self.__PX4FLOW_FLOW_COMP_M_Y + 1]
-            if (hibyte > 127):
-               hibyte -= 256
-            y_velocity = ((hibyte << 8) + sensor_data[self.__PX4FLOW_FLOW_COMP_M_Y]) / 1000
-
-            hibyte = sensor_data[self.__PX4FLOW_QUAL_REG + 1]
-            if (hibyte > 127):
-               hibyte -= 256
-            qual = (hibyte << 8) + sensor_data[self.__PX4FLOW_QUAL_REG]
-
-            hibyte = sensor_data[self.__PX4FLOW_GYRO_X_RATE + 1]
-            if (hibyte > 127):
-               hibyte -= 256
-            pitch_rate = (hibyte << 8) + sensor_data[self.__PX4FLOW_GYRO_X_RATE]
-
-            hibyte = sensor_data[self.__PX4FLOW_GYRO_Y_RATE + 1]
-            if (hibyte > 127):
-               hibyte -= 256
-            roll_rate = (hibyte << 8) + sensor_data[self.__PX4FLOW_GYRO_Y_RATE]
-
-            hibyte = sensor_data[self.__PX4FLOW_GYRO_Z_RATE + 1]
-            if (hibyte > 127):
-               hibyte -= 256
-            yaw_rate = (hibyte << 8) + sensor_data[self.__PX4FLOW_GYRO_Z_RATE]
-
-            hibyte = sensor_data[self.__PX4FLOW_GROUND_DISTANCE + 1]
-            if (hibyte > 127):
-               hibyte -= 256
-            sonar_height = ((hibyte << 8) + sensor_data[self.__PX4FLOW_GROUND_DISTANCE]) / 1000
-
-            sonar_dt = (sensor_data[self.__PX4FLOW_SONAR_TIMESTAMP]) / 1000
-
-            #---------------------------------------------------------------------------------------
-            # This is the flow integral set of registers; we don't need the contents
-            # currently, but when we do, increase the i2c.readList above to 47.
-            #---------------------------------------------------------------------------------------
-            hibyte = sensor_data[self.__PX4FLOW_PIXEL_FLOW_X_INTEGRAL + 1]
-            if (hibyte > 127):
-               hibyte -= 256
-            x_rps = ((hibyte << 8) + sensor_data[self.__PX4FLOW_PIXEL_FLOW_X_INTEGRAL]) / 1000
-
-            hibyte = sensor_data[self.__PX4FLOW_PIXEL_FLOW_Y_INTEGRAL + 1]
-            if (hibyte > 127):
-               hibyte -= 256
-            y_rps = ((hibyte << 8) + sensor_data[self.__PX4FLOW_PIXEL_FLOW_Y_INTEGRAL]) / 1000
-
-            hibyte = sensor_data[self.__PX4FLOW_GYRO_X_RATE_INTEGRAL + 1]
-            if (hibyte > 127):
-               hibyte -= 256
-            roll_increment = (hibyte << 8) + sensor_data[self.__PX4FLOW_GYRO_X_RATE_INTEGRAL]
-
-            hibyte = sensor_data[self.__PX4FLOW_GYRO_Y_RATE_INTEGRAL + 1]
-            if (hibyte > 127):
-               hibyte -= 256
-            pitch_increment = (hibyte << 8) + sensor_data[self.__PX4FLOW_GYRO_Y_RATE_INTEGRAL]
-
-            hibyte = sensor_data[self.__PX4FLOW_GYRO_Z_RATE_INTEGRAL + 1]
-            if (hibyte > 127):
-               hibyte -= 256
-            yaw_increment = (hibyte << 8) + sensor_data[self.__PX4FLOW_GYRO_Z_RATE_INTEGRAL]
-
-            time_elapsed = 0
-            for ii in range(4):
-                time_elapsed += sensor_data[self.__PX4FLOW_TIMESPAN_INTEGRAL + ii] << (8 * ii)
-
-            return x_rps, y_rps
+        return self.max_az * self.__SCALE_ACCEL
 
 
 ####################################################################################################
 #
 #  Garmin LIDAR-Lite V3 range finder
-#
-#  IN ACTIVE SERVICE
 #
 ####################################################################################################
 class GLL:
@@ -1233,6 +971,11 @@ class GLL:
         dist2 = gll_bytes[1]
         distance = ((dist1 << 8) + dist2) / 100
         '''
+
+        #AB! # BUSY | HEALTHY flags only
+        #AB! status = self.i2c.readU8(self.__GLL_STATUS)
+        #AB! if status != 0x21:
+        #AB!    raise ValueError("0x%x" % status) 
 
         dist1 = self.i2c.readU8(self.__GLL_FULL_DELAY_HIGH)
         dist2 = self.i2c.readU8(self.__GLL_FULL_DELAY_LOW)
@@ -1498,7 +1241,7 @@ def PWMTerm():
 # GPIO pins initialization for MPU6050 FIFO overflow interrupt
 #
 ####################################################################################################
-def GPIOInit(FIFOOverflowISR, LEDDARDataReadyISR):
+def GPIOInit(FIFOOverflowISR):
     GPIO.setmode(GPIO.BCM)
 
     GPIO.setup(GPIO_FIFO_OVERFLOW_INTERRUPT, GPIO.IN, GPIO.PUD_OFF)
@@ -1506,9 +1249,6 @@ def GPIOInit(FIFOOverflowISR, LEDDARDataReadyISR):
 
 #AB!    GPIO.setup(GPIO_POWER_BROWN_OUT_INTERRUPT, GPIO.IN, GPIO.PUD_OFF)
 #AB!    GPIO.add_event_detect(GPIO_POWER_BROWN_OUT_INTERRUPT, GPIO.FALLING)
-
-    GPIO.setup(GPIO_LEDDAR_DR_INTERRUPT, GPIO.IN, GPIO.PUD_OFF)
-#    GPIO.add_event_detect(GPIO_LEDDAR_DR_INTERRUPT, GPIO.RISING, LEDDARDataReadyISR)
 
     GPIO.setup(GPIO_GARMIN_BUSY, GPIO.IN, GPIO.PUD_DOWN)
 #    GPIO.add_event_detect(GPIO_GARMIN_BUSY, GPIO.FALLING)
@@ -1526,7 +1266,6 @@ def GPIOInit(FIFOOverflowISR, LEDDARDataReadyISR):
 ####################################################################################################
 def GPIOTerm():
 #    GPIO.remove_event_detect(GPIO_FIFO_OVERFLOW_INTERRUPT)
-#    GPIO.remove_event_detect(GPIO_LEDDAR_DR_INTERRUPT)
     GPIO.cleanup()
 
 
@@ -1571,9 +1310,9 @@ def CheckCLI(argv):
     # Defaults for horizontal velocity PIDs.  Note the D gain to enhance acceleration and breaking
     # when the velocity _target_ changes rapidly.
     #-------------------------------------------------------------------------------------------
-    cli_hvp_gain = 1.5   #AB! 1.6
+    cli_hvp_gain = 1.5   #AB! was 1.6
     cli_hvi_gain = 0.0
-    cli_hvd_gain = 0.01  #AB! 0.0
+    cli_hvd_gain = 0.01  #AB! was 0.0
 
     #-------------------------------------------------------------------------------------------
     # Per frame specific values
@@ -1585,7 +1324,7 @@ def CheckCLI(argv):
         cli_hover_target = 500
 
         #-------------------------------------------------------------------------------------------
-        # Defaults for vertical velocity PIDs.  
+        # Defaults for vertical velocity PIDs.
         #-------------------------------------------------------------------------------------------
         cli_vvp_gain = 360.0
         cli_vvi_gain = 180.0
@@ -1594,21 +1333,21 @@ def CheckCLI(argv):
         #-------------------------------------------------------------------------------------------
         # Defaults for pitch angle PIDs
         #-------------------------------------------------------------------------------------------
-        cli_prp_gain = 90.0 #AB! 100.0
+        cli_prp_gain = 90.0 #AB! was 100.0
         cli_pri_gain = 0.0
         cli_prd_gain = 0.0
 
         #-------------------------------------------------------------------------------------------
         # Defaults for roll angle PIDs
         #-------------------------------------------------------------------------------------------
-        cli_rrp_gain = 90.0 #AB! 100.0
+        cli_rrp_gain = 90.0 #AB! was 100.0
         cli_rri_gain = 0.0
         cli_rrd_gain = 0.0
 
         #-------------------------------------------------------------------------------------------
         # Defaults for yaw angle PIDs
         #-------------------------------------------------------------------------------------------
-        cli_yrp_gain = 180.0 #AB! 200.0
+        cli_yrp_gain = 180.0 #AB! was 200.0
         cli_yri_gain = 0.0
         cli_yrd_gain = 0.0
 
@@ -1941,21 +1680,178 @@ def munlockall():
     if result != 0:
         raise Exception("cannot lock memory, errno=%s" % ctypes.get_errno())
 
+def Daemonize():
+    os.setpgrp()
+
+
 ####################################################################################################
 #
 # Start the Scanse Sweep reading process.
 #
+# #SWEEP: Change logging to write to the FIFO
+
+#
 ####################################################################################################
-def RecordSS():
-    pass
+def RecordSweep():
+
+    sweep = serial.Serial("/dev/ttySWEEP",
+                          baudrate = 115200,
+                          parity=serial.PARITY_NONE,
+                          bytesize = serial.EIGHTBITS,
+                          stopbits = serial.STOPBITS_ONE,
+                          xonxoff = False,
+                          rtscts = False,
+                          dsrdtr = False)
+
+    print "Scanse Sweep open"
+    sweep.write("ID\n")
+    print "Query device information"
+    resp = sweep.readline()
+    print "Response: " + resp
+
+    print "Starting scanning...",
+    sweep.write("DS\n")
+    resp = sweep.readline()
+    assert (len(resp) == 6), "Bad data"
+
+    status = resp[2:4]
+    if  status == "00":
+        print "OK"
+    else:
+        print "Failed %s" % status
+
+        #-------------------------------------------------------------------------------------------
+        #SWEEP! Missing here is stopping the scanning - it will still be running next time code is initiated
+        #SWEEP! and it all gets very messy / confusong separating binary data from ASCII command / response.
+        #SWEEP! Really need to do a subset of he finally: branch below.
+        #-------------------------------------------------------------------------------------------
+        os.exit()
+
+    with io.open("/dev/shm/sweep_stream", mode = "wb", buffering = 0) as fp:
+        log = open("sweep.csv", "wb")
+        log.write("angle, distance, x, y\n")
+
+        format = '=' + 'B' * 7 #AB! 'B' = signed, 'b' is unsigned
+
+        #-------------------------------------------------------------------------------------------
+        # Set the minimum proximity to beyond the sensor range of the sweep
+        #-------------------------------------------------------------------------------------------
+        min_distance = 100.0 # meters
+        try:
+            while True:
+                raw = sweep.read(7)
+                assert (len(raw) == 7), "Bad data read: %d" % len(raw)
+                formatted = struct.unpack(format, line)
+                assert (len(formatted) == 7), "Bad data type conversion: %d" % len(formatted)
+
+                azimuth_lo = formatted[1]
+                azimuth_hi = formatted[2]
+                angle_int = (azimuth_hi << 8) + azimuth_lo
+                degrees = (angle_int >> 4) + (angle_int & 15) / 16
+
+                #-----------------------------------------------------------------------------------
+                # If we've passed 0o, we're starting a new sweep, report the previous sweep's closest
+                # proximity results
+                #-----------------------------------------------------------------------------------
+                if degrees < previous_degrees:
+                    #################################################################################
+                    # Sweep is installed underneath Hermione, so from her point of view, Sweep      #
+                    # is rotating anticlockwise.  These angles below are in line with yaws right    #
+                    # hand rule, and unrelated to compass and GPS angles.  Report direction in      #
+                    # radians as a result.                                                          #
+                    #################################################################################
+                    fp.write("%f %f\n" % (min_distance, min_direction * math.pi / 180))
+                    min_distance = 100.0
+                prev_degrees = degrees
+
+                #------------------------------------------------------------------------------------
+                # Read the distance and convert to meters.
+                #------------------------------------------------------------------------------------
+                distance_lo = formatted[3]
+                distance_hi = formatted[4]
+                distance = ((distance_hi << 8) + distance_lo) / 100
+
+                #-----------------------------------------------------------------------------------
+                # If a reported distance is > 1m (the diagonral span of Hermione), record this distance
+                # if it's less that the previous smallest
+                #-----------------------------------------------------------------------------------
+                if distance > 1.0 and distance < min_distance:
+                    min_distance = distance
+                    min_direction = degrees
+
+                '''    
+                #SWEEP: Full scan (per loop) with timestamp sent to MapContructor
+                #SWEEP: Combined with compass and GPS (including their timestamps) from other processes, MapConstructor
+                #SWEEP: passes the Ronseal test.
+                '''
+
+        #-------------------------------------------------------------------------------------------
+        # Catch Ctrl-C
+        #-------------------------------------------------------------------------------------------
+        except KeyboardInterrupt as e:
+            pass
+
+        #-------------------------------------------------------------------------------------------
+        # Catch incorrect assumption bugs
+        #-------------------------------------------------------------------------------------------
+        except AssertionError as e:
+            print e
+
+        #-------------------------------------------------------------------------------------------
+        # Cleanup regardless otherwise the next run picks up data from this
+        #-------------------------------------------------------------------------------------------
+        finally:
+            print "Stop scanning"
+            sweep.write("DX\n")
+            resp = sweep.read()
+            print "Response: %s" % resp
+            log.close()
+
 
 ####################################################################################################
 #
 # Process the Scanse Sweep data.
 #
+#SWEEP! This is missing loads - it's just a placeholder
+#
 ####################################################################################################
-def SSProcessor(ss_fifo):
-    pass
+class SweepProcessor():
+
+    def __init__(self):
+        #-------------------------------------------------------------------------------------------
+        # Setup a shared memory based data stream for the Sweep output
+        #-------------------------------------------------------------------------------------------
+        os.mkfifo("/dev/shm/sweep_stream")
+
+        self.sweep_process = subprocess.Popen(["python", __file__, "SWEEP"], preexec_fn =  Daemonize)
+        while True:
+            try:
+                self.sweep_fifo = io.open("/dev/shm/sweep_stream", mode="rb")
+            except:
+                continue
+            else:
+                break
+
+    def flush(self):
+        #-------------------------------------------------------------------------------------------
+        # Read what should be the backlog of GPS locations and return how many there are.
+        #-------------------------------------------------------------------------------------------
+        self.sweep_fifo.readall()
+        return
+
+    def read(self):
+        sweep_proximity, sweep_direction = self.sweep_fifo.readline().split()
+        proximity = float(sweep_proximity)
+        direction = float(sweep_direction)
+        return proximity, direction
+
+    def cleanup(self):
+        #-------------------------------------------------------------------------------------------
+        # Stop the Sweep process
+        #-------------------------------------------------------------------------------------------
+        self.sweep_process.send_signal(signal.SIGINT)
+        self.sweep_fifo.close()
+        os.unlink("/dev/shm/gps_stream")
 
 
 ####################################################################################################
@@ -2044,7 +1940,7 @@ def RecordGPS():
                                 num_sats += 1
 
                 #-----------------------------------------------------------------------------
-                # Calculate the X,Y coordinates in meters
+                # Send the new batch.
                 #-----------------------------------------------------------------------------
                 if new_lon and new_lat and new_alt:
 
@@ -2070,30 +1966,69 @@ def RecordGPS():
 #
 # Process the GPS data.
 #
-# Latitude = North (+) / South (-) - 0.0 running E/W around the equator; range is +/- 90 degrees
-# Longitude = East (+) / West (-) - 0.0 running N/S through Greenwich; range is +/- 180 degrees
-# R = Radius of the Earth in meters = 6,371,000m
-#
-# With a base level longitude and latitude in degrees, we can calculate the current X and Y coordinates
-# in meters using equirectangular approximation:
-#
-# dNS = movement North / South - movement in a northerly direction is positive
-# dEW = movement East / West - movement in an easterly direction is positive
-# R = average radius of earth in meters = 6,371,000 meters
-#
-# dNS = (long2 - long1) * cos ((lat1 + lat2) / 2) * R meters
-# dEW = (lat2 - lat1) * R meters
-# distance = (dNS*dNS + dEW*dEW) ^ 0.5
-#
-# Note longitude / latitude are in degrees and need to be converted into radians i.e degrees * pi / 180
-# Similarly distance in meters needs to know the radius of the spherical Earth 
-#
-# More at http://www.movable-type.co.uk/scripts/latlong.html
-#
 ####################################################################################################
-def GPSProcessor(gps_fifo):
+class GPSProcessor():
 
-        gps_row = gps_fifo.readline()    
+    def __init__(self):
+        #---------------------------------------------------------------------------------------
+        # Setup a shared memory based data stream for the GPS output
+        #---------------------------------------------------------------------------------------
+        os.mkfifo("/dev/shm/gps_stream")
+
+        self.gps_process = subprocess.Popen(["python", __file__, "GPS"], preexec_fn = Daemonize)
+        while True:
+            try:
+                self.gps_fifo = io.open("/dev/shm/gps_stream", mode="rb")
+            except:
+                continue
+            else:
+                break
+        self.waypoints = []
+        self.min_satellites = 9
+
+    def cleanup(self):
+        #-------------------------------------------------------------------------------------------
+        # Stop the GPS process
+        #-------------------------------------------------------------------------------------------
+        self.gps_process.send_signal(signal.SIGINT)
+        self.gps_fifo.close()
+        os.unlink("/dev/shm/gps_stream")
+
+    def acquireSatellites(self):
+        gps_sats = 0
+        start_time = time.time()
+        print "Up to a minutes to acquire satellites... 0",
+        while gps_sats < self.min_satellites:
+            gps_lat, gps_lon, gps_alt, gps_sats = self.read()
+            print "\b\b%d" % gps_sats,
+            sys.stdout.flush()
+
+            #---------------------------------------------------------------------------------------
+            # If we can't get sufficient satellites within a minute, give up.
+            #---------------------------------------------------------------------------------------
+            if time.time() - start_time > 60:
+                break
+        print        
+
+        #--------------------------------------------------------------------------------------------
+        # See if the user can put up with what we got.
+        #--------------------------------------------------------------------------------------------
+        if gps_sats < self.min_satellites:
+            rsp = raw_input("I only got %d.  Good enough? " % gps_sats)
+            if len(rsp) != 0 and (rsp[0] != "y" or rsp[0] != "Y"):    
+                raise EnvironmentError("I can't see enough satellites, I give up!")
+
+        return gps_lat, gps_lon, gps_alt, gps_sats
+
+    def flush(self):
+        #-------------------------------------------------------------------------------------------
+        # Read what should be the backlog of GPS locations and return how many there are.
+        #-------------------------------------------------------------------------------------------
+        gps_bytes = self.gps_fifo.readline()
+        return
+
+    def read(self):
+        gps_row = self.gps_fifo.readline()
         gps_list = gps_row.split()
         assert (len(gps_list) == 4), "Incorrect GPS data received"
         latitude = float(gps_list[0])
@@ -2102,6 +2037,14 @@ def GPSProcessor(gps_fifo):
         satellites = int(gps_list[3])
 
         return latitude, longitude, altitude, satellites
+
+    def addWaypoint(self):
+        latitude, longitude, altitude, num_sats = self.acquireSatellites(min_satellites)
+        self.waypoints.append((latitude, longitude))
+        logger.critical("WAYPOINT:,lat: %f;,long %f.", latitude, longitude)
+
+    def clearWaypoints(self):
+        self.waypoints = []
 
 
 ####################################################################################################
@@ -2166,7 +2109,7 @@ class VideoMotionProcessor:
         sign = -1 if i_am_chloe else 1
         mb_dict = {}
 
-        frames = self.motion_fifo.read(self.mbs_bytes_per_frame)                
+        frames = self.motion_fifo.read(self.mbs_bytes_per_frame)
         assert (len(frames) != 0), "Shouldn't be here, no bytes to read"
         assert(len(frames) % self.mbs_bytes_per_frame == 0), "Incomplete frame bytes read"
         num_frames = int(len(frames) / self.mbs_bytes_per_frame)
@@ -2234,7 +2177,7 @@ class VideoMotionProcessor:
         unyawed_vectors = []
 
         #-------------------------------------------------------------------------------------------
-        # Undo the yaw increment - we could use the full rotation matrix here (as elsewhere), but 
+        # Undo the yaw increment - we could use the full rotation matrix here (as elsewhere), but
         # this is more efficient in this very time sensitive function.
         #-------------------------------------------------------------------------------------------
         for vector in self.vector_list:
@@ -2299,7 +2242,7 @@ class VideoMotionProcessor:
         best_y = sum_y / sum_score
 
         #-------------------------------------------------------------------------------------------
-        # Redo the yaw increment - we could use the full rotation matrix here (as elsewhere), but 
+        # Redo the yaw increment - we could use the full rotation matrix here (as elsewhere), but
         # this is more efficient in this very time sensitive function.
         #-------------------------------------------------------------------------------------------
         idx = self.c_yaw * best_x + self.s_yaw * best_y
@@ -2311,7 +2254,7 @@ class VideoMotionProcessor:
         assert(self.phase < 5), "Phase shift in motion vector processing"
 
         #-------------------------------------------------------------------------------------------
-        # Phase 0 - load the data and convert into a macro-block vector list 
+        # Phase 0 - load the data and convert into a macro-block vector list
         #-------------------------------------------------------------------------------------------
         if self.phase == 0:
             self.phase0()
@@ -2397,39 +2340,27 @@ class Quadcopter:
 
         #-------------------------------------------------------------------------------------------
         # Set up extra sensors based on quad identify.
-        # -  urf_installed can only be used once the RPi kernel I2C driver supports clock stretching
         # -  compass_installed can only be used with an MPU9250
-        # -  barometer_installed can only be used with MS5611 as included on DroTek MPU9250 breakout
-        # -  px4flow_installed only works with the original; clones don't work
         #-------------------------------------------------------------------------------------------
         X8 = False
         if i_am_zoe:
-            self.urf_installed = False
-            self.leddar_installed = False
-            self.px4flow_installed = False
             self.compass_installed = True
             self.camera_installed = True
-            self.barometer_installed = False
             self.gll_installed = True
             self.gps_installed = False
+            self.sweep_installed = False
         elif i_am_chloe:
-            self.urf_installed = False
-            self.leddar_installed = False
-            self.px4flow_installed = False
             self.compass_installed = True
             self.camera_installed = True
-            self.barometer_installed = False
             self.gll_installed = True
             self.gps_installed = False
+            self.sweep_installed = False
         elif i_am_hermione:
-            self.urf_installed = False
-            self.leddar_installed = False
-            self.px4flow_installed = False
             self.compass_installed = True
             self.camera_installed = True
-            self.barometer_installed = False
             self.gll_installed = True
             self.gps_installed = True
+            self.sweep_installed = False
             X8 = True
 
         #-------------------------------------------------------------------------------------------
@@ -2475,16 +2406,13 @@ class Quadcopter:
         logger.warning("%s is flying.", "Zoe" if i_am_zoe else "Hermione" if i_am_hermione else "Chloe")
 
         #-------------------------------------------------------------------------------------------
-        # Set the BCM pin assigned to the FIFO overflow and LEDDAR data ready interrupts
+        # Set the BCM pin assigned to the FIFO overflow
         #-------------------------------------------------------------------------------------------
         global GPIO_POWER_BROWN_OUT_INTERRUPT
         GPIO_POWER_BROWN_OUT_INTERRUPT = 35
 
         global GPIO_FIFO_OVERFLOW_INTERRUPT
         GPIO_FIFO_OVERFLOW_INTERRUPT = 24 if X8 else 22
-
-        global GPIO_LEDDAR_DR_INTERRUPT
-        GPIO_LEDDAR_DR_INTERRUPT = 18
 
         global GPIO_GARMIN_BUSY
         GPIO_GARMIN_BUSY = 5
@@ -2502,9 +2430,9 @@ class Quadcopter:
         PWMInit()
 
         #-------------------------------------------------------------------------------------------
-        # Enable GPIO for the FIFO overflow and LEDDAR data ready hardware interrupts.
+        # Enable GPIO for the FIFO overflow interrupt.
         #-------------------------------------------------------------------------------------------
-        GPIOInit(self.fifoOverflowISR, self.LEDDARDataReadyISR)
+        GPIOInit(self.fifoOverflowISR)
 
         #-------------------------------------------------------------------------------------------
         # Set the signal handler here so the core processing loop can be stopped (or not started) by
@@ -2603,11 +2531,6 @@ class Quadcopter:
         # sampling_rate      - the data sampling rate and thus data ready interrupt rate
         #                      motion processing.
         # motion_rate        - the target frequency motion processing occurs under perfect conditions.
-        #
-        # If LEDDAR is installed, reading the modbus slows the motion processing down significantly
-        # more than it should, and this causes FIFO overflows.  By reducing the sampling frequency,
-        # the FIFO overflow time increases.  Samples per motion follows suit to maintain motion
-        # processing at about 100Hz.
         #===========================================================================================
         alpf = 0
         glpf = 1
@@ -2617,7 +2540,7 @@ class Quadcopter:
         global motion_rate
         adc_frequency = 1000        #AB: defined by dlpf >= 1; DO NOT USE ZERO => 8000 adc_frequency
 
-        if self.leddar_installed or self.camera_installed or self.gll_installed:
+        if self.camera_installed or self.gll_installed:
             if i_am_hermione:
                 sampling_rate = 500 # Hz
                 motion_rate = 100   # Hz
@@ -2654,47 +2577,28 @@ class Quadcopter:
             mpu6050.initCompass()
 
         #-------------------------------------------------------------------------------------------
-        # Initialize the barometer / altimeter I2C object
-        #-------------------------------------------------------------------------------------------
-        if self.barometer_installed:
-            global ms5611
-            ms5611 = MS5611(0x77)
-
-        #-------------------------------------------------------------------------------------------
-        # Initialize the ultrasonic range finder I2C object and calibrate the sensor
-        #-------------------------------------------------------------------------------------------
-        if self.urf_installed:
-            global srf02
-            srf02 = SRF02(0x70)
-            for ii in range(10):
-                srf02.pingProximity()
-                time.sleep(0.070)  # 70ms sleep guarantees a valid result
-                sfr02.readProximity()
-
-        #-------------------------------------------------------------------------------------------
-        # Start up the LEDDAR now to give it time to self-tune and settle; kill off the terminal
-        # running on the serial bus so LEDDAR can use it
-        #-------------------------------------------------------------------------------------------
-        if self.leddar_installed:
-            os.system("systemctl stop serial-getty@ttyAMA0.service")
-            global leddar
-            leddar = LEDDAR()
-
-        #-------------------------------------------------------------------------------------------
-        # Initialize PX4FLOW
-        #-------------------------------------------------------------------------------------------
-        if self.px4flow_installed:
-            global px4flow
-            px4flow = PX4FLOW()
-
-        #-------------------------------------------------------------------------------------------
+        
         # Initialize the Garmin LiDAR-Lite V3 at 10Hz - this is also used for the camera frame rate.
         #AB! The only time I tried 20 on a dimly lit lawn, it leapt up and crashed down.
         #-------------------------------------------------------------------------------------------
-        self.tracking_rate = 10                
+        self.tracking_rate = 10
         if self.gll_installed:
             global gll
             gll = GLL(rate = self.tracking_rate)
+
+        #-------------------------------------------------------------------------------------------
+        # Initialise GPS
+        #-------------------------------------------------------------------------------------------
+        if self.gps_installed:
+            global gpsp
+            gpsp = GPSProcessor()
+
+        #-------------------------------------------------------------------------------------------
+        # Initialise Sweep
+        #-------------------------------------------------------------------------------------------
+        if self.sweep_installed:
+            global sweepp
+            sweepp = SweepProcessor()
 
     #===============================================================================================
     # Keyboard input between flights for CLI update etc
@@ -2957,6 +2861,7 @@ class Quadcopter:
         # Set up the global constants - gravity in meters per second squared
         #-------------------------------------------------------------------------------------------
         GRAV_ACCEL = 9.80665
+        EARTH_RADIUS = 6371000 # meters
 
         #-------------------------------------------------------------------------------------------
         # Register the flight plan with the authorities
@@ -3056,7 +2961,7 @@ class Quadcopter:
         # - vvf, hvf, vdf, hdf flag which must all be set to true for fusion to be triggered
         # - fusion_tau used for the fusion complementary filter - it's set to 2s
         #-------------------------------------------------------------------------------------------
-        if self.gll_installed or self.leddar_installed or self.urf_installed or self.camera_installed:
+        if self.gll_installed or self.camera_installed:
             vvf = False
             hvf = False
             vdf = False
@@ -3078,44 +2983,12 @@ class Quadcopter:
         hsf = float(base_pwm)
         ready_to_fly = False
         time.sleep(2.0)
-    
+
         #-------------------------------------------------------------------------------------------
         # Initialize the base setting of earth frame take-off height - i.e. the vertical distance from
         # the height sensor or the take-off platform / leg height if no sensor is available.
         #-------------------------------------------------------------------------------------------
         eftoh = 0.0
-
-        #-------------------------------------------------------------------------------------------
-        # Read the initial height of the URF from the ground
-        #-------------------------------------------------------------------------------------------
-        urfz = 0
-        if self.urf_installed:
-            srf02.pingProximity()
-            time.sleep(0.070)  # 70ms sleep guarantees a valid result
-            if not srf02.pingProcessed():
-                print "URF FMR FECK"
-                return
-            else:
-                eftoh = srf02.readProximity()
-                eftoh *= tilt_ratio
-                srf02.pingProximity()
-
-        #-------------------------------------------------------------------------------------------
-        # Get an initial set of readings from the LEDDAR thus clearing the DR interrupt
-        #-------------------------------------------------------------------------------------------
-        l_dist = 0.0
-        l_dd = 0.0
-        l_dt = 0.0
-        if self.leddar_installed:
-            eftoh = leddar.reset() * tilt_ratio
-
-        #-------------------------------------------------------------------------------------------
-        # Reset the take-off height
-        #-------------------------------------------------------------------------------------------
-        px_qvx = 0.0
-        px_qvy = 0.0
-        if self.px4flow_installed:
-            px4flow.get()
 
         #-------------------------------------------------------------------------------------------
         # Get an initial take-off height
@@ -3125,7 +2998,11 @@ class Quadcopter:
             print "Couple of seconds to let the LiDAR settle..."
             for ii in range(2 * self.tracking_rate):
                 time.sleep(1 / self.tracking_rate)
-                g_dist, g_vel = gll.read()
+                try:
+                    g_dist, g_vel = gll.read()
+                except ValueError as e:
+                    print "GLL status 1: %s" % e
+                    continue    
                 eftoh += g_dist * tilt_ratio
             eftoh /= (2 * self.tracking_rate)
 
@@ -3138,9 +3015,6 @@ class Quadcopter:
         readlist = []
         writelist = []
         exceptlist = []
-
-        def Daemonize():
-            os.setpgrp()
 
         #-------------------------------------------------------------------------------------------
         # Set up the video macro-block parameters
@@ -3157,7 +3031,7 @@ class Quadcopter:
             global frame_height
 
             if i_am_hermione:
-                frame_width = 800    #AB! 720   # an exact multiple of mb_size
+                frame_width = 800    #AB! was 720   # an exact multiple of mb_size
             elif i_am_chloe:
                 frame_width = 480    # an exact multiple of mb_size
             elif i_am_zoe:
@@ -3189,7 +3063,7 @@ class Quadcopter:
             # Setup a shared memory based data stream for the PiCamera video motion output
             #---------------------------------------------------------------------------------------
             os.mkfifo("/dev/shm/motion_stream")
-            video = subprocess.Popen(["python", __file__, "MOTION", str(frame_width), str(frame_height), str(frame_rate)], preexec_fn =  Daemonize)
+            video_process = subprocess.Popen(["python", __file__, "MOTION", str(frame_width), str(frame_height), str(frame_rate)], preexec_fn = Daemonize)
 
             while True:
                 try:
@@ -3199,55 +3073,53 @@ class Quadcopter:
                 else:
                     break
             readlist.append(motion_fifo)
-
-            #---------------------------------------------------------------------------------------
-            # Capture a couple of seconds' samples to let the video settle                     #GPS!
-            #---------------------------------------------------------------------------------------
-            frame_count = 0
-            logger.warning("Video @, %d, %d,  pixels, %d, fps, 2s frame count, %d", frame_width, frame_height, frame_rate, frame_count)
+            logger.warning("Video @, %d, %d,  pixels, %d, fps", frame_width, frame_height, frame_rate)
 
 
         #-------------------------------------------------------------------------------------------
-        # Set up the GPS receiver process.                                                     #GPS!
+        # See how many satellites GPS can pick up.
         #-------------------------------------------------------------------------------------------
         gps_lat = 0.0
-        gps_long = 0.0
+        gps_lon = 0.0
         gps_alt = 0.0
         gps_sats = 0
+        gps_ns = 0.0
+        gps_ew = 0.0
+        gps_dalt = 0.0
         if self.gps_installed:
             print "Couple of seconds to set up the GPS..."
 
-            #---------------------------------------------------------------------------------------
-            # Setup a shared memory based data stream for the GPS output
-            #---------------------------------------------------------------------------------------
-            os.mkfifo("/dev/shm/gps_stream")
-
-            gps = subprocess.Popen(["python", __file__, "GPS"], preexec_fn =  Daemonize)
-            while True:
-                try:
-                    gps_fifo = io.open("/dev/shm/gps_stream", mode="rb")
-                except:
-                    continue
-                else:
-                    break
+            gps_fifo = gpsp.gps_fifo
             readlist.append(gps_fifo)
 
             #---------------------------------------------------------------------------------------
-            # Get an initial GPS result                                                        #GPS!
+            # Get an initial GPS result.  If we don't get enough and the user is insistent we should
+            # the EnvironmentError is raised, and we abort the flight.  We're don't return here as
+            # we need to do the tidy up later at the end of the while self.keep_looping: 
             #---------------------------------------------------------------------------------------
-            gps_sats = 0
-            sss = time.time() # satellite search start
-            print "Up to a minute to acquire satellites... 0",
-            while gps_sats < 5:                                                                #GPS! - make number of sats configurable
-                gps_lat, gps_long, gps_alt, gps_sats = GPSProcessor(gps_fifo)
-                print "\b\b%d" % gps_sats,
-                sys.stdout.flush()
-                if time.time() - sss > 60:
-                    print "\nI've give up, I'm bored\n"
-                    self.keep_looping = False
-                    break
-            print
-            logger.warning("GPS location: latitude %f; longitude %f; altitude %f, satellites %d.", gps_long, gps_lat, gps_alt, gps_sats)
+            try:
+                gpsp.acquireSatellites()
+            except EnvironmentError as e:
+                print e
+                self.keep_looping = False
+            gps_lat, gps_lon, gps_alt, gps_sats = gpsp.read()
+            base_lat = gps_lat
+            base_lon = gps_lon
+            base_alt = gps_alt
+
+            logger.warning("GPS location: latitude %f; longitude %f; altitude %f, satellites %d.", gps_lon, gps_lat, gps_alt, gps_sats)
+
+
+        #-------------------------------------------------------------------------------------------
+        # Set up the Sweep receiver process.                                                     #SWEEP!
+        #SWEEP! Do we need anything here?
+        #-------------------------------------------------------------------------------------------
+        sweep_proximity = 0.0
+        sweep_direction = 0.0
+        if self.sweep_installed:
+            print "Couple of seconds to set up the Sweep..."
+            sweep_fifo = sweepp.sweep_fifo
+            readlist.append(sweep_fifo)
 
 
         print ""
@@ -3264,8 +3136,9 @@ class Quadcopter:
         if diagnostics:
             logger.warning("time, dt, loops, " +
                             "temperature, " +
-                            "latitude, longitude, altitude, satellites, " +
+                            "latitude, longitude, altitude, satellites, north, east, height, " +
                             "mgx, mgy, mgz, compass_angle, " +
+                            "sweep proximity, sweep direction, " +
                             "qdx_fuse, qdy_fuze, qdz_fuse, " +
                             "qvx_fuse, qvy_fuse, qvz_fuse, " +
                             "edx_target, edy_target, edz_target, " +
@@ -3273,12 +3146,12 @@ class Quadcopter:
                             "qrx, qry, qrz, " +
                             "qax, qay, qaz, " +
                             "qgx, qgy, qgz, " +
-                            "pitch, roll, yaw, " +
-                            "qdx_input, qdx_target, qvx_input, qvx_target, pa_input, pa_target, pr_input, pr_target, pr_out, " +
-                            "qdy_input, qdy_target, qvy_input, qvy_target, ra_input, ra_target, rr_input, rr_target, rr_out, " +
-                            "qdz_input, qdz_target, qvz_input, qvz_target, qvz_out, " +
-                            "ya_input, ya_target, yr_input, yr_target, yr_out, " +
-                            "FL PWM, FR PWM, BL PWM, BR PWM")
+                            "pitch, roll, yaw")
+#                            "qdx_input, qdx_target, qvx_input, qvx_target, pa_input, pa_target, pr_input, pr_target, pr_out, " +
+#                            "qdy_input, qdy_target, qvy_input, qvy_target, ra_input, ra_target, rr_input, rr_target, rr_out, " +
+#                            "qdz_input, qdz_target, qvz_input, qvz_target, qvz_out, " +
+#                            "ya_input, ya_target, yr_input, yr_target, yr_out, " +
+#                            "FL PWM, FR PWM, BL PWM, BR PWM")
 
         #-------------------------------------------------------------------------------------------
         # Used for total flight length only
@@ -3289,17 +3162,28 @@ class Quadcopter:
         # Flush any OS FIFO content
         #-------------------------------------------------------------------------------------------
         if len(readlist) != 0:
+            gps_flush = 0
+            video_flush = 0
+            sweep_flush = 0
             while True:
                 readable, writeable, exceptable = select.select(readlist, writelist, exceptlist, 0.0)
                 if len(readable) != 0:
                     if self.gps_installed and gps_fifo in readable:
-                        gps_fifo.readall()
-                        print "GPS flushed"
+                        gpsp.flush()
+                        gps_flush += 1
 
                     if self.camera_installed and motion_fifo in readable:
                         VideoMotionProcessor(motion_fifo, 0).flush()
+                        video_flush += 1
+
+                    if self.sweep_installed and sweep_fifo in readable:
+                        sweepp.flush()
+                        sweep_flush += 1
                 else:
-                    break   
+                    print "GPS Flush: %d" % gps_flush
+                    print "Video Flush: %d" % video_flush
+                    print "Sweep Flush: %d" % sweep_flush
+                    break
 
         #-------------------------------------------------------------------------------------------
         # Flush the IMU FIFO and enable the FIFO overflow interrupt
@@ -3359,7 +3243,7 @@ class Quadcopter:
                     except TypeError as e:
                         #-----------------------------------------------------------------------
                         # An exception occurs when the processing is not complete. Processing is
-                        # broken into 5 phases, all but the final stage returning None thus 
+                        # broken into 5 phases, all but the final stage returning None thus
                         # raising this TypeError exception.
                         #-----------------------------------------------------------------------
                         continue
@@ -3393,8 +3277,9 @@ class Quadcopter:
                 if self.camera_installed and motion_fifo in readable:
                     #---------------------------------------------------------------------------
                     # Run the Video Motion Processor
-                    #AB! BUG if aya and paya are either side of zero as aya is cropped lower down, so paya needs to be so also.
-                    #AB! or do we just get away with it due to how sin and cos works?  Guessing we do.
+                    #AB! BUG? If aya and paya are either side of zero as aya is cropped lower down, 
+                    #AB! so paya needs to be so also.  Or do we just get away with it due to how 
+                    #AB! sin and cos works?  Guessing we do.
                     #AB! apa and ara aren't a problem because they are worked out from the accelerometer
                     #AB! rather than integrated yaw rate + initial compass orientation.
                     #---------------------------------------------------------------------------
@@ -3418,7 +3303,7 @@ class Quadcopter:
                         vmp = None
 
                     #---------------------------------------------------------------------------
-                    #AB! For some reason at the start we are seeing seeing vmp_dt as 0 due to the 
+                    #AB! For some reason at the start we are seeing seeing vmp_dt as 0 due to the
                     #AB! flush (I think).  For now, just skip it.
                     #---------------------------------------------------------------------------
                     if vmp_dt == 0.0:
@@ -3427,10 +3312,48 @@ class Quadcopter:
 
                 elif self.gps_installed and gps_fifo in readable:
                     #---------------------------------------------------------------------------
-                    # Run the GPS Processor
+                    # Run the GPS Processor, and convert response to X, Y coordinate in earth NSEW
+                    # frame.
                     #---------------------------------------------------------------------------
                     try:
-                        gps_lat, gps_long, gps_alt, gps_sats = GPSProcessor(gps_fifo)
+                        gps_lat, gps_lon, gps_alt, gps_sats = gpsp.read()
+
+                        #---------------------------------------------------------------------------
+                        # Latitude = North (+) / South (-) - 0.0 running E/W around the equator; 
+                        #            range is +/- 90 degrees
+                        # Longitude = East (+) / West (-) - 0.0 running N/S through Greenwich;
+                        #             range is +/- 180 degrees
+                        #
+                        # With a base level longitude and latitude in degrees, we can calculate the
+                        # current X and Y coordinates in meters using equirectangular approximation:
+                        #
+                        # ns = movement North / South - movement in a northerly direction is positive
+                        # ew = movement East / West - movement in an easterly direction is positive
+                        # R = average radius of earth in meters = 6,371,000 meters
+                        #
+                        # ns = (long2 - long1) * cos ((lat1 + lat2) / 2) * R meters
+                        # ew = (lat2 - lat1) * R meters
+                        #
+                        # Note longitude / latitude are in degrees and need to be converted into 
+                        # radians i.e degrees * pi / 180 both for the cos and also the EARTH_RADIUS scale
+                        #
+                        # More at http://www.movable-type.co.uk/scripts/latlong.html
+                        #
+                        #---------------------------------------------------------------------------
+                        gps_ns = (gps_lon - base_lon) * math.cos((gps_lat + base_lat) * math.pi / 360) * EARTH_RADIUS * math.pi / 180
+                        gps_ew = (gps_lat - base_lat) * EARTH_RADIUS * math.pi / 180
+                        gps_dalt = (gps_alt - base_alt)
+
+                    except AssertionError as e:
+                        print "FMR GPS"
+                        break
+
+                elif self.sweep_installed and sweep_fifo in readable:
+                    #---------------------------------------------------------------------------
+                    # Run the Sweep Processor
+                    #---------------------------------------------------------------------------
+                    try:
+                        sweep_proximity, sweep_direction = sweepp.read()
                     except AssertionError as e:
                         print "FMR GPS"
                         break
@@ -3580,8 +3503,8 @@ class Quadcopter:
 
 
             #---------------------------------------------------------------------------------------
-            # Read the compass to determine yaw and orientation wrt GPS.  Yaw from the compass will 
-            # be fused (using another complementary filter) with integrated gyro Z axis yaw to 
+            # Read the compass to determine yaw and orientation wrt GPS.  Yaw from the compass will
+            # be fused (using another complementary filter) with integrated gyro Z axis yaw to
             # provide long term stability.  For now though, we're just collecting the data for logging.
             #---------------------------------------------------------------------------------------
             if self.compass_installed:
@@ -3595,7 +3518,11 @@ class Quadcopter:
             #=======================================================================================
             if self.gll_installed:
                 garmin_loops += 1
-                g_distance, g_velocity = gll.read()
+                try:
+                    g_distance, g_velocity = gll.read()
+                except ValueError as e:
+                    print "GLL status 2: %s" % e
+                    break    
 
                 edz_fuse = g_distance * tilt_ratio - eftoh
                 evz_fuse = g_velocity * tilt_ratio
@@ -3606,119 +3533,16 @@ class Quadcopter:
                 vvf = True
                 vdf = True
 
-            #---------------------------------------------------------------------------------------
-            # DUE TO THE FACT LEDDAR USES THE MODBUS INTERFACE, IT'S BEEN RETIRED IN PREFERENCE FOR
-            # THE I2C USED BY THE GARMIN LIDAR LITE ABOVE.
-            # THIS CODE IS HERE FOR REFERENCE ONLY.
-            #
-            # Get the latest set of LEDDAR velocities if available.
-            #
-            #---------------------------------------------------------------------------------------
-            elif self.leddar_installed and GPIO.input(GPIO_LEDDAR_DR_INTERRUPT):
-                error = ""
-                try:
-                    l_dist, l_dd, l_dt = leddar.read()
-                except IOError, e:
-                    error = "IOError"
-                except RuntimeError, e:
-                    error = "RuntimeError"
-                except ZeroDivisionError, e:
-                    error = "ZeroDivisionError"
-                except Exception, e:
-                    error = "OtherError"
-                else:
-                    #-------------------------------------------------------------------------------
-                    # Compensate for tilt
-                    #-------------------------------------------------------------------------------
-                    edz_fuse = l_dist * tilt_ratio - eftoh
-                    evz_fuse = l_dd / l_dt * tilt_ratio
-
-                    #-------------------------------------------------------------------------------
-                    # Set the flags for vertical velocity and distance fusion
-                    #-------------------------------------------------------------------------------
-                    vvf = True
-                    vdf = True
-
-                finally:
-                    if error != "":
-                        l_dist = 0.0
-                        l_dd = 0.0
-                        l_dt = 0.0
-                        logger.critical("############# LEDDAR ERROR (%s)#################" % error)
-                        break
-
-            #---------------------------------------------------------------------------------------
-            # DUE TO THE FACT SRF02 DOES NOT SUPPORT THE 400kbps I2C BAUDRATE REQUIRED BY THE IMU,
-            # THIS CODE IS HERE FOR REFERENCE ONLY.
-            #
-            # Check if there's a URF reading available, and if so, read and re-ping.
-            #---------------------------------------------------------------------------------------
-            elif self.urf_installed and srf02.pingProcessed():
-                urf_z, urf_dt = srf02.readProximity()
-                srf02.pingProximity()
-
-                #-----------------------------------------------------------------------------------
-                # Compensate for tilt
-                #-----------------------------------------------------------------------------------
-                edz_fuse = urfz * tilt_ratio - eftoh
-
-                #-----------------------------------------------------------------------------------
-                # Set the flags for vertical distance fusion
-                #-----------------------------------------------------------------------------------
-                vdf = True
-
             #=======================================================================================
             # Acquire horizontal distance next, again with prioritization of accuracy
             #=======================================================================================
-
-            #---------------------------------------------------------------------------------------
-            # DUE TO THE DIVERSE BEHAVIOUR OF THREE DIFFERENT PX4FLOWS TESTED, THIS HAS BEEN RETIRED
-            # IN PREFERENCE OF INDEPENDENT VERTICAL AND LATERAL TRACKING SENSORS.
-            # THIS CODE IS HERE FOR REFERENCE ONLY.
-            #---------------------------------------------------------------------------------------
-            if self.px4flow_installed:
-                error = ""
-                try:
-                    x_rps, y_rps = px4flow.get()
-                except IOError as e:
-                    error = "IOError"
-                except RuntimeError as e:
-                    error = "RuntimeError"
-                except ZeroDivisionError as e:
-                    error = "ZeroDivisionError"
-                except Exception as e:
-                    error = "OtherError"
-                else:
-                    #-------------------------------------------------------------------------------
-                    # Convert the X and Y axis radians per second values to velocities using the height
-                    # obtained ideally from the LEDDAR, but worst case, from integration.
-                    # Note that a full functional PX4FLOW could provide distance and velocity increments
-                    # and absolutes for X, Y and Z axes, but only one of the 3 I have does - the faulty
-                    # URFs on two models prevent height being use.  What's below is what can be achieved
-                    # with the minimum common support across all 3.
-                    #-------------------------------------------------------------------------------
-                    evx_fuse = 2 * (edz_fuse + eftoh) * math.tan(x_rps / 2)
-                    evy_fuse = 2 * (edz_fuse + eftoh) * math.tan(y_rps / 2)
-
-                    #-------------------------------------------------------------------------------
-                    # Set the flags for horizontal velocity fusion
-                    #-------------------------------------------------------------------------------
-                    hvf = True
-
-                finally:
-                    if error != "":
-                        l_dist = 0.0
-                        l_dt = 0.0
-                        l_vel = 0.0
-                        logger.critical("############# PX4FLOW ERROR (%s) #################" % error)
-                        break
 
             #---------------------------------------------------------------------------------------
             # If the camera is installed, and we have an absolute height measurement, get the horizontal
             # distance and velocity.  Note we always have height measurement, even if only from the
             # double integrated accelerometer.
             #---------------------------------------------------------------------------------------
-            elif self.camera_installed and camera_data_update:
+            if self.camera_installed and self.gll_installed and camera_data_update:
 
                 #-----------------------------------------------------------------------------------
                 # Take the increment of the scaled X and Y distance, and divide by the height to
@@ -3728,8 +3552,8 @@ class Quadcopter:
                 #AB! Don't like the nomenclature of ed?_increment and vv?
                 '''
 
-                edx_increment = (edz_fuse + eftoh) * (vvx + apa_increment / (2 * math.pi))
-                edy_increment = (edz_fuse + eftoh) * (vvy - ara_increment / (2 * math.pi))
+                edx_increment = (g_distance * tilt_ratio) * (vvx + apa_increment / (2 * math.pi))
+                edy_increment = (g_distance * tilt_ratio) * (vvy - ara_increment / (2 * math.pi))
 
                 #-----------------------------------------------------------------------------------
                 # Add the incremental distance to the total distance, and differentiate against time for
@@ -3759,7 +3583,7 @@ class Quadcopter:
             #---------------------------------------------------------------------------------------
             if vvf and vdf:
                 #-----------------------------------------------------------------------------------
-                # We need to rotate e*z_fuse into the quad frame.  First get best estimates of e?x + 
+                # We need to rotate e*z_fuse into the quad frame.  First get best estimates of e?x +
                 # e?y by rotations of the q?x / q?y values back to the earth frame.  Then use the new
                 # Z value as part of the rerotation back to quad frame.
                 #-----------------------------------------------------------------------------------
@@ -4057,8 +3881,9 @@ class Quadcopter:
                 temp = mpu6050.readTemperature()
                 logger.warning("%f, %f, %d, " % (sampling_loops / sampling_rate, motion_dt, sampling_loops) +
                                "%f, " % (temp / 333.86 + 21) +
-                               "%f, %f, %f, %d, " % (gps_lat, gps_long, gps_alt, gps_sats) +
+                               "%f, %f, %f, %d, %f, %f, %f, " % (gps_lat, gps_lon, gps_alt, gps_sats, gps_ns, gps_ew, gps_dalt) +
                                "%f, %f, %f, %f, " % (mgx, mgy, mgz, compass_angle) +
+                               "%f, %f, " % (sweep_proximity, sweep_direction * 180 / math.pi) +
                                "%f, %f, %f, " % (qdx_fuse, qdy_fuse, qdz_fuse) +
                                "%f, %f, %f, " % (qvx_fuse, qvy_fuse, qvz_fuse) +
                                "%f, %f, %f, " % (edx_target, edy_target, edz_target) +
@@ -4066,17 +3891,17 @@ class Quadcopter:
                                "%f, %f, %f, " % (qrx, qry, qrz) +
                                "%f, %f, %f, " % (qax, qay, qaz) +
                                "%f, %f, %f, " % (qgx, qgy, qgz) +
-                               "%f, %f, %f, " % (math.degrees(pa), math.degrees(ra), math.degrees(ya)) +
-                               "%f, %f, %f, %f, %f, %f, %f, %f, %d, " % (qdx_input, qdx_target, qvx_input, qvx_target, math.degrees(apa), math.degrees(pa_target), math.degrees(qry), math.degrees(pr_target), pr_out) +
-                               "%f, %f, %f, %f, %f, %f, %f, %f, %d, " % (qdy_input, qdy_target, qvy_input, qvy_target, math.degrees(ara), math.degrees(ra_target), math.degrees(qrx), math.degrees(rr_target), rr_out) +
-                               "%f, %f, %f, %f, %d, " % (qdz_input, qdz_target, qvz_input, qvz_target, qaz_out) +
-                               "%f, %f, %f, %f, %d, " % (math.degrees(aya), math.degrees(ya_target), math.degrees(qrz), math.degrees(yr_target), yr_out) +
-                               "%d, %d, %d, %d, " % (self.esc_list[0].pulse_width, self.esc_list[1].pulse_width, self.esc_list[2].pulse_width, self.esc_list[3].pulse_width))
+                               "%f, %f, %f, " % (math.degrees(pa), math.degrees(ra), math.degrees(ya)))
+#                               "%f, %f, %f, %f, %f, %f, %f, %f, %d, " % (qdx_input, qdx_target, qvx_input, qvx_target, math.degrees(apa), math.degrees(pa_target), math.degrees(qry), math.degrees(pr_target), pr_out) +
+#                               "%f, %f, %f, %f, %f, %f, %f, %f, %d, " % (qdy_input, qdy_target, qvy_input, qvy_target, math.degrees(ara), math.degrees(ra_target), math.degrees(qrx), math.degrees(rr_target), rr_out) +
+#                               "%f, %f, %f, %f, %d, " % (qdz_input, qdz_target, qvz_input, qvz_target, qaz_out) +
+#                               "%f, %f, %f, %f, %d, " % (math.degrees(aya), math.degrees(ya_target), math.degrees(qrz), math.degrees(yr_target), yr_out) +
+#                               "%d, %d, %d, %d, " % (self.esc_list[0].pulse_width, self.esc_list[1].pulse_width, self.esc_list[2].pulse_width, self.esc_list[3].pulse_width))
 
         logger.critical("Flight time %f", time.time() - start_flight)
         logger.critical("Sampling loops: %d", sampling_loops)
         logger.critical("Motion processing loops: %d", motion_loops)
-        logger.critical("Fusion processing loops %d:", fusion_loops)
+        logger.critical("Fusion processing loops: %d", fusion_loops)
         logger.critical("LiDAR processing loops: %d", garmin_loops)
         if sampling_loops != 0:
             logger.critical("Video frame rate: %f", video_loops * sampling_rate / sampling_loops )
@@ -4094,18 +3919,10 @@ class Quadcopter:
         mpu6050.disableFIFOOverflowISR()
 
         #-------------------------------------------------------------------------------------------
-        # Stop the GPS processing                                                              #GPS!
-        #-------------------------------------------------------------------------------------------
-        if self.gps_installed:
-            gps.send_signal(signal.SIGINT)
-            gps_fifo.close()
-            os.unlink("/dev/shm/gps_stream")
-
-        #-------------------------------------------------------------------------------------------
         # Stop the camera motion processing
         #-------------------------------------------------------------------------------------------
         if self.camera_installed:
-            video.send_signal(signal.SIGINT)
+            video_process.send_signal(signal.SIGINT)
             motion_fifo.close()
             os.unlink("/dev/shm/motion_stream")
 
@@ -4116,6 +3933,18 @@ class Quadcopter:
     #
     ################################################################################################
     def shutdown(self):
+
+        #-------------------------------------------------------------------------------------------
+        # Stop the child GPS process
+        #-------------------------------------------------------------------------------------------
+        if self.gps_installed:
+            gpsp.cleanup()
+
+        #-------------------------------------------------------------------------------------------
+        # Stop the child Sweep process
+        #-------------------------------------------------------------------------------------------
+        if self.sweep_installed:
+            sweepp.cleanup()
 
         #-------------------------------------------------------------------------------------------
         # Stop the signal handler
@@ -4129,10 +3958,8 @@ class Quadcopter:
             esc.set(0)
 
         #-------------------------------------------------------------------------------------------
-        # Copy logs from /dev/shm (shared / virtual memory) to the Logs directory.
+        # Copy logs from /dev/shm (shared / virtual memory) to disk.
         #-------------------------------------------------------------------------------------------
-        now = datetime.now()
-        now_string = now.strftime("%y%m%d-%H:%M:%S")
         log_file_name = "qcstats.csv"
         shutil.move("/dev/shm/qclogs", log_file_name)
 
@@ -4179,16 +4006,6 @@ class Quadcopter:
             print "FIFO OVERFLOW, ABORT"
             self.keep_looping = False
 
-    ####################################################################################################
-    #
-    # Interrupt Service Routine for LEDDAR data ready - RETIRED, JUST POLL NOW
-    #
-    ####################################################################################################
-    def LEDDARDataReadyISR(self, pin):
-        print "LEDDAR ISR"
-        self.leddar_dr = True
-
-
 ####################################################################################################
 # If we've been called directly, this is the spawned video process for gathering and FIFOing macro-block
 # frames
@@ -4204,5 +4021,8 @@ if __name__ == '__main__':
         elif sys.argv[1] == "GPS":
             assert (len(sys.argv) == 2), "Bad parameters for GPS"
             RecordGPS()
+        elif sys.argv[1] == "SWEEP":
+            assert (len(sys.argv) == 2), "Bad parameters for Sweep"
+            RecordSweep()
         else:
             assert (False), "Invalid process request"
