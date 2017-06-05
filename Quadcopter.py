@@ -393,7 +393,7 @@ class MPU6050:
         # 0x18 = +/- 16g
         # See SCALE_ACCEL for convertion from raw data to units of meters per second squared
         #-------------------------------------------------------------------------------------------
-        # int(math.log(g / 2, 2)) << 3
+        # int(math.log(g / 2, 2)) << 3?
         self.i2c.write8(self.__MPU6050_RA_ACCEL_CONFIG, 0x08)                             #AB: +/-4g
         time.sleep(0.1)
 
@@ -564,7 +564,7 @@ class MPU6050:
 
         #-------------------------------------------------------------------------------------------
         # Convert the array of 6 bytes to 3 shorts - 7th byte kicks off another read.
-        # Note compass X, Y, Z are aligned with GPS not IMU i.e. positive compass X = pointing east.
+        # Note compass X, Y, Z are aligned with GPS not IMU i.e. X = 0, Y = 1 => 0 degrees North
         #-------------------------------------------------------------------------------------------
         compass_data = []
         for ii in range(0, 6, 2):
@@ -744,7 +744,7 @@ class MPU6050:
                     # Convert compass vector into N, S, E, W variants.  Get the compass angle in the
                     # range of 0 - 359.99.
                     #-------------------------------------------------------------------------------
-                    compass_angle = math.atan2(mgy, mgx) * 180 / math.pi
+                    compass_angle = math.atan2(mgx, mgy) * 180 / math.pi
                     if compass_angle < 0:
                         compass_angle += 360
 
@@ -775,8 +775,8 @@ class MPU6050:
                     #-------------------------------------------------------------------------------
                     GPIO.output(GPIO_LED, GPIO.LOW)
 
-        except EnvironmentError:
-            pass
+        except EnvironmentError as e:
+            print "Environment Error: '%s'" % e
 
         return offs_rc
 
@@ -975,7 +975,7 @@ class GLL:
         #AB! # BUSY | HEALTHY flags only
         #AB! status = self.i2c.readU8(self.__GLL_STATUS)
         #AB! if status != 0x21:
-        #AB!    raise ValueError("0x%x" % status) 
+        #AB!    raise ValueError("0x%x" % status)
 
         dist1 = self.i2c.readU8(self.__GLL_FULL_DELAY_HIGH)
         dist2 = self.i2c.readU8(self.__GLL_FULL_DELAY_LOW)
@@ -1731,7 +1731,10 @@ def RecordSweep():
         log = open("sweep.csv", "wb")
         log.write("angle, distance, x, y\n")
 
-        format = '=' + 'B' * 7 #AB! 'B' = signed, 'b' is unsigned
+        unpack_format = '=' + 'B' * 7
+        unpack_size = struct.calcsize(unpack_format)
+
+        pack_format = '=ff'
 
         #-------------------------------------------------------------------------------------------
         # Set the minimum proximity to beyond the sensor range of the sweep
@@ -1739,9 +1742,9 @@ def RecordSweep():
         min_distance = 100.0 # meters
         try:
             while True:
-                raw = sweep.read(7)
-                assert (len(raw) == 7), "Bad data read: %d" % len(raw)
-                formatted = struct.unpack(format, line)
+                raw = sweep.read(unpack_size)
+                assert (len(raw) == unpack_size), "Bad data read: %d" % len(raw)
+                formatted = struct.unpack(unpack_format, raw)
                 assert (len(formatted) == 7), "Bad data type conversion: %d" % len(formatted)
 
                 azimuth_lo = formatted[1]
@@ -1760,7 +1763,8 @@ def RecordSweep():
                     # hand rule, and unrelated to compass and GPS angles.  Report direction in      #
                     # radians as a result.                                                          #
                     #################################################################################
-                    fp.write("%f %f\n" % (min_distance, min_direction * math.pi / 180))
+                    output = struct.pack(pack_format, min_distance, min_direction * math.pi / 100)
+                    fp.write(output)
                     min_distance = 100.0
                 prev_degrees = degrees
 
@@ -1779,7 +1783,7 @@ def RecordSweep():
                     min_distance = distance
                     min_direction = degrees
 
-                '''    
+                '''
                 #SWEEP: Full scan (per loop) with timestamp sent to MapContructor
                 #SWEEP: Combined with compass and GPS (including their timestamps) from other processes, MapConstructor
                 #SWEEP: passes the Ronseal test.
@@ -1832,17 +1836,13 @@ class SweepProcessor():
             else:
                 break
 
-    def flush(self):
-        #-------------------------------------------------------------------------------------------
-        # Read what should be the backlog of GPS locations and return how many there are.
-        #-------------------------------------------------------------------------------------------
-        self.sweep_fifo.readall()
-        return
-
+        self.unpack_format = "=ff"
+        self.unpack_size = struct.calcsize(self.unpack_format)
+        
     def read(self):
-        sweep_proximity, sweep_direction = self.sweep_fifo.readline().split()
-        proximity = float(sweep_proximity)
-        direction = float(sweep_direction)
+        raw = self.sweep_fifo.read(self.unpack_size)
+        assert (len(raw) == self.unpack_size), "Incomplete data received from Sweep reader"
+        proximity, direction = struct.unpack(self.unpack_format, raw)
         return proximity, direction
 
     def cleanup(self):
@@ -1851,7 +1851,7 @@ class SweepProcessor():
         #-------------------------------------------------------------------------------------------
         self.sweep_process.send_signal(signal.SIGINT)
         self.sweep_fifo.close()
-        os.unlink("/dev/shm/gps_stream")
+        os.unlink("/dev/shm/sweep_stream")
 
 
 ####################################################################################################
@@ -1880,6 +1880,8 @@ def RecordGPS():
     new_lat = False
     new_lon = False
     new_alt = False
+
+    pack_format = '=fffb' # latitude, longitude, altitude, num satellites
 
     with io.open("/dev/shm/gps_stream", mode = "wb", buffering = 0) as fp:
         while True:
@@ -1948,10 +1950,12 @@ def RecordGPS():
                     new_lat = False
                     new_alt = False
 
-                    output = "%f %f %f %d\n" % (latitude,
-                                                longitude,
-                                                altitude,
-                                                num_sats)
+                    output = struct.pack(pack_format, 
+                                         latitude,
+                                         longitude,
+                                         altitude,
+                                         num_sats)
+
                     fp.write(output)
             except KeyError:
                 pass
@@ -1960,6 +1964,8 @@ def RecordGPS():
             except StopIteration:
                 session = None
                 break
+            finally:
+                pass
 
 
 ####################################################################################################
@@ -1986,6 +1992,10 @@ class GPSProcessor():
         self.waypoints = []
         self.min_satellites = 9
 
+        self.unpack_format = '=fffb' # latitude, longitude, altitude, num satellites
+        self.unpack_size = struct.calcsize(self.unpack_format)
+
+
     def cleanup(self):
         #-------------------------------------------------------------------------------------------
         # Stop the GPS process
@@ -1997,7 +2007,7 @@ class GPSProcessor():
     def acquireSatellites(self):
         gps_sats = 0
         start_time = time.time()
-        print "Up to a minutes to acquire satellites... 0",
+        print "Gimme up to a minutes to acquire satellites... 0",
         while gps_sats < self.min_satellites:
             gps_lat, gps_lon, gps_alt, gps_sats = self.read()
             print "\b\b%d" % gps_sats,
@@ -2008,34 +2018,22 @@ class GPSProcessor():
             #---------------------------------------------------------------------------------------
             if time.time() - start_time > 60:
                 break
-        print        
+        print
 
         #--------------------------------------------------------------------------------------------
         # See if the user can put up with what we got.
         #--------------------------------------------------------------------------------------------
         if gps_sats < self.min_satellites:
             rsp = raw_input("I only got %d.  Good enough? " % gps_sats)
-            if len(rsp) != 0 and (rsp[0] != "y" or rsp[0] != "Y"):    
+            if len(rsp) != 0 and (rsp[0] != "y" or rsp[0] != "Y"):
                 raise EnvironmentError("I can't see enough satellites, I give up!")
 
         return gps_lat, gps_lon, gps_alt, gps_sats
 
-    def flush(self):
-        #-------------------------------------------------------------------------------------------
-        # Read what should be the backlog of GPS locations and return how many there are.
-        #-------------------------------------------------------------------------------------------
-        gps_bytes = self.gps_fifo.readline()
-        return
-
     def read(self):
-        gps_row = self.gps_fifo.readline()
-        gps_list = gps_row.split()
-        assert (len(gps_list) == 4), "Incorrect GPS data received"
-        latitude = float(gps_list[0])
-        longitude = float(gps_list[1])
-        altitude = float(gps_list[2])
-        satellites = int(gps_list[3])
-
+        raw = self.gps_fifo.read(self.unpack_size)
+        assert (len(raw) == self.unpack_size), "Invalid data block received from GPS reader"
+        latitude, longitude, altitude, satellites = struct.unpack(self.unpack_format, raw)
         return latitude, longitude, altitude, satellites
 
     def addWaypoint(self):
@@ -2577,7 +2575,7 @@ class Quadcopter:
             mpu6050.initCompass()
 
         #-------------------------------------------------------------------------------------------
-        
+
         # Initialize the Garmin LiDAR-Lite V3 at 10Hz - this is also used for the camera frame rate.
         #AB! The only time I tried 20 on a dimly lit lawn, it leapt up and crashed down.
         #-------------------------------------------------------------------------------------------
@@ -3002,7 +3000,7 @@ class Quadcopter:
                     g_dist, g_vel = gll.read()
                 except ValueError as e:
                     print "GLL status 1: %s" % e
-                    continue    
+                    continue
                 eftoh += g_dist * tilt_ratio
             eftoh /= (2 * self.tracking_rate)
 
@@ -3075,7 +3073,6 @@ class Quadcopter:
             readlist.append(motion_fifo)
             logger.warning("Video @, %d, %d,  pixels, %d, fps", frame_width, frame_height, frame_rate)
 
-
         #-------------------------------------------------------------------------------------------
         # See how many satellites GPS can pick up.
         #-------------------------------------------------------------------------------------------
@@ -3095,20 +3092,15 @@ class Quadcopter:
             #---------------------------------------------------------------------------------------
             # Get an initial GPS result.  If we don't get enough and the user is insistent we should
             # the EnvironmentError is raised, and we abort the flight.  We're don't return here as
-            # we need to do the tidy up later at the end of the while self.keep_looping: 
+            # we need to do the tidy up later at the end of the while self.keep_looping:
             #---------------------------------------------------------------------------------------
             try:
-                gpsp.acquireSatellites()
+                gps_lat, gps_lon, gps_alt, gps_sats = gpsp.acquireSatellites()
             except EnvironmentError as e:
                 print e
                 self.keep_looping = False
-            gps_lat, gps_lon, gps_alt, gps_sats = gpsp.read()
-            base_lat = gps_lat
-            base_lon = gps_lon
-            base_alt = gps_alt
 
             logger.warning("GPS location: latitude %f; longitude %f; altitude %f, satellites %d.", gps_lon, gps_lat, gps_alt, gps_sats)
-
 
         #-------------------------------------------------------------------------------------------
         # Set up the Sweep receiver process.                                                     #SWEEP!
@@ -3129,6 +3121,7 @@ class Quadcopter:
         print "#                                                                              #"
         print "################################################################################"
         print ""
+
 
         #-------------------------------------------------------------------------------------------
         # Diagnostic log header
@@ -3169,7 +3162,7 @@ class Quadcopter:
                 readable, writeable, exceptable = select.select(readlist, writelist, exceptlist, 0.0)
                 if len(readable) != 0:
                     if self.gps_installed and gps_fifo in readable:
-                        gpsp.flush()
+                        gpsp.read()
                         gps_flush += 1
 
                     if self.camera_installed and motion_fifo in readable:
@@ -3177,7 +3170,7 @@ class Quadcopter:
                         video_flush += 1
 
                     if self.sweep_installed and sweep_fifo in readable:
-                        sweepp.flush()
+                        sweepp.read()
                         sweep_flush += 1
                 else:
                     print "GPS Flush: %d" % gps_flush
@@ -3202,6 +3195,7 @@ class Quadcopter:
         fusion_loops = 0
         garmin_loops = 0
         video_loops = 0
+        gps_loops = 0
 
         #===========================================================================================
         #
@@ -3273,12 +3267,65 @@ class Quadcopter:
                     logger.critical("ERROR: select error")
                     break
 
+                #===============================================================================
+                # Priority puts video processing at the end, otherwise, GPS / Sweep may never 
+                # get a chance.
+                #===============================================================================
 
-                if self.camera_installed and motion_fifo in readable:
+                if self.gps_installed and gps_fifo in readable:
+                    #---------------------------------------------------------------------------
+                    # Run the GPS Processor, and convert response to X, Y coordinate in earth NSEW
+                    # frame.
+                    #---------------------------------------------------------------------------
+                    gps_loops += 1
+                    try:
+                        gps_lat, gps_lon, gps_alt, gps_sats = gpsp.read()
+
+                        #---------------------------------------------------------------------------
+                        # Latitude = North (+) / South (-) - 0.0 running E/W around the equator;
+                        #            range is +/- 90 degrees
+                        # Longitude = East (+) / West (-) - 0.0 running N/S through Greenwich;
+                        #             range is +/- 180 degrees
+                        #
+                        # With a base level longitude and latitude in degrees, we can calculate the
+                        # current X and Y coordinates in meters using equirectangular approximation:
+                        #
+                        # ns = movement North / South - movement in a northerly direction is positive
+                        # ew = movement East / West - movement in an easterly direction is positive
+                        # R = average radius of earth in meters = 6,371,000 meters
+                        #
+                        # ns = (long2 - long1) * cos ((lat1 + lat2) / 2) * R meters
+                        # ew = (lat2 - lat1) * R meters
+                        #
+                        # Note longitude / latitude are in degrees and need to be converted into
+                        # radians i.e degrees * pi / 180 both for the cos and also the EARTH_RADIUS scale
+                        #
+                        # More at http://www.movable-type.co.uk/scripts/latlong.html
+                        #
+                        #---------------------------------------------------------------------------
+                        gps_ns = (gps_lon - base_lon) * math.cos((gps_lat + base_lat) * math.pi / 360) * EARTH_RADIUS * math.pi / 180
+                        gps_ew = (gps_lat - base_lat) * EARTH_RADIUS * math.pi / 180
+                        gps_dalt = (gps_alt - base_alt)
+
+                    except AssertionError as e:
+                        print "FMR GPS"
+                        break
+
+                elif self.sweep_installed and sweep_fifo in readable:
+                    #---------------------------------------------------------------------------
+                    # Run the Sweep Processor
+                    #---------------------------------------------------------------------------
+                    try:
+                        sweep_proximity, sweep_direction = sweepp.read()
+                    except AssertionError as e:
+                        print "FMR GPS"
+                        break
+
+                elif self.camera_installed and motion_fifo in readable:
                     #---------------------------------------------------------------------------
                     # Run the Video Motion Processor
-                    #AB! BUG? If aya and paya are either side of zero as aya is cropped lower down, 
-                    #AB! so paya needs to be so also.  Or do we just get away with it due to how 
+                    #AB! BUG? If aya and paya are either side of zero as aya is cropped lower down,
+                    #AB! so paya needs to be so also.  Or do we just get away with it due to how
                     #AB! sin and cos works?  Guessing we do.
                     #AB! apa and ara aren't a problem because they are worked out from the accelerometer
                     #AB! rather than integrated yaw rate + initial compass orientation.
@@ -3303,60 +3350,13 @@ class Quadcopter:
                         vmp = None
 
                     #---------------------------------------------------------------------------
-                    #AB! For some reason at the start we are seeing seeing vmp_dt as 0 due to the
-                    #AB! flush (I think).  For now, just skip it.
+                    #AB! For some reason at the start we are seeing vmp_dt as 0 due to the flush
+                    #AB! (I think).  For now, just skip it.
                     #---------------------------------------------------------------------------
                     if vmp_dt == 0.0:
                        print "vmp_dt == 0"
                        vmp = None
 
-                elif self.gps_installed and gps_fifo in readable:
-                    #---------------------------------------------------------------------------
-                    # Run the GPS Processor, and convert response to X, Y coordinate in earth NSEW
-                    # frame.
-                    #---------------------------------------------------------------------------
-                    try:
-                        gps_lat, gps_lon, gps_alt, gps_sats = gpsp.read()
-
-                        #---------------------------------------------------------------------------
-                        # Latitude = North (+) / South (-) - 0.0 running E/W around the equator; 
-                        #            range is +/- 90 degrees
-                        # Longitude = East (+) / West (-) - 0.0 running N/S through Greenwich;
-                        #             range is +/- 180 degrees
-                        #
-                        # With a base level longitude and latitude in degrees, we can calculate the
-                        # current X and Y coordinates in meters using equirectangular approximation:
-                        #
-                        # ns = movement North / South - movement in a northerly direction is positive
-                        # ew = movement East / West - movement in an easterly direction is positive
-                        # R = average radius of earth in meters = 6,371,000 meters
-                        #
-                        # ns = (long2 - long1) * cos ((lat1 + lat2) / 2) * R meters
-                        # ew = (lat2 - lat1) * R meters
-                        #
-                        # Note longitude / latitude are in degrees and need to be converted into 
-                        # radians i.e degrees * pi / 180 both for the cos and also the EARTH_RADIUS scale
-                        #
-                        # More at http://www.movable-type.co.uk/scripts/latlong.html
-                        #
-                        #---------------------------------------------------------------------------
-                        gps_ns = (gps_lon - base_lon) * math.cos((gps_lat + base_lat) * math.pi / 360) * EARTH_RADIUS * math.pi / 180
-                        gps_ew = (gps_lat - base_lat) * EARTH_RADIUS * math.pi / 180
-                        gps_dalt = (gps_alt - base_alt)
-
-                    except AssertionError as e:
-                        print "FMR GPS"
-                        break
-
-                elif self.sweep_installed and sweep_fifo in readable:
-                    #---------------------------------------------------------------------------
-                    # Run the Sweep Processor
-                    #---------------------------------------------------------------------------
-                    try:
-                        sweep_proximity, sweep_direction = sweepp.read()
-                    except AssertionError as e:
-                        print "FMR GPS"
-                        break
 
                 #-------------------------------------------------------------------------------
                 # We had free time, do we still?  Better check.
@@ -3522,7 +3522,7 @@ class Quadcopter:
                     g_distance, g_velocity = gll.read()
                 except ValueError as e:
                     print "GLL status 2: %s" % e
-                    break    
+                    break
 
                 edz_fuse = g_distance * tilt_ratio - eftoh
                 evz_fuse = g_velocity * tilt_ratio
@@ -3903,6 +3903,7 @@ class Quadcopter:
         logger.critical("Motion processing loops: %d", motion_loops)
         logger.critical("Fusion processing loops: %d", fusion_loops)
         logger.critical("LiDAR processing loops: %d", garmin_loops)
+        logger.critical("GPS processing loops: %d", gps_loops)
         if sampling_loops != 0:
             logger.critical("Video frame rate: %f", video_loops * sampling_rate / sampling_loops )
 

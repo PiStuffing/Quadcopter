@@ -17,6 +17,7 @@ Here's the installation steps I took to install Hermione from scratch today.
 <pre><code>dtparam=audio=off
 start_x=0</code></pre>
 </li>
+<li>If you are using a B+ or B2, add the following to /boot/config.txt<pre>max_usb_current=1</pre></li>
     <li>If you are using a Pi3 or Zero-W, you may want to disable Bluetooth in /etc/modprobe.d/raspi-blacklist.conf thus:
         <pre># WiFi
 # blacklist brcmfmac
@@ -30,7 +31,8 @@ Likewise if you're using an WiFi USB dongle, you can disable the internal one by
         <pre>arm_freq=1200
 core_freq=500
 sdram_freq=600
-over_voltage=6</pre></li>
+over_voltage=6
+force_turbo=1</pre></li>
     <li>If you are using USB GPS and / or Scanse Sweep, it's worth linking the USB tty to a unique name for each.  In /etc/udev/rules.d add a file such as '99-usb-serial.rules containing something like this:
 <pre>SUBSYSTEM=="tty", ATTRS{idVendor}=="0403", ATTRS{idProduct}=="6015", ATTRS{serial}=="DO004VY5", SYMLINK+="ttySWEEP"
 SUBSYSTEM=="tty", ATTRS{idVendor}=="067b", ATTRS{idProduct}=="2303", SYMLINK+="ttyGPS"
