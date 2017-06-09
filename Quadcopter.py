@@ -164,7 +164,6 @@ class MPU6050:
     __MPU6050_RA_SELF_TEST_YA = 0x0E
     __MPU6050_RA_SELF_TEST_ZA = 0x0F
     __MPU6050_RA_XG_OFFS_USRH = 0x13
-    __MPU6050_RA_XG_OFFS_USRH = 0x13
     __MPU6050_RA_XG_OFFS_USRL = 0x14
     __MPU6050_RA_YG_OFFS_USRH = 0x15
     __MPU6050_RA_YG_OFFS_USRL = 0x16
@@ -298,13 +297,14 @@ class MPU6050:
     __AK893_RA_ASAZ = 0x12
 
     __SCALE_GYRO = (500.0 * math.pi) / (65536 * 180)
-    __SCALE_ACCEL = 8.0 / 65536                                                           #AB: +/-4g
+    __SCALE_ACCEL = 8.0 / 65536                                                          #AB: +/-4g
 
     def __init__(self, address=0x68, alpf=2, glpf=1):
         self.i2c = I2C(address)
         self.address = address
 
-        self.max_az = 0
+        self.max_az = int(65536 / 8)                                                     #AB: +/-4g
+        self.min_az = int(65536 / 8)                                                     #AB: +/-4g
 
         self.ax_offset = 0.0
         self.ay_offset = 0.0
@@ -489,6 +489,9 @@ class MPU6050:
             if sensor_data[2] > self.max_az:
                 self.max_az = sensor_data[2]
 
+            if sensor_data[2] < self.min_az:
+                self.min_az = sensor_data[2]
+
         ax /= fifo_batches
         ay /= fifo_batches
         az /= fifo_batches
@@ -583,6 +586,52 @@ class MPU6050:
 
         return mgx, mgy, mgz
 
+    def compassCheckCalibrate(self):
+        rc = True
+        while True:
+            coc = raw_input("'check' or 'calibrate'? ")
+            if coc == "check":
+                self.checkCompass()
+                break
+            elif coc == "calibrate":
+                rc = self.calibrateCompass()
+                break
+        return rc            
+
+    def checkCompass(self):
+        print "Pop me on the ground again pointing north, based on another compass."
+        raw_input("Press enter when that's done, and I'll tell you which way I think I'm pointing")
+
+        self.loadCompassCalibration()
+        mgx, mgy, mgz = self.readCompass()
+
+        #-------------------------------------------------------------------------------
+        # Convert compass vector into N, S, E, W variants.  Get the compass angle in the
+        # range of 0 - 359.99.
+        #-------------------------------------------------------------------------------
+        compass_angle = math.atan2(mgx, mgy) * 180 / math.pi
+        if compass_angle < 0:
+            compass_angle += 360
+
+        #-------------------------------------------------------------------------------
+        # There are 16 possible compass directions when you include things like NNE at
+        # 22.5 degrees.
+        #-------------------------------------------------------------------------------
+        compass_points = ("N", "NNE", "NE", "ENE", "E", "ESE", "SE", "SSE", "S", "SSW", "SW", "WSW", "W", "WNW", "NW", "NNW")
+        num_compass_points = len(compass_points)
+        for ii in range(len(compass_points)):
+
+            angle_range_min = 360 * (ii - 0.5) / num_compass_points
+            angle_range_max = 360 * (ii + 0.5) / num_compass_points
+            if angle_range_max < angle_range_min:
+                angle_angle_min -= 360
+
+            if compass_angle > angle_range_min and compass_angle <= angle_range_max:
+                break
+
+        print "I think I'm pointing %s?" % compass_points[ii]
+
+
     def calibrateCompass(self):
         self.mgx_offset = 0.0
         self.mgy_offset = 0.0
@@ -621,159 +670,128 @@ class MPU6050:
                 min_mgz = mgz
 
                 #-----------------------------------------------------------------------------------
+                # Collect compass X. Y compass values
+                #-------------------------------------------------------------------------------
+                GPIO.output(GPIO_LED, GPIO.HIGH)
+                print "Now, pick me up and rotate me horizontally twice until the light stops flashing."
+                raw_input("Press enter when you're ready to go.")
+
+                self.flushFIFO()
+
+                yaw = 0.0
+                total_dt = 0.0
+
+                print "ROTATION:    ",
+                number_len = 0
+
+                #-------------------------------------------------------------------------------
                 # While integrated Z axis gyro < 2 pi i.e. 360 degrees, keep flashing the light
-                #-----------------------------------------------------------------------------------
-                try:
-                    #-------------------------------------------------------------------------------
-                    # Collect compass X. Y values
-                    #-------------------------------------------------------------------------------
-                    GPIO.output(GPIO_LED, GPIO.HIGH)
-                    print "Now, pick me up and rotate me horizontally twice until the light stops flashing."
-                    raw_input("Press enter when you're ready to go.")
+                #-------------------------------------------------------------------------------
+                while abs(yaw) < 4 * math.pi:
+                    time.sleep(10 / sampling_rate)
 
-                    self.flushFIFO()
+                    nfb = mpu6050.numFIFOBatches()
+                    ax, ay, az, gx, gy, gz, dt = self.readFIFO(nfb)
+                    ax, ay, az, gx, gy, gz = self.scaleSensors(ax, ay, az, gx, gy, gz)
 
-                    yaw = 0.0
-                    total_dt = 0.0
+                    yaw += gz * dt
+                    total_dt += dt
 
-                    print "ROTATION:    ",
-                    number_len = 0
-
-                    while abs(yaw) < 4 * math.pi:
-                        time.sleep(10 / sampling_rate)
-
-                        nfb = mpu6050.numFIFOBatches()
-                        ax, ay, az, gx, gy, gz, dt = self.readFIFO(nfb)
-                        ax, ay, az, gx, gy, gz = self.scaleSensors(ax, ay, az, gx, gy, gz)
-
-                        yaw += gz * dt
-                        total_dt += dt
-
-                        mgx, mgy, mgz = self.readCompass()
-
-                        max_mgx = mgx if mgx > max_mgx else max_mgx
-                        max_mgy = mgy if mgy > max_mgy else max_mgy
-                        min_mgx = mgx if mgx < min_mgx else min_mgx
-                        min_mgy = mgy if mgy < min_mgy else min_mgy
-
-                        if total_dt > 0.2:
-                            total_dt %= 0.2
-
-                            number_text = str(abs(int(yaw * 180 / math.pi)))
-                            if len(number_text) == 2:
-                                number_text = " " + number_text
-                            elif len(number_text) == 1:
-                                number_text = "  " + number_text
-
-                            print "\b\b\b\b%s" % number_text,
-                            sys.stdout.flush()
-
-                            GPIO.output(GPIO_LED, not GPIO.input(GPIO_LED))
-                    print
-
-                    #-------------------------------------------------------------------------------
-                    # Collect compass Z values
-                    #-------------------------------------------------------------------------------
-                    GPIO.output(GPIO_LED, GPIO.HIGH)
-                    print "\nGreat!  Now do the same but with my nose down."
-                    raw_input("Press enter when you're ready to go.")
-
-                    self.flushFIFO()
-
-                    rotation = 0.0
-                    total_dt = 0.0
-
-                    print "ROTATION:    ",
-                    number_len = 0
-
-                    while abs(rotation) < 4 * math.pi:
-                        time.sleep(10 / sampling_rate)
-
-                        nfb = self.numFIFOBatches()
-                        ax, ay, az, gx, gy, gz, dt = self.readFIFO(nfb)
-                        ax, ay, az, gx, gy, gz = self.scaleSensors(ax, ay, az, gx, gy, gz)
-
-                        rotation += math.pow(math.pow(gx, 2) + math.pow(gy, 2), 0.5) * dt
-                        total_dt += dt
-
-                        mgx, mgy, mgz = self.readCompass()
-
-                        max_mgz = mgz if mgz > max_mgz else max_mgz
-                        min_mgz = mgz if mgz < min_mgz else min_mgz
-
-                        if total_dt > 0.2:
-                            total_dt %= 0.2
-
-                            number_text = str(abs(int(rotation * 180 / math.pi)))
-                            if len(number_text) == 2:
-                                number_text = " " + number_text
-                            elif len(number_text) == 1:
-                                number_text = "  " + number_text
-
-                            print "\b\b\b\b%s" % number_text,
-                            sys.stdout.flush()
-
-                            GPIO.output(GPIO_LED, not GPIO.input(GPIO_LED))
-                    print
-
-                except KeyboardInterrupt as e:
-                    print "Patience is a virtue!  All good things come to he who waits!"
-
-                else:
-                    #-------------------------------------------------------------------------------
-                    # Write the good output to file.
-                    #-------------------------------------------------------------------------------
-                    mgx_offset = (max_mgx + min_mgx) / 2
-                    mgy_offset = (max_mgy + min_mgy) / 2
-                    mgz_offset = (max_mgz + min_mgz) / 2
-                    mgx_gain = 1 / (max_mgx - min_mgx)
-                    mgy_gain = 1 / (max_mgy - min_mgy)
-                    mgz_gain = 1 / (max_mgz - min_mgz)
-
-                    offs_file.write("%f %f %f %f %f %f\n" % (mgx_offset, mgy_offset, mgz_offset, mgx_gain, mgy_gain, mgz_gain))
-
-                    GPIO.output(GPIO_LED, GPIO.HIGH)
-                    print "\nLooking good, just one last check to confirm all's well."
-                    print "Pop me on the ground again pointing north, based on another compass."
-                    raw_input("Press enter when that's done, and I'll tell you which way I think I'm pointing")
-
-                    self.loadCompassCalibration()
                     mgx, mgy, mgz = self.readCompass()
 
-                    #-------------------------------------------------------------------------------
-                    # Convert compass vector into N, S, E, W variants.  Get the compass angle in the
-                    # range of 0 - 359.99.
-                    #-------------------------------------------------------------------------------
-                    compass_angle = math.atan2(mgx, mgy) * 180 / math.pi
-                    if compass_angle < 0:
-                        compass_angle += 360
+                    max_mgx = mgx if mgx > max_mgx else max_mgx
+                    max_mgy = mgy if mgy > max_mgy else max_mgy
+                    min_mgx = mgx if mgx < min_mgx else min_mgx
+                    min_mgy = mgy if mgy < min_mgy else min_mgy
 
-                    #-------------------------------------------------------------------------------
-                    # There are 16 possible compass directions when you include things like NNE at
-                    # 22.5 degrees.
-                    #-------------------------------------------------------------------------------
-                    compass_points = ("N", "NNE", "NE", "ENE", "E", "ESE", "SE", "SSE", "S", "SSW", "SW", "WSW", "W", "WNW", "NW", "NNW")
-                    num_compass_points = len(compass_points)
-                    for ii in range(len(compass_points)):
+                    if total_dt > 0.2:
+                        total_dt %= 0.2
 
-                        angle_range_min = 360 * (ii - 0.5) / num_compass_points
-                        angle_range_max = 360 * (ii + 0.5) / num_compass_points
-                        if angle_range_max < angle_range_min:
-                            angle_angle_min -= 360
+                        number_text = str(abs(int(yaw * 180 / math.pi)))
+                        if len(number_text) == 2:
+                            number_text = " " + number_text
+                        elif len(number_text) == 1:
+                            number_text = "  " + number_text
 
-                        if compass_angle > angle_range_min and compass_angle <= angle_range_max:
-                            break
+                        print "\b\b\b\b%s" % number_text,
+                        sys.stdout.flush()
 
-                    print "I think I'm pointing %s?" % compass_points[ii]
-                    print "All done - ready to go!"
+                        GPIO.output(GPIO_LED, not GPIO.input(GPIO_LED))
+                print
 
-                    offs_rc = True
+                #-------------------------------------------------------------------------------
+                # Collect compass Z values
+                #-------------------------------------------------------------------------------
+                GPIO.output(GPIO_LED, GPIO.LOW)
+                print "\nGreat!  Now do the same but with my nose down."
+                raw_input("Press enter when you're ready to go.")
 
-                finally:
-                    #-------------------------------------------------------------------------------
-                    # Turn the light off regardless of the result
-                    #-------------------------------------------------------------------------------
-                    GPIO.output(GPIO_LED, GPIO.LOW)
+                self.flushFIFO()
+
+                rotation = 0.0
+                total_dt = 0.0
+
+                print "ROTATION:    ",
+                number_len = 0
+
+                #-------------------------------------------------------------------------------
+                # While integrated X+Y axis gyro < 2 pi i.e. 360 degrees, keep flashing the light
+                #-------------------------------------------------------------------------------
+                while abs(rotation) < 4 * math.pi:
+                    time.sleep(10 / sampling_rate)
+
+                    nfb = self.numFIFOBatches()
+                    ax, ay, az, gx, gy, gz, dt = self.readFIFO(nfb)
+                    ax, ay, az, gx, gy, gz = self.scaleSensors(ax, ay, az, gx, gy, gz)
+
+                    rotation += math.pow(math.pow(gx, 2) + math.pow(gy, 2), 0.5) * dt
+                    total_dt += dt
+
+                    mgx, mgy, mgz = self.readCompass()
+
+                    max_mgz = mgz if mgz > max_mgz else max_mgz
+                    min_mgz = mgz if mgz < min_mgz else min_mgz
+
+                    if total_dt > 0.2:
+                        total_dt %= 0.2
+
+                        number_text = str(abs(int(rotation * 180 / math.pi)))
+                        if len(number_text) == 2:
+                            number_text = " " + number_text
+                        elif len(number_text) == 1:
+                            number_text = "  " + number_text
+
+                        print "\b\b\b\b%s" % number_text,
+                        sys.stdout.flush()
+
+                        GPIO.output(GPIO_LED, not GPIO.input(GPIO_LED))
+                print
+
+                #-------------------------------------------------------------------------------
+                # Turn the light off regardless of the result
+                #-------------------------------------------------------------------------------
+                GPIO.output(GPIO_LED, GPIO.LOW)
+
+                #-------------------------------------------------------------------------------
+                # Write the good output to file.
+                #-------------------------------------------------------------------------------
+                mgx_offset = (max_mgx + min_mgx) / 2
+                mgy_offset = (max_mgy + min_mgy) / 2
+                mgz_offset = (max_mgz + min_mgz) / 2
+                mgx_gain = 1 / (max_mgx - min_mgx)
+                mgy_gain = 1 / (max_mgy - min_mgy)
+                mgz_gain = 1 / (max_mgz - min_mgz)
+
+                offs_file.write("%f %f %f %f %f %f\n" % (mgx_offset, mgy_offset, mgz_offset, mgx_gain, mgy_gain, mgz_gain))
+
+                #-------------------------------------------------------------------------------
+                # Sanity check.
+                #-------------------------------------------------------------------------------
+                print "\nLooking good, just one last check to confirm all's well."
+                self.checkCompass()
+
+                print "All done - ready to go!"
+                offs_rc = True
 
         except EnvironmentError as e:
             print "Environment Error: '%s'" % e
@@ -815,7 +833,7 @@ class MPU6050:
             # metal; enforce a recalibration if not found.
             #---------------------------------------------------------------------------------------
             print "Oops, something went wrong reading the compass offsets file 'CompassOffsets'"
-            print "Have you calibrated it?"
+            print "Have you calibrated it (--cc)?"
 
             offs_rc = False
         else:
@@ -826,12 +844,12 @@ class MPU6050:
         finally:
             pass
 
-        logger.warning("Compass Offsets:, %f, %f, %f, Compass Gains, %f, %f, %f", self.mgx_offset,
-                                                                                  self.mgy_offset,
-                                                                                  self.mgz_offset,
-                                                                                  self.mgx_gain,
-                                                                                  self.mgy_gain,
-                                                                                  self.mgz_gain)
+        logger.warning("Compass Offsets:, %f, %f, %f, Compass Gains:, %f, %f, %f", self.mgx_offset,
+                                                                                   self.mgy_offset,
+                                                                                   self.mgz_offset,
+                                                                                   self.mgx_gain,
+                                                                                   self.mgy_gain,
+                                                                                   self.mgz_gain)
         return offs_rc
 
     def calibrate0g(self):
@@ -888,7 +906,7 @@ class MPU6050:
         return offs_rc
 
     def getStats(self):
-        return self.max_az * self.__SCALE_ACCEL
+        return self.max_az * self.__SCALE_ACCEL, self.min_az * self.__SCALE_ACCEL
 
 
 ####################################################################################################
@@ -1287,7 +1305,7 @@ def CheckCLI(argv):
     cli_tau = 7.5
     cli_calibrate_0g = False
     cli_flight_plan = ''
-    cli_calibrate_compass = False
+    cli_cc_compass = False
     cli_yaw_control = False
 
     hover_target_defaulted = True
@@ -1433,7 +1451,7 @@ def CheckCLI(argv):
         logger.critical('  -g calibrate X, Y axis 0g')
         logger.critical('  -r ??  set the ready-to-fly period - default: %fs', cli_rtf_period)
         logger.critical('  -y use yaw to control the direction of flight')
-        logger.critical('  --cc   calibrate compass')
+        logger.critical('  --cc   check or calibrate compass')
         logger.critical('  --tc   select which testcase to run')
         logger.critical('  --tau  set the angle CF -3dB point - default: %fs', cli_tau)
         logger.critical('  --vdp  set vertical distance PID P gain - default: %f', cli_vvp_gain)
@@ -1481,7 +1499,7 @@ def CheckCLI(argv):
             cli_yaw_control = True
 
         elif opt in '--cc':
-            cli_calibrate_compass = True
+            cli_cc_compass = True
 
         elif opt in '--tc':
             cli_test_case = int(arg)
@@ -1552,7 +1570,7 @@ def CheckCLI(argv):
         elif opt in '--yrd':
             cli_yrd_gain = float(arg)
 
-    if not cli_fly and cli_test_case == 0 and not cli_calibrate_0g and not cli_calibrate_compass:
+    if not cli_fly and cli_test_case == 0 and not cli_calibrate_0g and not cli_cc_compass:
         raise ValueError('Must specify one of -f or --tc or --cc')
 
     elif cli_hover_target < 0 or cli_hover_target > 1000:
@@ -1564,7 +1582,7 @@ def CheckCLI(argv):
     elif cli_test_case == 0 and cli_calibrate_0g:
         print 'Proceeding with 0g calibration'
 
-    elif cli_test_case == 0 and cli_calibrate_compass:
+    elif cli_test_case == 0 and cli_cc_compass:
         print "Proceeding with compass calibration"
 
     elif cli_test_case != 1 and cli_test_case != 2:
@@ -1573,7 +1591,7 @@ def CheckCLI(argv):
     elif cli_test_case == 1 and hover_target_defaulted:
         raise ValueError('You must choose a specific hover speed (-h) for test case 1 - try 200')
 
-    return cli_fly, cli_flight_plan, cli_calibrate_0g, cli_calibrate_compass, cli_yaw_control, cli_hover_target, cli_vdp_gain, cli_vdi_gain, cli_vdd_gain, cli_vvp_gain, cli_vvi_gain, cli_vvd_gain, cli_hdp_gain, cli_hdi_gain, cli_hdd_gain, cli_hvp_gain, cli_hvi_gain, cli_hvd_gain, cli_prp_gain, cli_pri_gain, cli_prd_gain, cli_rrp_gain, cli_rri_gain, cli_rrd_gain, cli_yrp_gain, cli_yri_gain, cli_yrd_gain, cli_test_case, cli_rtf_period, cli_tau, cli_diagnostics
+    return cli_fly, cli_flight_plan, cli_calibrate_0g, cli_cc_compass, cli_yaw_control, cli_hover_target, cli_vdp_gain, cli_vdi_gain, cli_vdd_gain, cli_vvp_gain, cli_vvi_gain, cli_vvd_gain, cli_hdp_gain, cli_hdi_gain, cli_hdd_gain, cli_hvp_gain, cli_hvi_gain, cli_hvd_gain, cli_prp_gain, cli_pri_gain, cli_prd_gain, cli_rrp_gain, cli_rri_gain, cli_rrd_gain, cli_yrp_gain, cli_yri_gain, cli_yrd_gain, cli_test_case, cli_rtf_period, cli_tau, cli_diagnostics
 
 
 ####################################################################################################
@@ -2575,7 +2593,6 @@ class Quadcopter:
             mpu6050.initCompass()
 
         #-------------------------------------------------------------------------------------------
-
         # Initialize the Garmin LiDAR-Lite V3 at 10Hz - this is also used for the camera frame rate.
         #AB! The only time I tried 20 on a dimly lit lawn, it leapt up and crashed down.
         #-------------------------------------------------------------------------------------------
@@ -2625,13 +2642,13 @@ class Quadcopter:
         # Check the command line for calibration or flight parameters
         #-------------------------------------------------------------------------------------------
         try:
-            flying, flight_plan, calibrate_0g, calibrate_compass, yaw_control, hover_target, vdp_gain, vdi_gain, vdd_gain, vvp_gain, vvi_gain, vvd_gain, hdp_gain, hdi_gain, hdd_gain, hvp_gain, hvi_gain, hvd_gain, prp_gain, pri_gain, prd_gain, rrp_gain, rri_gain, rrd_gain, yrp_gain, yri_gain, yrd_gain, test_case, rtf_period, atau, diagnostics = CheckCLI(self.argv)
+            flying, flight_plan, calibrate_0g, cc_compass, yaw_control, hover_target, vdp_gain, vdi_gain, vdd_gain, vvp_gain, vvi_gain, vvd_gain, hdp_gain, hdi_gain, hdd_gain, hvp_gain, hvi_gain, hvd_gain, prp_gain, pri_gain, prd_gain, rrp_gain, rri_gain, rrd_gain, yrp_gain, yri_gain, yrd_gain, test_case, rtf_period, atau, diagnostics = CheckCLI(self.argv)
         except ValueError, err:
             print "Command line error: %s" % err
             return
 
-        logger.warning("fly = %s, flight plan = %s, calibrate_0g = %d, calibrate_compass = %s, yaw_control = %s, hover_target = %d, vdp_gain = %f, vdi_gain = %f, vdd_gain= %f, vvp_gain = %f, vvi_gain = %f, vvd_gain= %f, hdp_gain = %f, hdi_gain = %f, hdd_gain = %f, hvp_gain = %f, hvi_gain = %f, hvd_gain = %f, prp_gain = %f, pri_gain = %f, prd_gain = %f, rrp_gain = %f, rri_gain = %f, rrd_gain = %f, yrp_gain = %f, yri_gain = %f, yrd_gain = %f, test_case = %d, rtf_period = %f, atau = %f, diagnostics = %s",
-                flying, flight_plan, calibrate_0g, calibrate_compass, yaw_control, hover_target, vdp_gain, vdi_gain, vdd_gain, vvp_gain, vvi_gain, vvd_gain, hdp_gain, hdi_gain, hdd_gain, hvp_gain, hvi_gain, hvd_gain, prp_gain, pri_gain, prd_gain, rrp_gain, rri_gain, rrd_gain, yrp_gain, yri_gain, yrd_gain, test_case, rtf_period, atau, diagnostics)
+        logger.warning("fly = %s, flight plan = %s, calibrate_0g = %d, check / calibrate compass = %s, yaw_control = %s, hover_target = %d, vdp_gain = %f, vdi_gain = %f, vdd_gain= %f, vvp_gain = %f, vvi_gain = %f, vvd_gain= %f, hdp_gain = %f, hdi_gain = %f, hdd_gain = %f, hvp_gain = %f, hvi_gain = %f, hvd_gain = %f, prp_gain = %f, pri_gain = %f, prd_gain = %f, rrp_gain = %f, rri_gain = %f, rrd_gain = %f, yrp_gain = %f, yri_gain = %f, yrd_gain = %f, test_case = %d, rtf_period = %f, atau = %f, diagnostics = %s",
+                flying, flight_plan, calibrate_0g, cc_compass, yaw_control, hover_target, vdp_gain, vdi_gain, vdd_gain, vvp_gain, vvi_gain, vvd_gain, hdp_gain, hdi_gain, hdd_gain, hvp_gain, hvi_gain, hvd_gain, prp_gain, pri_gain, prd_gain, rrp_gain, rri_gain, rrd_gain, yrp_gain, yri_gain, yrd_gain, test_case, rtf_period, atau, diagnostics)
 
 
         #-------------------------------------------------------------------------------------------
@@ -2649,15 +2666,15 @@ class Quadcopter:
         # Calibrate compass.
         #-------------------------------------------------------------------------------------------
         if self.compass_installed:
-            if calibrate_compass:
-                if not mpu6050.calibrateCompass():
-                    print "Compass calibration error, abort"
+            if cc_compass:
+                if not mpu6050.compassCheckCalibrate():
+                    print "Compass check / calibration error, abort"
                 return
             elif not mpu6050.loadCompassCalibration():
                 print "Compass calibration data not found"
                 return
-        elif calibrate_compass:
-            print "Compass not installed, calibration not necessary."
+        elif cc_compass:
+            print "Compass not installed, check / calibration not possible."
             return
 
         #-------------------------------------------------------------------------------------------
@@ -3099,6 +3116,9 @@ class Quadcopter:
             except EnvironmentError as e:
                 print e
                 self.keep_looping = False
+            base_lat = gps_lat
+            base_lon = gps_lon
+            base_alt = gps_alt
 
             logger.warning("GPS location: latitude %f; longitude %f; altitude %f, satellites %d.", gps_lon, gps_lat, gps_alt, gps_sats)
 
@@ -3113,6 +3133,13 @@ class Quadcopter:
             sweep_fifo = sweepp.sweep_fifo
             readlist.append(sweep_fifo)
 
+        #--------------------------------------------------------------------------------------------
+        # Last chance to change your mind about the flight if all's ok so far
+        #--------------------------------------------------------------------------------------------
+        rtg = raw_input("Ready when you are!")
+        if len(rtg) != 0:
+            print "OK, I'll skip"
+            self.keep_looping = False        
 
         print ""
         print "################################################################################"
@@ -3909,7 +3936,8 @@ class Quadcopter:
 
         temp = mpu6050.readTemperature()
         logger.warning("IMU core temp: %f", temp / 333.86 + 21.0)
-        max_az = mpu6050.getStats()
+        max_az, min_az = mpu6050.getStats()
+        logger.critical("Min Z acceleration: %f", min_az)
         logger.critical("Max Z acceleration: %f", max_az)
 
         #-------------------------------------------------------------------------------------------
