@@ -3385,9 +3385,13 @@ class Quadcopter:
         #===========================================================================================
         while self.keep_looping:
 
+
+            ############################### SENSOR INPUT SCHEDULING ################################
+
+
             #---------------------------------------------------------------------------------------
-            # Check on the number of batches already stashed in the FIFO, and if not enough, wait for
-            # more or for camera motion batch info.
+            # Check on the number of IMU batches already stashed in the FIFO, and if not enough, 
+            # check autopilot, GPS and video, and ultimate sleep.
             #---------------------------------------------------------------------------------------
             nfb = mpu6050.numFIFOBatches()
 
@@ -3399,11 +3403,11 @@ class Quadcopter:
 
             if nfb < self.FIFO_PRIORITY:
 
-                #-------------------------------------------------------------------------------
-                # We have some spare time before we need to run the next motion processing; see
-                # if there's any processing we can do.  First, have we already got a video frame
-                # we can continue processing?
-                #-------------------------------------------------------------------------------
+                #-----------------------------------------------------------------------------------
+                # We have some spare time before we need to run the next motion processing; see if
+                # there's any processing we can do.  First, have we already got a video frame we can
+                # continue processing?
+                #-----------------------------------------------------------------------------------
                 if vmp != None:
                     result = vmp.process()
                     if result != None:
@@ -3412,13 +3416,12 @@ class Quadcopter:
                         vvy *= scale
                         camera_data_update = True
                         vmp = None
-                    continue #AB!  
+                    continue
 
-                #-------------------------------------------------------------------------------
-                # Nowt else to do; sleep until either we timeout, or more data comes in from the
-                # video process or GPS.
-                #-------------------------------------------------------------------------------
-#AB!                timeout = 0.0 if vmp != None else (self.FIFO_PRIORITY - nfb) / sampling_rate
+                #-----------------------------------------------------------------------------------
+                # Nowt else to do; sleep until either we timeout, or more data comes in from GPS
+                # video, or autopilot.
+                #-----------------------------------------------------------------------------------
                 timeout = (self.FIFO_PRIORITY - nfb) / sampling_rate
                 try:
                     results = poll.poll(timeout * 1000)
@@ -3426,16 +3429,14 @@ class Quadcopter:
                     logger.critical("ERROR: poll error")
                     break
 
+                #===================================================================================
+                # Priority puts new video processing at the end because once running, everything
+                # else is not services until it's finished.  Video, GPS and Sweep are low 
+                # frequency, low overhead.  Breaking from this for loop means the else at the end of
+                # the for loop is not called, and hence all_ok remains set to False.
+                #===================================================================================
                 all_ok = False
                 for fd, event in results:
-                    #===============================================================================
-                    # Priority puts video processing at the end, otherwise, Autopilot, because it's
-                    # fast and lightweight does not block GPS / Sweep / Camera operating in the same
-                    # scheduling loop.  GPS and Sweep both operating at 1Hz do beat Video motion
-                    # processing in the scheduling as they are quick, compared to the 10Hz high cost
-                    # video processing.
-                    #===============================================================================
-
                     if fd == autopilot_fd:
                         #---------------------------------------------------------------------------
                         # Run the Autopilot Processor to get the latest stage of the flight plan.
@@ -3506,15 +3507,24 @@ class Quadcopter:
                         #AB! apa and ara aren't a problem because they are worked out from the accelerometer
                         #AB! rather than integrated yaw rate + initial compass orientation.
                         '''
+
+                        #---------------------------------------------------------------------------
+                        # Not quite sure how this happens, but it does, so protect against it
+                        #---------------------------------------------------------------------------
+                        if vmpt == pvmpt:
+                            all_ok = True
+                            break
+
+                        vmp_dt = vmpt - pvmpt
                         apa_increment = apa - papa
                         ara_increment = ara - para
                         aya_increment = aya - paya
-                        vmp_dt = vmpt - pvmpt
                         papa = apa
                         para = ara
                         paya = aya
                         pvmpt = vmpt
                         video_loops += 1
+
                         try:
                             vmp = VideoMotionProcessor(motion_fifo, aya_increment)
                             vmp.process()
@@ -3525,25 +3535,20 @@ class Quadcopter:
                             #-----------------------------------------------------------------------
                             vmp = None
 
-                        #---------------------------------------------------------------------------
-                        '''
-                        #AB! For some reason at the start we are seeing vmp_dt as 0 due to the flush
-                        #AB! (I think).  For now, just skip it.
-                        '''
-                        #---------------------------------------------------------------------------
-                        if vmp_dt == 0.0:
-                            vmp = None
-
                 else:
                     all_ok = True
 
                 if not all_ok:
                     break    
 
-                #-------------------------------------------------------------------------------
+                #-----------------------------------------------------------------------------------
                 # We had free time, do we still?  Better check.
-                #-------------------------------------------------------------------------------
+                #-----------------------------------------------------------------------------------
                 continue
+
+
+            ####################################### IMU FIFO #######################################
+
 
             #---------------------------------------------------------------------------------------
             # Before proceeding further, check the FIFO overflow interrupt to ensure we didn't sleep
@@ -3584,8 +3589,9 @@ class Quadcopter:
                                                                 qrz)
 
             #---------------------------------------------------------------------------------------
-            # Track the number of motion loops and sampling loops; any discrepancy between these are
-            # the missed samples or sampling errors.
+            # Track the number of motion loops and sampling loops.  motion_dt on which their are based
+            # are the core timing provided by the IMU and are used for all timing events later such
+            # as integration and PID Intergral and Differential factors.
             #---------------------------------------------------------------------------------------
             motion_loops += 1
             sampling_loops += motion_dt * sampling_rate
