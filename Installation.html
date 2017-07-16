@@ -9,7 +9,7 @@ Here's the installation steps I took to install Hermione from scratch today.
     <li>Set up a WiFi internet connection from the CLI as per https://www.raspberrypi.org/documentation/configuration/wireless/wireless-cli.md</a>.</li>
     <li>sudo apt-get update</li>
     <li>sudo apt-get dist-upgrade</li>
-    <li>sudo apt-get install i2c-tools python-smbus python-dev python-setuptools python-picamera python-gps git ftp udhcpd hostapd <del>serial minimalmodbus</del></li>
+    <li>sudo apt-get install i2c-tools python-smbus python-dev python-setuptools python-picamera python-gps python-serial git ftp udhcpd hostapd <del>serial minimalmodbus</del></li>
     <li>edit /boot/config.txt adding
 <pre><code>dtparam=i2c_arm_baudrate=400000</code></pre>
 </li>
@@ -18,7 +18,7 @@ Here's the installation steps I took to install Hermione from scratch today.
 start_x=0</code></pre>
 </li>
 <li>If you are using a B+ or B2, add the following to /boot/config.txt<pre>max_usb_current=1</pre></li>
-    <li>If you are using a Pi3 or Zero-W, you may want to disable Bluetooth in /etc/modprobe.d/raspi-blacklist.conf thus:
+    <li>If you are using a Zero-W, you may want to disable Bluetooth in /etc/modprobe.d/raspi-blacklist.conf thus:
         <pre># WiFi
 # blacklist brcmfmac
 # blacklist brcmutil
@@ -27,6 +27,9 @@ start_x=0</code></pre>
 blacklist btbcm
 blacklist hci_uart</pre>
 Likewise if you're using an WiFi USB dongle, you can disable the internal one by removing the '#'s for that pair of lines.</li>
+    <li>For the above, you can do the B3 this way instead
+        <pre>dtoverlay=pi3-disable-wifi
+dtoverlay=pi3-disable-bt</pre></li>
     <li>If you are using a B2 V1.2, it can be overclockec to 1.2GHz thus in /boot/config.txt
         <pre>arm_freq=1200
 core_freq=500
@@ -37,11 +40,7 @@ force_turbo=1</pre></li>
 <pre>SUBSYSTEM=="tty", ATTRS{idVendor}=="0403", ATTRS{idProduct}=="6015", ATTRS{serial}=="DO004VY5", SYMLINK+="ttySWEEP"
 SUBSYSTEM=="tty", ATTRS{idVendor}=="067b", ATTRS{idProduct}=="2303", SYMLINK+="ttyGPS"
 </pre>
-The details of what to fill in come from /var/log/messages as a USB UART is plugged in.  Also update /etc/default/gpsd and Quadcopter.py to reference these tty* names instead of ttyUSB*</li>        
-    <li><del>git clone https://github.com/pyhys/minimalmodbus</del></li>
-    <li><del>cd minimalmodbus</del></li>
-    <li><del>sudo python ./setup install</del></li>
-    <li><del>cd ~</del></li>
+The details of what to fill in come from /var/log/messages as a USB UART is plugged in.  Also update /etc/default/gpsd and Quadcopter.py to reference these tty* names instead of ttyUSB*</li>
     <li>git clone -b v2 https://github.com/metachris/RPIO</li>
     <li>cd RPIO</li>
     <li>check mailbox.c code present in source/c_pwm/mailbox.c)</li>
@@ -53,7 +52,7 @@ The details of what to fill in come from /var/log/messages as a USB UART is plug
     <li>cp Quadcopter/Quadcopter.py .</li>
     <li>sudo python ./qc.py
 <ul>
-    <li>--tc 1 -h 150</li>
+    <li>--tc 1 -h 1150</li>
     <li>-f fp.csv</li>
 </ul>
 </li>
