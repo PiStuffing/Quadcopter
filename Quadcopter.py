@@ -27,8 +27,6 @@ from array import *
 import smbus
 import select
 import os
-import fcntl
-# from io import RawIOBase as rawio
 import io
 import logging
 import csv
@@ -42,6 +40,7 @@ from ctypes.util import find_library
 import picamera
 import struct
 import gps
+import serial
 
 
 ####################################################################################################
@@ -1224,7 +1223,6 @@ def RotateVector(evx, evy, evz, pa, ra, ya):
     return qvx, qvy, qvz
 
 
-
 ####################################################################################################
 #
 # Initialize hardware PWM
@@ -1592,7 +1590,8 @@ def CheckCLI(argv):
 
 ####################################################################################################
 #
-# Functions to lock memory to prevent paging
+# Functions to lock memory to prevent paging, and move child processes in different process groups
+# such that a Ctrl-C / SIGINT to one isn't distributed automatically to all children.
 #
 ####################################################################################################
 MCL_CURRENT = 1
@@ -1622,105 +1621,109 @@ def Daemonize():
 ####################################################################################################
 def RecordSweep():
 
-    sweep = serial.Serial("/dev/ttySWEEP",
+    with serial.Serial("/dev/ttySWEEP",
                           baudrate = 115200,
                           parity=serial.PARITY_NONE,
                           bytesize = serial.EIGHTBITS,
                           stopbits = serial.STOPBITS_ONE,
                           xonxoff = False,
                           rtscts = False,
-                          dsrdtr = False)
+                          dsrdtr = False) as sweep:
 
-    print "Scanse Sweep open"
-    sweep.write("ID\n")
-    print "Query device information"
-    resp = sweep.readline()
-    print "Response: " + resp
-
-    print "Starting scanning...",
-    sweep.write("DS\n")
-    resp = sweep.readline()
-    assert (len(resp) == 6), "Bad data"
-
-    status = resp[2:4]
-    if  status == "00":
-        print "OK"
-    else:
-        print "Failed %s" % status
-        '''
-        #AB! Missing here is stopping the scanning - it will still be running next time code is initiated
-        #AB! and it all gets very messy / confusong separating binary data from ASCII command / response.
-        #AB! Really need to do a subset of he finally: branch below.
-        '''
-        os.exit()
-
-    with io.open("/dev/shm/sweep_stream", mode = "wb", buffering = 0) as fp:
-        log = open("sweep.csv", "wb")
-        log.write("angle, distance, x, y\n")
-
-        unpack_format = '=' + 'B' * 7
-        unpack_size = struct.calcsize(unpack_format)
-
-        pack_format = '=ff'
-
-        #-------------------------------------------------------------------------------------------
-        # Set the minimum proximity to beyond the sensor range of the sweep
-        #-------------------------------------------------------------------------------------------
-        min_distance = 100.0 # meters
         try:
-            while True:
-                raw = sweep.read(unpack_size)
-                assert (len(raw) == unpack_size), "Bad data read: %d" % len(raw)
-                formatted = struct.unpack(unpack_format, raw)
-                assert (len(formatted) == 7), "Bad data type conversion: %d" % len(formatted)
+            print "Scanse Sweep open"
+            sweep.write("ID\n")
+            print "Query device information"
+            resp = sweep.readline()
+            print "Response: " + resp
 
-                azimuth_lo = formatted[1]
-                azimuth_hi = formatted[2]
-                angle_int = (azimuth_hi << 8) + azimuth_lo
-                degrees = (angle_int >> 4) + (angle_int & 15) / 16
+            print "Starting scanning...",
+            sweep.write("DS\n")
+            resp = sweep.readline()
+            assert (len(resp) == 6), "Bad data"
 
-                #-----------------------------------------------------------------------------------
-                # If we've passed 0o, we're starting a new sweep, report the previous sweep's closest
-                # proximity results
-                #-----------------------------------------------------------------------------------
-                if degrees < previous_degrees:
-                    #################################################################################
-                    # Sweep is installed underneath Hermione, so from her point of view, Sweep      #
-                    # is rotating anticlockwise.  These angles below are in line with yaws right    #
-                    # hand rule, and unrelated to compass and GPS angles.  Report direction in      #
-                    # radians as a result.                                                          #
-                    #################################################################################
-                    output = struct.pack(pack_format, min_distance, min_direction * math.pi / 100)
-                    fp.write(output)
-                    min_distance = 100.0
-                prev_degrees = degrees
+            status = resp[2:4]
+            if  status == "00":
+                print "OK"
+            else:
+                print "Failed %s" % status
+                assert (False), "Corrupt status"
 
-                #------------------------------------------------------------------------------------
-                # Read the distance and convert to meters.
-                #------------------------------------------------------------------------------------
-                distance_lo = formatted[3]
-                distance_hi = formatted[4]
-                distance = ((distance_hi << 8) + distance_lo) / 100
+            with io.open("/dev/shm/sweep_stream", mode = "wb", buffering = 0) as fp:
+                log = open("sweep.csv", "wb")
+                log.write("angle, distance, x, y\n")
 
-                #-----------------------------------------------------------------------------------
-                # If a reported distance is > 1m (the diagonral span of Hermione), record this distance
-                # if it's less that the previous smallest
-                #-----------------------------------------------------------------------------------
-                if distance > 1.0 and distance < min_distance:
-                    min_distance = distance
-                    min_direction = degrees
+                unpack_format = '=' + 'B' * 7
+                unpack_size = struct.calcsize(unpack_format)
 
-                '''
-                #AB! Full scan (per loop) with timestamp sent to AutopilotProcessor
-                #AB! Combined with compass and GPS (including their timestamps) from other processes, MapConstructor
-                #AB! passes the Ronseal test.
-                '''
+                pack_format = '=ff'
+
+                #-------------------------------------------------------------------------------------------
+                # Set the minimum proximity to beyond the sensor range of the sweep
+                #-------------------------------------------------------------------------------------------
+                min_distance = 100.0 # meters
+                min_direction = 0.0
+
+                prev_degrees = 360.0
+                while True:
+                    raw = sweep.read(unpack_size)
+                    assert (len(raw) == unpack_size), "Bad data read: %d" % len(raw)
+                    formatted = struct.unpack(unpack_format, raw)
+                    assert (len(formatted) == 7), "Bad data type conversion: %d" % len(formatted)
+
+                    azimuth_lo = formatted[1]
+                    azimuth_hi = formatted[2]
+                    angle_int = (azimuth_hi << 8) + azimuth_lo
+                    degrees = (angle_int >> 4) + (angle_int & 15) / 16
+
+                    #-----------------------------------------------------------------------------------
+                    # If we've passed 0o, we're starting a new sweep, report the previous sweep's closest
+                    # proximity results
+                    #------------------------------------------------------------------------------------
+                    if degrees < prev_degrees:
+                        #--------------------------------------------------------------------------------
+                        # Sweep is installed underneath Hermione, rotating CW viewed from the top.  Hence
+                        # the angles it produces are out of kilter with yaw and its right-hand rule. Swap
+                        # so sweeps 0-359 CW alights to yaw
+                        #--------------------------------------------------------------------------------
+                        output = struct.pack(pack_format, min_distance, min_direction * math.pi / 180)
+                        fp.write(output)
+                        min_distance = 100.0
+
+                    prev_degrees = degrees
+
+                    #------------------------------------------------------------------------------------
+                    # Read the distance and convert to meters.
+                    #------------------------------------------------------------------------------------
+                    distance_lo = formatted[3]
+                    distance_hi = formatted[4]
+                    distance = ((distance_hi << 8) + distance_lo) / 100
+
+                    x = distance * math.cos(degrees * math.pi / 180)
+                    y = distance * math.sin(degrees * math.pi / 180)
+
+                    log.write("%f, %f, %f, %f\n" % (degrees, distance, x, y))
+
+                    #-----------------------------------------------------------------------------------
+                    # If a reported distance is > 0.5m (the radius of Hermione), record this distance
+                    # if it's less that the previous smallest
+                    #-----------------------------------------------------------------------------------
+                    if distance > 0.5 and distance < min_distance:
+                        min_distance = distance
+                        min_direction = degrees
+
+                    '''
+                    #AB! Full scan (per loop) with timestamp sent to AutopilotProcessor
+                    #AB! Combined with compass and GPS (including their timestamps) from other processes, MapConstructor
+                    #AB! passes the Ronseal test.
+                    '''
 
         #-------------------------------------------------------------------------------------------
-        # Catch Ctrl-C
+        # Catch Ctrl-C - the 'with' wrapped around the FIFO should have closed that by here.  Has it?
         #-------------------------------------------------------------------------------------------
         except KeyboardInterrupt as e:
-            pass
+            if not fp.closed:
+                print "Sweep FIFO not closed! WTF!"
 
         #-------------------------------------------------------------------------------------------
         # Catch incorrect assumption bugs
@@ -1743,7 +1746,6 @@ def RecordSweep():
 #
 # Process the Scanse Sweep data.
 #
-#
 ####################################################################################################
 class SweepProcessor():
 
@@ -1762,10 +1764,6 @@ class SweepProcessor():
             else:
                 break
 
-        sweep_fd = self.sweep_fifo.fileno()
-#FCNTL!        sweep_cntl = fcntl.fcntl(sweep_fd, fcntl.F_GETFL)
-#FCNTL!        fcntl.fcntl(sweep_fd, fcntl.F_SETFL, sweep_cntl | os.O_NONBLOCK)
-
         self.unpack_format = "=ff"
         self.unpack_size = struct.calcsize(self.unpack_format)
 
@@ -1773,9 +1771,9 @@ class SweepProcessor():
         #-------------------------------------------------------------------------------------------
         # Read what should be the backlog of reads, and return how many there are.
         #-------------------------------------------------------------------------------------------
-        raw_bytes = self.sweep_fifo.read(self.unpack_size)                                   #FCNTL!
+        raw_bytes = self.sweep_fifo.read(self.unpack_size)
         assert (len(raw_bytes) % self.unpack_size == 0), "Incomplete Sweep data received"
-        return int(len(raw_bytes) / self.self.unpack_size)
+        return int(len(raw_bytes) / self.unpack_size)
 
     def read(self):
         raw_bytes = self.sweep_fifo.read(self.unpack_size)
@@ -1785,12 +1783,274 @@ class SweepProcessor():
 
     def cleanup(self):
         #-------------------------------------------------------------------------------------------
-        # Stop the Sweep process
+        # Stop the Sweep process if it's still running, and clean up the FIFO.
         #-------------------------------------------------------------------------------------------
-        self.sweep_process.send_signal(signal.SIGINT)
-        self.sweep_process.wait()
+        '''
+        #AB! There's a race here: RecordAutopilot has already finished, and asked Sweep to cleanup,
+        #AB! but in the meantime motion processing has caught up and sent RecordAutopilot Ctrl-C via 
+        #AB: AutopilotProcessor;  RecordAutpilot is waiting here when that happens, so the wait for 
+        #AB! RecordSweep to exit gets interrupts by the Ctrl-C unless we catch it.  Catching the 
+        #AB! exception will do for now, but a better solution would be preferable, especially when
+        #AB! GPS also feeds into the Autopilot.
+        '''
+        try:
+            if self.sweep_process.poll() == None:
+                self.sweep_process.send_signal(signal.SIGINT)
+                self.sweep_process.wait()
+        except KeyboardInterrupt as e:
+            print "===================KB IRQ===================="
         self.sweep_fifo.close()
         os.unlink("/dev/shm/sweep_stream")
+
+
+####################################################################################################
+#
+# Start the Autopilot reading process
+#
+####################################################################################################
+def RecordAutopilot(flight_plan, motion_rate, sweep_installed):
+
+    phase = 0
+    prev_phase = 0
+
+    SWEEP_MIN_PROXIMITY = 1.0 # 50cm beyond the range of Hermione's props
+
+    edx_target = 0.0
+    edy_target = 0.0
+    edz_target = 0.0
+
+    #-----------------------------------------------------------------------------------------------
+    # Create our poll object
+    #-----------------------------------------------------------------------------------------------
+    poll = select.poll()
+
+    #-----------------------------------------------------------------------------------------------
+    # Build the file based flight plan.
+    #-----------------------------------------------------------------------------------------------
+    X = 0
+    Y = 1
+    Z = 2
+    PERIOD = 3
+    NAME = 4
+
+    file_fp = []
+
+    file_fp.append((0.0, 0.0, 0.0, 0.0, "RTF"))
+
+    with open(flight_plan, 'rb') as fp_csv:
+        fp_reader = csv.reader(fp_csv)
+        for fp_row in fp_reader:
+
+            if len(fp_row) == 0 or (fp_row[0] != '' and fp_row[0][0] == '#'):
+                continue
+            if len(fp_row) != 5:
+                break
+
+            file_fp.append((float(fp_row[0]),
+                            float(fp_row[1]),
+                            float(fp_row[2]),
+                            float(fp_row[3]),
+                            fp_row[4].strip()))
+        else:
+            file_fp.append((0.0, 0.0, 0.0, 0.0, "STOP"))
+
+    #-----------------------------------------------------------------------------------------------
+    # Set up the file base flight plan as the active flight plan
+    #-----------------------------------------------------------------------------------------------
+    active_fp = file_fp
+    abort_fp = []
+
+    #-----------------------------------------------------------------------------------------------
+    # Kick off sweep if necessary
+    #-------------------------------------------------------------------------------------------
+    if sweep_installed:
+        sweepp = SweepProcessor()
+        sweep_fd = sweepp.sweep_fifo.fileno()
+        poll.register(sweep_fd, select.POLLIN | select.POLLPRI)
+
+    #-------------------------------------------------------------------------------------------
+    # Loop for the period of the flight defined by the flight plan contents
+    #-----------------------------------------------------------------------------------------------
+    pack_format = '=3f?20s?' # edx, edy and edz float targets, bool phase change, string state name, bool running
+
+    try:
+        with io.open("/dev/shm/autopilot_stream", mode = "wb", buffering = 0) as fp:
+            running = True
+            update_time = 0.1 # seconds
+            prev_phase = []
+            elapsed_time = 0.0
+            total_time = 0.0
+            for phase in active_fp:
+                total_time += phase[PERIOD]
+
+            start_time = time.time()
+            while elapsed_time <= total_time:
+
+                #-----------------------------------------------------------------------------------
+                # How long is it since we were last here?  Based on that, how long should we sleep (if
+                # at all) before working out the next step in the flight plan.
+                #-----------------------------------------------------------------------------------
+                delta_time = time.time() - start_time - elapsed_time
+                elapsed_time += delta_time
+                sleep_time = update_time - delta_time if delta_time < update_time else 0.0
+                results = poll.poll(sleep_time * 1000)
+
+                #----------------------------------------------------------------------------------
+                # Placeholder for Sweep and GPS data receipt
+                #----------------------------------------------------------------------------------
+                for fd, event in results:
+                    if sweep_installed and fd == sweep_fd:
+                        try:
+                            sweep_proximity, sweep_direction = sweepp.read()
+                            if sweep_proximity < SWEEP_MIN_PROXIMITY and active_fp != abort_fp:
+
+                                #-------------------------------------------------------------------
+                                # What target height has the flight achieved so far? Use this to
+                                # determine how long the descent must be at fixed velocity of 0.25m/s
+                                #-------------------------------------------------------------------
+                                descent_time = edz_target / 0.25
+
+                                #-------------------------------------------------------------------
+                                # Build the HOVER, DESCENT, STOP abort flight plan based upon the
+                                # current height
+                                #-------------------------------------------------------------------
+                                abort_fp.append((0.0, 0.0, -0.25, descent_time, "ABORT (%.2fm)" % edz_target))
+                                abort_fp.append((0.0, 0.0, 0.0, 0.0, "STOP"))
+                                active_fp = abort_fp
+
+                                #--------------------------------------------------------------------
+                                # Need to reset time to start this new flight plan
+                                #--------------------------------------------------------------------
+                                total_time = descent_time
+                                start_time = time.time()
+#                                delta_time = 0.0
+                                elapsed_time = 0.0
+                                print "==============OA ABORT==============="
+
+                        except AssertionError as e:
+                            print "FMR SWEEP"
+                            break
+
+                #----------------------------------------------------------------------------------
+                # Based on the elapsed time since the flight started, find which of the flight plan
+                # phases we are in.
+                #----------------------------------------------------------------------------------
+                phase_time = 0.0
+                for phase in active_fp:
+                    phase_time += phase[PERIOD]
+                    if elapsed_time <= phase_time:
+                        break
+                else:
+                    running = False
+
+                #----------------------------------------------------------------------------------
+                # Have we crossed into a new phase of the flight plan? Log it if so.
+                #----------------------------------------------------------------------------------
+                phase_name = phase[NAME]
+                phase_changed = False
+                if phase != prev_phase:
+                    phase_changed = True
+                    prev_phase = phase
+
+                #----------------------------------------------------------------------------------
+                # Get the velocity targets for this phase, and integrate to get distance.  Distance
+                # is used in the abort fp generation.
+                #----------------------------------------------------------------------------------
+                evx_target = phase[X]
+                evy_target = phase[Y]
+                evz_target = phase[Z]
+
+                edx_target += evx_target * delta_time
+                edy_target += evy_target * delta_time
+                edz_target += evz_target * delta_time
+
+                #----------------------------------------------------------------------------------
+                # No point updating the main processor if nothing has changed.
+                #----------------------------------------------------------------------------------
+                if not phase_changed:
+                    continue
+
+                print "AP phase change: %s" % phase_name
+                output = struct.pack(pack_format,
+                                     evx_target,
+                                     evy_target,
+                                     evz_target,
+                                     phase_changed,
+                                     phase_name,
+                                     running)
+
+                fp.write(output)
+
+            else:
+                #-----------------------------------------------------------------------------------
+                # Ideally the end of flight processing should be here, but duplicates lots from above
+                # for no benefit
+                #-----------------------------------------------------------------------------------
+                pass
+
+    except KeyboardInterrupt as e:
+        #-------------------------------------------------------------------------------------------
+        # The motion processor is finished with us, we should too, and we have by breaking out of the
+        # with.
+        #-------------------------------------------------------------------------------------------
+        pass
+
+    finally:
+        #-------------------------------------------------------------------------------------------
+        # Cleanup sweep if installed.
+        #-------------------------------------------------------------------------------------------
+        if sweep_installed:
+            sweepp.cleanup()
+
+
+####################################################################################################
+#
+# Process the Autopilot data.
+#
+####################################################################################################
+class AutopilotProcessor():
+
+    def __init__(self, flight_plan, motion_rate, sweep_installed):
+        #-------------------------------------------------------------------------------------------
+        # Setup a shared memory based data stream for the Sweep output
+        #-------------------------------------------------------------------------------------------
+        os.mkfifo("/dev/shm/autopilot_stream")
+
+        self.autopilot_process = subprocess.Popen(["python", __file__, "AUTOPILOT", flight_plan, str(motion_rate), "True" if sweep_installed else "False"], preexec_fn =  Daemonize)
+        while True:
+            try:
+                self.autopilot_fifo = io.open("/dev/shm/autopilot_stream", mode="rb")
+            except:
+                continue
+            else:
+                break
+
+        self.unpack_format = "=3f?20s?"
+        self.unpack_size = struct.calcsize(self.unpack_format)
+
+    def flush(self):
+        #-------------------------------------------------------------------------------------------
+        # Read what should be the backlog of reads, and return how many there are.
+        #-------------------------------------------------------------------------------------------
+        raw_bytes = self.autopilot_fifo.read(self.unpack_size)
+        assert (len(raw_bytes) % self.unpack_size == 0), "Incomplete Autopilot data received"
+        return int(len(raw_bytes) / self.unpack_size)
+
+    def read(self):
+        raw_bytes = self.autopilot_fifo.read(self.unpack_size)
+        assert (len(raw_bytes) == self.unpack_size), "Incomplete data received from Autopilot reader"
+        evx_target, evy_target, evz_target, state_change, state_name, keep_looping = struct.unpack(self.unpack_format, raw_bytes)
+        return evx_target, evy_target, evz_target, state_change, state_name, keep_looping
+
+    def cleanup(self):
+        #-------------------------------------------------------------------------------------------
+        # Stop the Autopilot process if it's still running, and cleanup the FIFO.
+        #-------------------------------------------------------------------------------------------
+        if self.autopilot_process.poll() == None:
+            self.autopilot_process.send_signal(signal.SIGINT)
+            self.autopilot_process.wait()
+        self.autopilot_fifo.close()
+        os.unlink("/dev/shm/autopilot_stream")
 
 
 ####################################################################################################
@@ -1929,10 +2189,6 @@ class GPSProcessor():
             else:
                 break
 
-        gps_fd = self.gps_fifo.fileno()
-#FCNTL!        gps_cntl = fcntl.fcntl(gps_fd, fcntl.F_GETFL)
-#FCNTL!        fcntl.fcntl(gps_fd, fcntl.F_SETFL, gps_cntl | os.O_NONBLOCK)
-
         self.waypoints = []
         self.min_satellites = 8
 
@@ -1943,7 +2199,7 @@ class GPSProcessor():
         #-------------------------------------------------------------------------------------------
         # Read what should be the backlog of reads, and return how many there are.
         #-------------------------------------------------------------------------------------------
-        raw_bytes = self.gps_fifo.read(self.unpack_size)                                     #FCNTL!
+        raw_bytes = self.gps_fifo.read(self.unpack_size)
         assert (len(raw_bytes) % self.unpack_size == 0), "Incomplete GPS data received"
         return int(len(raw_bytes) / self.unpack_size)
 
@@ -1967,7 +2223,7 @@ class GPSProcessor():
         sys.stdout.flush()
 
         while time.time() - start_time < 60:
-            gps_lat, gps_lon, gps_alt, gps_sats = self.read()            
+            gps_lat, gps_lon, gps_alt, gps_sats = self.read()
             print "\b\b%d" % gps_sats,
             sys.stdout.flush()
 
@@ -1979,7 +2235,7 @@ class GPSProcessor():
                 break
         else:
             #---------------------------------------------------------------------------------------
-            # We ran out of time trying to get the minimum number of satellites.  Is what we did get 
+            # We ran out of time trying to get the minimum number of satellites.  Is what we did get
             # enough?
             #---------------------------------------------------------------------------------------
             print
@@ -2002,207 +2258,6 @@ class GPSProcessor():
 
     def clearWaypoints(self):
         self.waypoints = []
-
-
-####################################################################################################
-#
-# Start the Autopilot reading process
-#
-####################################################################################################
-def RecordAutopilot(flight_plan, motion_rate):
-
-    phase = 0
-    prev_phase = 0
-    loops = 0
-
-    #-----------------------------------------------------------------------------------------------
-    # Create our poll object
-    #-----------------------------------------------------------------------------------------------
-    poll = select.poll()
-
-    #-----------------------------------------------------------------------------------------------
-    # Build the file based flight plan.
-    #-----------------------------------------------------------------------------------------------
-    X = 0
-    Y = 1
-    Z = 2
-    PERIOD = 3
-    NAME = 4
-
-    file_fp = []
-
-    file_fp.append((0.0, 0.0, 0.0, 0.0, "RTF"))
-
-    with open(flight_plan, 'rb') as fp_csv:
-        fp_reader = csv.reader(fp_csv)
-        for fp_row in fp_reader:
-
-            if len(fp_row) == 0 or (fp_row[0] != '' and fp_row[0][0] == '#'):
-                continue
-            if len(fp_row) != 5:
-                break
-
-            file_fp.append((float(fp_row[0]),
-                            float(fp_row[1]),
-                            float(fp_row[2]),
-                            float(fp_row[3]),
-                            fp_row[4].strip()))
-        else:
-            file_fp.append((0.0, 0.0, 0.0, 0.0, "STOP"))
-
-    #-----------------------------------------------------------------------------------------------
-    # Set up the file base flight plan as the active flight plan
-    #-----------------------------------------------------------------------------------------------
-    active_fp = file_fp
-
-    #-----------------------------------------------------------------------------------------------
-    # Loop for the period of the flight defined by the flight plan contents
-    #-----------------------------------------------------------------------------------------------
-    pack_format = '=3f?10s?' # edx, edy and edz float targets, bool phase change, string state name, bool running
-    elapsed_time = 0.0
-
-    try:
-        with io.open("/dev/shm/autopilot_stream", mode = "wb", buffering = 0) as fp:
-            running = True
-            update_time = 10 / motion_rate
-            prev_phase = []
-            total_time = 0.0
-            for phase in active_fp:
-                total_time += phase[PERIOD]
-
-            start_time = time.time()
-            while elapsed_time <= total_time:
-                loops += 1
-
-                #-----------------------------------------------------------------------------------
-                # How long is it since we were last here?  Based on that, how long should we sleep (if
-                # at all) before working out the next step in the flight plan.
-                #-----------------------------------------------------------------------------------
-                delta_time = time.time() - start_time - elapsed_time
-                elapsed_time += delta_time
-                sleep_time = update_time - delta_time if delta_time < update_time else 0.0
-                results = poll.poll(sleep_time * 1000)
-                assert (len(results) == 0), "Autopilot poll error"
-
-                #----------------------------------------------------------------------------------
-                # Based on the elapsed time since the flight started, find which of the flight plan
-                # phases we are in.
-                #----------------------------------------------------------------------------------
-                phase_time = 0.0
-                for phase in active_fp:
-                    phase_time += phase[PERIOD]
-                    if elapsed_time < phase_time:
-                        break
-                else:
-                    running = False
-
-                #----------------------------------------------------------------------------------
-                # Have we crossed into a new phase of the flight plan? Log it if so.
-                #----------------------------------------------------------------------------------
-                phase_name = phase[NAME]
-                phase_change = False
-                if phase != prev_phase:
-                    phase_change = True
-                    prev_phase = phase
-
-                #----------------------------------------------------------------------------------
-                # Get the velocity targets for this phase, and integrate to get distance.
-                #----------------------------------------------------------------------------------
-                evx_target = phase[X]
-                evy_target = phase[Y]
-                evz_target = phase[Z]
-
-                #----------------------------------------------------------------------------------
-                # No point updating the main processor if nothing has changed.
-                #----------------------------------------------------------------------------------
-                if not phase_change:
-                    continue
-
-                print "AP phase change: %s" % phase_name
-                output = struct.pack(pack_format,
-                                     evx_target,
-                                     evy_target,
-                                     evz_target,
-                                     phase_change,
-                                     phase_name,
-                                     running)
-
-                fp.write(output)
-
-            else:
-                #-----------------------------------------------------------------------------------
-                # Ideally the end of flight processing should be here, but duplicates lots from above
-                # for no benefit
-                #-----------------------------------------------------------------------------------
-                pass
-
-    except KeyboardInterrupt as e:
-        #-------------------------------------------------------------------------------------------
-        # The motion processor is finished with us, we should too, and we have by breaking out of the
-        # with.
-        #-------------------------------------------------------------------------------------------
-        pass
-
-    finally:
-        #-------------------------------------------------------------------------------------------
-        # Cleanup sweep if installed.
-        #-------------------------------------------------------------------------------------------
-        print "AP loops: %d." % loops
-        print "AP elapsed time: %f." % elapsed_time
-
-
-####################################################################################################
-#
-# Process the Autopilot data.
-#
-####################################################################################################
-class AutopilotProcessor():
-
-    def __init__(self, flight_plan, motion_rate):
-        #-------------------------------------------------------------------------------------------
-        # Setup a shared memory based data stream for the Sweep output
-        #-------------------------------------------------------------------------------------------
-        os.mkfifo("/dev/shm/autopilot_stream")
-
-        self.autopilot_process = subprocess.Popen(["python", __file__, "AUTOPILOT", flight_plan, str(motion_rate)], preexec_fn =  Daemonize)
-        while True:
-            try:
-                self.autopilot_fifo = io.open("/dev/shm/autopilot_stream", mode="rb")
-            except:
-                continue
-            else:
-                break
-
-        autopilot_fd = self.autopilot_fifo.fileno()
-#FCNTL!        autopilot_cntl = fcntl.fcntl(autopilot_fd, fcntl.F_GETFL)
-#FCNTL!        fcntl.fcntl(autopilot_fd, fcntl.F_SETFL, autopilot_cntl | os.O_NONBLOCK)
-
-        self.unpack_format = "=3f?10s?"
-        self.unpack_size = struct.calcsize(self.unpack_format)
-
-    def flush(self):
-        #-------------------------------------------------------------------------------------------
-        # Read what should be the backlog of reads, and return how many there are.
-        #-------------------------------------------------------------------------------------------
-        raw_bytes = self.autopilot_fifo.read(self.unpack_size)                               #FCNTL!
-        assert (len(raw_bytes) % self.unpack_size == 0), "Incomplete Autopilot data received"
-        return int(len(raw_bytes) / self.self.unpack_size)
-
-    def read(self):
-        raw_bytes = self.autopilot_fifo.read(self.unpack_size)
-        assert (len(raw_bytes) == self.unpack_size), "Incomplete data received from Autopilot reader"
-        evx_target, evy_target, evz_target, state_change, state_name, keep_looping = struct.unpack(self.unpack_format, raw_bytes)
-        return evx_target, evy_target, evz_target, state_change, state_name, keep_looping
-
-    def cleanup(self):
-        #-------------------------------------------------------------------------------------------
-        # Stop the Autopilot process - it may well have ended by itself
-        #-------------------------------------------------------------------------------------------
-        if self.autopilot_process.poll() == None:
-            self.autopilot_process.send_signal(signal.SIGINT)
-            self.autopilot_process.wait() # or perhaps communicate() to unblock it first
-        self.autopilot_fifo.close()
-        os.unlink("/dev/shm/autopilot_stream")
 
 
 ####################################################################################################
@@ -2514,7 +2569,7 @@ class Quadcopter:
             self.camera_installed = True
             self.gll_installed = True
             self.gps_installed = True
-            self.sweep_installed = False
+            self.sweep_installed = True
             X8 = True
 
         #-------------------------------------------------------------------------------------------
@@ -2752,13 +2807,6 @@ class Quadcopter:
         if self.gps_installed:
             global gpsp
             gpsp = GPSProcessor()
-
-        #-------------------------------------------------------------------------------------------
-        # Initialise Sweep
-        #-------------------------------------------------------------------------------------------
-        if self.sweep_installed:
-            global sweepp
-            sweepp = SweepProcessor()
 
     #===============================================================================================
     # Keyboard input between flights for CLI update etc
@@ -3125,10 +3173,6 @@ class Quadcopter:
                 else:
                     break
 
-            motion_fd = motion_fifo.fileno()
-#FCNTL!            motion_cntl = fcntl.fcntl(motion_fd, fcntl.F_GETFL)
-#FCNTL!            fcntl.fcntl(motion_fd, fcntl.F_SETFL, motion_cntl | os.O_NONBLOCK)
-
             #---------------------------------------------------------------------------------------
             # Register fd for polling
             #---------------------------------------------------------------------------------------
@@ -3169,17 +3213,6 @@ class Quadcopter:
 
             logger.warning("GPS location: latitude %f; longitude %f; altitude %f, satellites %d.", gps_lon, gps_lat, gps_alt, gps_sats)
 
-        #-------------------------------------------------------------------------------------------
-        # Set up the Sweep receiver process.
-        #-------------------------------------------------------------------------------------------
-        sweep_proximity = 0.0
-        sweep_direction = 0.0
-        if self.sweep_installed:
-            print "Couple of seconds to set up the Sweep..."
-            sweep_fifo = sweepp.sweep_fifo
-            sweep_fd = sweep_fifo.fileno()
-            poll.register(sweep_fd, select.POLLIN | select.POLLPRI)
-
         #--------------------------------------------------------------------------------------------
         # Last chance to change your mind about the flight if all's ok so far
         #--------------------------------------------------------------------------------------------
@@ -3206,32 +3239,28 @@ class Quadcopter:
         #-------------------------------------------------------------------------------------------
         gps_flush = 0
         video_flush = 0
-        sweep_flush = 0
         flushing = True
-        while flushing: 
+        while flushing:
             results = poll.poll(0.0)
             for fd, event in results:
-                
+
                 if self.gps_installed and fd == gps_fd:
                     gps_flush += gpsp.flush()
 
                 if self.camera_installed and fd == motion_fd:
                     video_flush += VideoMotionProcessor(motion_fifo, 0).flush()
 
-                if self.sweep_installed and fd == sweep_fd:
-                    sweep_flush += sweepp.flush()
             else:
                 if len(results) == 0:
                     flushing = False
         else:
             print "GPS Flush: %d" % gps_flush
             print "Video Flush: %d" % video_flush
-            print "Sweep Flush: %d" % sweep_flush
 
         #-------------------------------------------------------------------------------------------
         # Start the autopilot
         #-------------------------------------------------------------------------------------------
-        app = AutopilotProcessor(flight_plan, motion_rate)
+        app = AutopilotProcessor(flight_plan, motion_rate, self.sweep_installed)
         autopilot_fifo = app.autopilot_fifo
         autopilot_fd = autopilot_fifo.fileno()
         poll.register(autopilot_fd, select.POLLIN | select.POLLPRI)
@@ -3355,7 +3384,7 @@ class Quadcopter:
                            "temperature, " +
                            "latitude, longitude, altitude, satellites, north, east, height, " +
                            "mgx, mgy, mgz, cya, " +
-                           "sweep proximity, sweep direction, " +
+#                           "sweep proximity, sweep direction, " +
                            "qdx_fuse, qdy_fuze, qdz_fuse, " +
                            "qvx_fuse, qvy_fuse, qvz_fuse, " +
                            "edx_target, edy_target, edz_target, " +
@@ -3390,7 +3419,7 @@ class Quadcopter:
 
 
             #---------------------------------------------------------------------------------------
-            # Check on the number of IMU batches already stashed in the FIFO, and if not enough, 
+            # Check on the number of IMU batches already stashed in the FIFO, and if not enough,
             # check autopilot, GPS and video, and ultimate sleep.
             #---------------------------------------------------------------------------------------
             nfb = mpu6050.numFIFOBatches()
@@ -3431,7 +3460,7 @@ class Quadcopter:
 
                 #===================================================================================
                 # Priority puts new video processing at the end because once running, everything
-                # else is not services until it's finished.  Video, GPS and Sweep are low 
+                # else is not services until it's finished.  Video, GPS and Sweep are low
                 # frequency, low overhead.  Breaking from this for loop means the else at the end of
                 # the for loop is not called, and hence all_ok remains set to False.
                 #===================================================================================
@@ -3486,16 +3515,6 @@ class Quadcopter:
                             print "FMR GPS"
                             break
 
-                    if self.sweep_installed and fd == sweep_fd:
-                        #---------------------------------------------------------------------------
-                        # Run the Sweep Processor
-                        #---------------------------------------------------------------------------
-                        try:
-                            sweep_proximity, sweep_direction = sweepp.read()
-                        except AssertionError as e:
-                            print "FMR SWEEP"
-                            break
-
                     if self.camera_installed and fd == motion_fd:
                         #---------------------------------------------------------------------------
                         # Run the Video Motion Processor
@@ -3539,7 +3558,7 @@ class Quadcopter:
                     all_ok = True
 
                 if not all_ok:
-                    break    
+                    break
 
                 #-----------------------------------------------------------------------------------
                 # We had free time, do we still?  Better check.
@@ -4059,7 +4078,7 @@ class Quadcopter:
                                "%f, " % (temp / 333.86 + 21) +
                                "%f, %f, %f, %d, %f, %f, %f, " % (gps_lat, gps_lon, gps_alt, gps_sats, gps_ns, gps_ew, gps_dalt) +
                                "%f, %f, %f, %f, " % (mgx, mgy, mgz, cya * 180 / math.pi) +
-                               "%f, %f, " % (sweep_proximity, sweep_direction * 180 / math.pi) +
+#                               "%f, %f, " % (sweep_proximity, sweep_direction * 180 / math.pi) +
                                "%f, %f, %f, " % (qdx_fuse, qdy_fuse, qdz_fuse) +
                                "%f, %f, %f, " % (qvx_fuse, qvy_fuse, qvz_fuse) +
                                "%f, %f, %f, " % (edx_target, edy_target, edz_target) +
@@ -4105,8 +4124,6 @@ class Quadcopter:
             poll.unregister(gps_fd)
         if self.camera_installed:
             poll.unregister(motion_fd)
-        if self.sweep_installed:
-            poll.unregister(sweep_fd)
 
         #-------------------------------------------------------------------------------------------
         # Stop the camera motion processing
@@ -4142,14 +4159,6 @@ class Quadcopter:
         if self.gps_installed:
             print "Stopping GPS... ",
             gpsp.cleanup()
-            print "stopped."
-
-        #-------------------------------------------------------------------------------------------
-        # Stop the child Sweep process
-        #-------------------------------------------------------------------------------------------
-        if self.sweep_installed:
-            print "Stopping sweep... ",
-            sweepp.cleanup()
             print "stopped."
 
         #-------------------------------------------------------------------------------------------
@@ -4212,8 +4221,8 @@ class Quadcopter:
             self.keep_looping = False
 
 ####################################################################################################
-# If we've been called directly, this is the spawned video process for gathering and FIFOing macro-block
-# frames
+# If we've been called directly, this is the spawned video, GPS, Sweep or autopilot process or a
+# misinformed user trying to start the code.
 ####################################################################################################
 if __name__ == '__main__':
     if len(sys.argv) >= 2:
@@ -4246,9 +4255,13 @@ if __name__ == '__main__':
         # Start the process recording Autopilot
         #-------------------------------------------------------------------------------------------
         elif sys.argv[1] == "AUTOPILOT":
-            assert (len(sys.argv) == 4), "Bad parameters for AUTOPILOT"
+            assert (len(sys.argv) == 5), "Bad parameters for AUTOPILOT"
             flight_plan = sys.argv[2]
             motion_rate = int(sys.argv[3])
-            RecordAutopilot(flight_plan, motion_rate)
+            sweep_installed = True if (sys.argv[4] == "True") else False
+            RecordAutopilot(flight_plan, motion_rate, sweep_installed)
         else:
-            assert (False), "Invalid process request"
+            assert (False), "Invalid process request."
+
+    else:
+        print "If you're trying to run me, use 'sudo python ./qc.py'"
