@@ -1119,6 +1119,11 @@ class ESC:
         self.name = name
 
         #-------------------------------------------------------------------------------------------
+        # Pulse width - for logging purposes only
+        #-------------------------------------------------------------------------------------------
+        self.pulse_width = 0
+
+        #-------------------------------------------------------------------------------------------
         # Initialize the RPIO DMA PWM for this ESC.
         #-------------------------------------------------------------------------------------------
         self.set(1000)
@@ -1126,6 +1131,8 @@ class ESC:
     def set(self, pulse_width):
         pulse_width = pulse_width if pulse_width >= 1000 else 1000
         pulse_width = pulse_width if pulse_width <= 1999 else 1999
+
+        self.pulse_width = pulse_width
 
         PWM.add_channel_pulse(RPIO_DMA_CHANNEL, self.bcm_pin, 0, pulse_width)
 
@@ -1304,31 +1311,30 @@ def CheckCLI(argv):
 
     hover_pwm_defaulted = True
 
-    #-------------------------------------------------------------------------------------------
+    #-----------------------------------------------------------------------------------------------
     # Defaults for vertical distance PIDs
-    #-------------------------------------------------------------------------------------------
+    #-----------------------------------------------------------------------------------------------
     cli_vdp_gain = 1.0
     cli_vdi_gain = 0.0
     cli_vdd_gain = 0.0
 
-    #-------------------------------------------------------------------------------------------
+    #-----------------------------------------------------------------------------------------------
     # Defaults for horizontal distance PIDs
-    #-------------------------------------------------------------------------------------------
+    #-----------------------------------------------------------------------------------------------
     cli_hdp_gain = 1.0
     cli_hdi_gain = 0.0
     cli_hdd_gain = 0.0
 
-    #-------------------------------------------------------------------------------------------
-    # Defaults for horizontal velocity PIDs.  Note the D gain to enhance acceleration and breaking
-    # when the velocity _target_ changes rapidly.
-    #-------------------------------------------------------------------------------------------
+    #-----------------------------------------------------------------------------------------------
+    # Defaults for horizontal velocity PIDs.  Note the I gain to balance out weight imbalanced.
+    #-----------------------------------------------------------------------------------------------
     cli_hvp_gain = 1.5
-    cli_hvi_gain = 0.0
+    cli_hvi_gain = 0.01
     cli_hvd_gain = 0.0
 
-    #-------------------------------------------------------------------------------------------
+    #-----------------------------------------------------------------------------------------------
     # Per frame specific values
-    #-------------------------------------------------------------------------------------------
+    #-----------------------------------------------------------------------------------------------
     if i_am_hermione:
         #-------------------------------------------------------------------------------------------
         # Hermione's PID configuration due to using her frame / ESCs / motors / props
@@ -1343,57 +1349,23 @@ def CheckCLI(argv):
         cli_vvd_gain = 0.0
 
         #-------------------------------------------------------------------------------------------
-        # Defaults for pitch angle PIDs
+        # Defaults for pitch rotation rate PIDs
         #-------------------------------------------------------------------------------------------
         cli_prp_gain = 70.0
         cli_pri_gain = 0.0
         cli_prd_gain = 0.0
 
         #-------------------------------------------------------------------------------------------
-        # Defaults for roll angle PIDs
+        # Defaults for roll rotation rate PIDs
         #-------------------------------------------------------------------------------------------
         cli_rrp_gain = 70.0
         cli_rri_gain = 0.0
         cli_rrd_gain = 0.0
 
         #-------------------------------------------------------------------------------------------
-        # Defaults for yaw angle PIDs
+        # Defaults for yaw rotation rate PIDs
         #-------------------------------------------------------------------------------------------
         cli_yrp_gain = 180.0
-        cli_yri_gain = 0.0
-        cli_yrd_gain = 0.0
-
-    elif i_am_chloe:
-        #-------------------------------------------------------------------------------------------
-        # Chloe's PID configuration due to using her frame / ESCs / motors / props
-        #-------------------------------------------------------------------------------------------
-        cli_hover_pwm = 1400
-
-        #-------------------------------------------------------------------------------------------
-        # Defaults for vertical velocity PIDs
-        #-------------------------------------------------------------------------------------------
-        cli_vvp_gain = 320.0
-        cli_vvi_gain = 160.0
-        cli_vvd_gain = 0.0
-
-        #-------------------------------------------------------------------------------------------
-        # Defaults for pitch angle PIDs
-        #-------------------------------------------------------------------------------------------
-        cli_prp_gain = 50.0
-        cli_pri_gain = 0.0
-        cli_prd_gain = 0.0
-
-        #-------------------------------------------------------------------------------------------
-        # Defaults for roll angle PIDs
-        #-------------------------------------------------------------------------------------------
-        cli_rrp_gain = 50.0
-        cli_rri_gain = 0.0
-        cli_rrd_gain = 0.0
-
-        #-------------------------------------------------------------------------------------------
-        # Defaults for yaw angle PIDs
-        #-------------------------------------------------------------------------------------------
-        cli_yrp_gain = 100.0
         cli_yri_gain = 0.0
         cli_yrd_gain = 0.0
 
@@ -1411,21 +1383,21 @@ def CheckCLI(argv):
         cli_vvd_gain = 0.0
 
         #-------------------------------------------------------------------------------------------
-        # Defaults for pitch angle PIDs
+        # Defaults for pitch rotation rate PIDs
         #-------------------------------------------------------------------------------------------
         cli_prp_gain = 80.0
         cli_pri_gain = 0.0
         cli_prd_gain = 0.0
 
         #-------------------------------------------------------------------------------------------
-        # Defaults for roll angle PIDs
+        # Defaults for roll rotation rate PIDs
         #-------------------------------------------------------------------------------------------
         cli_rrp_gain = 80.0
         cli_rri_gain = 0.0
         cli_rrd_gain = 0.0
 
         #-------------------------------------------------------------------------------------------
-        # Defaults for yaw angle PIDs
+        # Defaults for yaw rotation rate PIDs
         #-------------------------------------------------------------------------------------------
         cli_yrp_gain = 160.0
         cli_yri_gain = 0.0
@@ -1571,6 +1543,8 @@ def CheckCLI(argv):
         raise ValueError('Hover speed must lie in the following range: 1000 <= hover pwm < 2000')
 
     elif cli_test_case == 0 and cli_fly:
+        if not os.path.isfile(cli_flight_plan):
+            raise ValueError('The flight plan file "%s" does not exist.' % cli_flight_plan)
         print 'Pre-flight checks passed, enjoy your flight, sir!'
 
     elif cli_test_case == 0 and cli_calibrate_0g:
@@ -1621,6 +1595,10 @@ def Daemonize():
 ####################################################################################################
 def RecordSweep():
 
+    SWEEP_IGNORE_BOUNDARY = 0.5 # 50cm from Sweep central and the prop tips.
+    SWEEP_CRITICAL_BOUNDARY = 1.0 # 50cm or less beyond the ignore zone: Hermione's personal space encroached.
+    SWEEP_WARNING_BOUNDARY = 2.0 # 50cm or less beyond the critical zone: Pause for thought what to do next.
+
     with serial.Serial("/dev/ttySWEEP",
                           baudrate = 115200,
                           parity=serial.PARITY_NONE,
@@ -1656,61 +1634,58 @@ def RecordSweep():
                 unpack_format = '=' + 'B' * 7
                 unpack_size = struct.calcsize(unpack_format)
 
-                pack_format = '=ff'
+                pack_format = '=??ff'
 
-                #-------------------------------------------------------------------------------------------
-                # Set the minimum proximity to beyond the sensor range of the sweep
-                #-------------------------------------------------------------------------------------------
-                min_distance = 100.0 # meters
-                min_direction = 0.0
-
-                prev_degrees = 360.0
                 while True:
                     raw = sweep.read(unpack_size)
                     assert (len(raw) == unpack_size), "Bad data read: %d" % len(raw)
                     formatted = struct.unpack(unpack_format, raw)
                     assert (len(formatted) == 7), "Bad data type conversion: %d" % len(formatted)
 
+                    #-------------------------------------------------------------------------------
+                    # Read the azimuth and convert to degrees.
+                    #-------------------------------------------------------------------------------
                     azimuth_lo = formatted[1]
                     azimuth_hi = formatted[2]
                     angle_int = (azimuth_hi << 8) + azimuth_lo
                     degrees = (angle_int >> 4) + (angle_int & 15) / 16
 
-                    #-----------------------------------------------------------------------------------
-                    # If we've passed 0o, we're starting a new sweep, report the previous sweep's closest
-                    # proximity results
-                    #------------------------------------------------------------------------------------
-                    if degrees < prev_degrees:
-                        #--------------------------------------------------------------------------------
-                        # Sweep is installed underneath Hermione, rotating CW viewed from the top.  Hence
-                        # the angles it produces are out of kilter with yaw and its right-hand rule. Swap
-                        # so sweeps 0-359 CW alights to yaw
-                        #--------------------------------------------------------------------------------
-                        output = struct.pack(pack_format, min_distance, min_direction * math.pi / 180)
-                        fp.write(output)
-                        min_distance = 100.0
-
-                    prev_degrees = degrees
-
-                    #------------------------------------------------------------------------------------
+                    #-------------------------------------------------------------------------------
                     # Read the distance and convert to meters.
-                    #------------------------------------------------------------------------------------
+                    #-------------------------------------------------------------------------------
                     distance_lo = formatted[3]
                     distance_hi = formatted[4]
                     distance = ((distance_hi << 8) + distance_lo) / 100
 
+                    #-------------------------------------------------------------------------------
+                    # Convert the results to a vector alighned with quad frame.
+                    '''
+                    #AB! Note the rotation direction is contrary to the right hande rule used by gyro
+                    #AB! Euler angles.  Hence some mangling requited.
+                    '''
+                    #-------------------------------------------------------------------------------
                     x = distance * math.cos(degrees * math.pi / 180)
                     y = distance * math.sin(degrees * math.pi / 180)
 
                     log.write("%f, %f, %f, %f\n" % (degrees, distance, x, y))
 
                     #-----------------------------------------------------------------------------------
-                    # If a reported distance is > 0.5m (the radius of Hermione), record this distance
-                    # if it's less that the previous smallest
+                    # If a reported distance lies inside the danger zone, pass it over to the autopilot 
+                    # to react to.
+                    '''
+                    #AB! Add an extra parameter to define abort, thus allowing further values later 
+                    #AB! for avoidance / reroute rather than abort!
+                    '''
                     #-----------------------------------------------------------------------------------
-                    if distance > 0.5 and distance < min_distance:
-                        min_distance = distance
-                        min_direction = degrees
+                    if distance < SWEEP_IGNORE_BOUNDARY:
+                        pass
+                    elif distance < SWEEP_CRITICAL_BOUNDARY:
+                        output = struct.pack(pack_format, True, False, distance, degrees * math.pi / 180)
+                        fp.write(output)
+                    elif distance < SWEEP_WARNING_BOUNDARY:
+                        output = struct.pack(pack_format, False, True, distance, degrees * math.pi / 180)
+                        fp.write(output)
+                        
 
                     '''
                     #AB! Full scan (per loop) with timestamp sent to AutopilotProcessor
@@ -1764,7 +1739,7 @@ class SweepProcessor():
             else:
                 break
 
-        self.unpack_format = "=ff"
+        self.unpack_format = "=??ff"
         self.unpack_size = struct.calcsize(self.unpack_format)
 
     def flush(self):
@@ -1778,8 +1753,8 @@ class SweepProcessor():
     def read(self):
         raw_bytes = self.sweep_fifo.read(self.unpack_size)
         assert (len(raw_bytes) == self.unpack_size), "Incomplete data received from Sweep reader"
-        proximity, direction = struct.unpack(self.unpack_format, raw_bytes)
-        return proximity, direction
+        critical, warning, distance, direction = struct.unpack(self.unpack_format, raw_bytes)
+        return critical, warning, distance, direction
 
     def cleanup(self):
         #-------------------------------------------------------------------------------------------
@@ -1812,8 +1787,6 @@ def RecordAutopilot(flight_plan, motion_rate, sweep_installed):
 
     phase = 0
     prev_phase = 0
-
-    SWEEP_MIN_PROXIMITY = 1.0 # 50cm beyond the range of Hermione's props
 
     edx_target = 0.0
     edy_target = 0.0
@@ -1901,9 +1874,11 @@ def RecordAutopilot(flight_plan, motion_rate, sweep_installed):
                 for fd, event in results:
                     if sweep_installed and fd == sweep_fd:
                         try:
-                            sweep_proximity, sweep_direction = sweepp.read()
-                            if sweep_proximity < SWEEP_MIN_PROXIMITY and active_fp != abort_fp:
+                            sweep_critical, sweep_warning, sweep_distance, sweep_direction = sweepp.read()
 
+                            if sweep_critical and active_fp != abort_fp:
+                                print "SWEEP ABORT: DISTANCE %fm; DIRECTION %do" % (sweep_distance, sweep_direction * 180 / math.pi)
+                                
                                 #-------------------------------------------------------------------
                                 # What target height has the flight achieved so far? Use this to
                                 # determine how long the descent must be at fixed velocity of 0.25m/s
@@ -1911,30 +1886,38 @@ def RecordAutopilot(flight_plan, motion_rate, sweep_installed):
                                 descent_time = edz_target / 0.25
 
                                 #-------------------------------------------------------------------
-                                # Build the HOVER, DESCENT, STOP abort flight plan based upon the
-                                # current height
+                                # Build the DESCENT, STOP abort flight plan based upon the
+                                # current height.
+                                #AB! WIBNI there's a RETREAT state first, where the direction
+                                #AB! is the opposite direction of the obstruction detected. 
                                 #-------------------------------------------------------------------
                                 abort_fp.append((0.0, 0.0, -0.25, descent_time, "ABORT (%.2fm)" % edz_target))
                                 abort_fp.append((0.0, 0.0, 0.0, 0.0, "STOP"))
                                 active_fp = abort_fp
 
-                                #--------------------------------------------------------------------
+                                #-------------------------------------------------------------------
                                 # Need to reset time to start this new flight plan
-                                #--------------------------------------------------------------------
+                                #-------------------------------------------------------------------
                                 total_time = descent_time
                                 start_time = time.time()
-#                                delta_time = 0.0
                                 elapsed_time = 0.0
                                 print "==============OA ABORT==============="
+
+                            elif sweep_warning:
+                                #-------------------------------------------------------------------    
+                                #AB! For obstacle avoidance in the future: hover while considering 
+                                #AB! what to do about where to go next.
+                                #-------------------------------------------------------------------    
+                                pass
 
                         except AssertionError as e:
                             print "FMR SWEEP"
                             break
 
-                #----------------------------------------------------------------------------------
+                #-----------------------------------------------------------------------------------
                 # Based on the elapsed time since the flight started, find which of the flight plan
                 # phases we are in.
-                #----------------------------------------------------------------------------------
+                #-----------------------------------------------------------------------------------
                 phase_time = 0.0
                 for phase in active_fp:
                     phase_time += phase[PERIOD]
@@ -1943,19 +1926,19 @@ def RecordAutopilot(flight_plan, motion_rate, sweep_installed):
                 else:
                     running = False
 
-                #----------------------------------------------------------------------------------
+                #-----------------------------------------------------------------------------------
                 # Have we crossed into a new phase of the flight plan? Log it if so.
-                #----------------------------------------------------------------------------------
+                #-----------------------------------------------------------------------------------
                 phase_name = phase[NAME]
                 phase_changed = False
                 if phase != prev_phase:
                     phase_changed = True
                     prev_phase = phase
 
-                #----------------------------------------------------------------------------------
+                #-----------------------------------------------------------------------------------
                 # Get the velocity targets for this phase, and integrate to get distance.  Distance
                 # is used in the abort fp generation.
-                #----------------------------------------------------------------------------------
+                #-----------------------------------------------------------------------------------
                 evx_target = phase[X]
                 evy_target = phase[Y]
                 evz_target = phase[Z]
@@ -1964,9 +1947,9 @@ def RecordAutopilot(flight_plan, motion_rate, sweep_installed):
                 edy_target += evy_target * delta_time
                 edz_target += evz_target * delta_time
 
-                #----------------------------------------------------------------------------------
+                #-----------------------------------------------------------------------------------
                 # No point updating the main processor if nothing has changed.
-                #----------------------------------------------------------------------------------
+                #-----------------------------------------------------------------------------------
                 if not phase_changed:
                     continue
 
@@ -2190,7 +2173,7 @@ class GPSProcessor():
                 break
 
         self.waypoints = []
-        self.min_satellites = 8
+        self.min_satellites = 7 #AB! Seems to be available whatever the weather.
 
         self.unpack_format = '=dddb' # latitude, longitude, altitude, num satellites
         self.unpack_size = struct.calcsize(self.unpack_format)
@@ -2323,7 +2306,7 @@ class VideoMotionProcessor:
         self.c_yaw = math.cos(self.yaw_increment)
         self.s_yaw = math.sin(self.yaw_increment)
 
-        sign = -1 if i_am_chloe else 1
+        sign = 1 # Was '-1 if i_am_chloe else 1' as Chloe had the camera twisted by 180 degrees
 
         frames = self.motion_fifo.read(self.bytes_per_frame)
         assert (len(frames) != 0), "Shouldn't be here, no bytes to read"
@@ -2521,19 +2504,14 @@ class Quadcopter:
         # Who am I?
         #-------------------------------------------------------------------------------------------
         global i_am_zoe
-        global i_am_chloe
         global i_am_hermione
         i_am_zoe = False
-        i_am_chloe = False
         i_am_hermione = False
 
         my_name = os.uname()[1]
         if my_name == "zoe.local" or my_name == "zoe":
             print "Hi, I'm Zoe.  Nice to meet you!"
             i_am_zoe = True
-        elif my_name == "chloe.local" or my_name == "chloe":
-            print "Hi, I'm Chloe.  Nice to meet you!"
-            i_am_chloe = True
         elif my_name == "hermione.local" or my_name == "hermione":
             print "Hi, I'm Hermione.  Nice to meet you!"
             i_am_hermione = True
@@ -2557,12 +2535,6 @@ class Quadcopter:
             self.camera_installed = True
             self.gll_installed = True
             self.gps_installed = True
-            self.sweep_installed = False
-        elif i_am_chloe:
-            self.compass_installed = True
-            self.camera_installed = True
-            self.gll_installed = True
-            self.gps_installed = False
             self.sweep_installed = False
         elif i_am_hermione:
             self.compass_installed = True
@@ -2725,8 +2697,6 @@ class Quadcopter:
         spin_pwm = 0
         if i_am_zoe:
             spin_pwm = 1150
-        elif i_am_chloe:
-            spin_pwm = 1150
         elif i_am_hermione:
             spin_pwm = 1150
 
@@ -2759,7 +2729,7 @@ class Quadcopter:
                 #AB? Or even 1000/100?  Does 500/100 break external inputs plus logging?
                 '''
                 sampling_rate = 500 # Hz
-                motion_rate = 75   # Hz
+                motion_rate = 75    # Hz
             elif i_am_zoe:
                 sampling_rate = 500 # Hz
                 motion_rate = 75    # Hz
@@ -2826,14 +2796,10 @@ class Quadcopter:
     # Per-flight configuration, initializations and flight control itself
     #===============================================================================================
     def fly(self):
-        #-----------------------------------------------------------------------------------------------
-        # Give the PWM 5s to allow the ESCs to synchronize.
-        #-----------------------------------------------------------------------------------------------
-        print "Just checking a few details.  Gimme a few seconds..."
-
         #-------------------------------------------------------------------------------------------
         # Check the command line for calibration or flight parameters
         #-------------------------------------------------------------------------------------------
+        print "Just checking a few details.  Gimme a few seconds..."
         try:
             flying, flight_plan, calibrate_0g, cc_compass, yaw_control, hover_pwm, vdp_gain, vdi_gain, vdd_gain, vvp_gain, vvi_gain, vvd_gain, hdp_gain, hdi_gain, hdd_gain, hvp_gain, hvi_gain, hvd_gain, prp_gain, pri_gain, prd_gain, rrp_gain, rri_gain, rrd_gain, yrp_gain, yri_gain, yrd_gain, test_case, rtf_period, atau, diagnostics = CheckCLI(self.argv)
         except ValueError, err:
@@ -2842,7 +2808,6 @@ class Quadcopter:
 
         logger.warning("fly = %s, flight plan = %s, calibrate_0g = %d, check / calibrate compass = %s, yaw_control = %s, hover_pwm = %d, vdp_gain = %f, vdi_gain = %f, vdd_gain= %f, vvp_gain = %f, vvi_gain = %f, vvd_gain= %f, hdp_gain = %f, hdi_gain = %f, hdd_gain = %f, hvp_gain = %f, hvi_gain = %f, hvd_gain = %f, prp_gain = %f, pri_gain = %f, prd_gain = %f, rrp_gain = %f, rri_gain = %f, rrd_gain = %f, yrp_gain = %f, yri_gain = %f, yrd_gain = %f, test_case = %d, rtf_period = %f, atau = %f, diagnostics = %s",
                 flying, flight_plan, calibrate_0g, cc_compass, yaw_control, hover_pwm, vdp_gain, vdi_gain, vdd_gain, vvp_gain, vvi_gain, vvd_gain, hdp_gain, hdi_gain, hdd_gain, hvp_gain, hvi_gain, hvd_gain, prp_gain, pri_gain, prd_gain, rrp_gain, rri_gain, rrd_gain, yrp_gain, yri_gain, yrd_gain, test_case, rtf_period, atau, diagnostics)
-
 
         #-------------------------------------------------------------------------------------------
         # Calibrate gravity or use previous settings
@@ -3113,8 +3078,15 @@ class Quadcopter:
                 except ValueError as e:
                     print "GLL status 1: %s" % e
                     continue
-                eftoh += g_dist #AB! * tilt_ratio
+                eftoh += g_dist
             eftoh /= (2 * self.tracking_rate)
+
+        #AB!----------------------------------------------------------------------------------------
+        #AB! Because Hermione's GLL is too close to the ground, the above typically comes up with 
+        #AB! 5cm so here we override it with the ruler measured closer approximation.
+        #AB!----------------------------------------------------------------------------------------
+        if i_am_hermione:
+            eftoh = 0.13
 
         #-------------------------------------------------------------------------------------------
         # Set up the video macro-block parameters
@@ -3132,8 +3104,6 @@ class Quadcopter:
 
             if i_am_hermione:
                 frame_width = 320    # an exact multiple of mb_size #NFI! Lower and spot large differences?
-            elif i_am_chloe:
-                frame_width = 480    # an exact multiple of mb_size
             elif i_am_zoe:
                 frame_width = 320    # an exact multiple of mb_size
             frame_height = frame_width
@@ -3310,12 +3280,12 @@ class Quadcopter:
         #-------------------------------------------------------------------------------------------
         # Get the value for gravity.
         #-------------------------------------------------------------------------------------------
-        '''
         egx, egy, egz = RotateVector(qax, qay, qaz, -pa, -ra, -ya)
         '''
         egx = 0.0
         egy = 0.0
         egz = math.pow(math.pow(qax, 2) + math.pow(qay, 2) + math.pow(qaz, 2), 0.5)
+        '''
 
         #-------------------------------------------------------------------------------------------
         # The tilt ratio is used to compensate sensor height (and thus velocity) for the fact the
@@ -3392,12 +3362,12 @@ class Quadcopter:
                            "qrx, qry, qrz, " +
                            "qax, qay, qaz, " +
                            "qgx, qgy, qgz, " +
-                           "pitch, roll, yaw")
+                           "pitch, roll, yaw" +
 #                            "qdx_input, qdx_target, qvx_input, qvx_target, pa_input, pa_target, pr_input, pr_target, pr_out, " +
 #                            "qdy_input, qdy_target, qvy_input, qvy_target, ra_input, ra_target, rr_input, rr_target, rr_out, " +
 #                            "qdz_input, qdz_target, qvz_input, qvz_target, qvz_out, " +
 #                            "ya_input, ya_target, yr_input, yr_target, yr_out, " +
-#                            "FL PWM, FR PWM, BL PWM, BR PWM")
+                           "FL PWM, FR PWM, BL PWM, BR PWM")
 
         #===========================================================================================
         #
@@ -3772,11 +3742,13 @@ class Quadcopter:
             if self.camera_installed and self.gll_installed and camera_data_update:
 
                 #-----------------------------------------------------------------------------------
-                # Take the increment of the scaled X and Y distance, and divide by the height to
-                # get the absolute position, allowing for errors due to tilt.
+                # Take the increment of the scaled X and Y distance, and muliply by the height to
+                # get the absolute position, allowing for tilt increment.
                 #-----------------------------------------------------------------------------------
                 '''
-                #AB! Don't like the nomenclature of ed?_increment and vv?
+                #AB! Don't like the nomenclature of ed?_increment and vv?: ed*_increment should be
+                #AB! qd*_increment but that exists.  vv* = video 'velocity' but it's an increment 
+                #AB! between video frames, in kinda pixel units until height is know.
                 '''
 
                 edx_increment = (g_distance * tilt_ratio) * (vvx + apa_increment / (2 * math.pi))
@@ -4078,7 +4050,7 @@ class Quadcopter:
                                "%f, " % (temp / 333.86 + 21) +
                                "%f, %f, %f, %d, %f, %f, %f, " % (gps_lat, gps_lon, gps_alt, gps_sats, gps_ns, gps_ew, gps_dalt) +
                                "%f, %f, %f, %f, " % (mgx, mgy, mgz, cya * 180 / math.pi) +
-#                               "%f, %f, " % (sweep_proximity, sweep_direction * 180 / math.pi) +
+#                               "%f, %f, " % (sweep_distance, sweep_direction * 180 / math.pi) +
                                "%f, %f, %f, " % (qdx_fuse, qdy_fuse, qdz_fuse) +
                                "%f, %f, %f, " % (qvx_fuse, qvy_fuse, qvz_fuse) +
                                "%f, %f, %f, " % (edx_target, edy_target, edz_target) +
@@ -4086,12 +4058,12 @@ class Quadcopter:
                                "%f, %f, %f, " % (qrx, qry, qrz) +
                                "%f, %f, %f, " % (qax, qay, qaz) +
                                "%f, %f, %f, " % (qgx, qgy, qgz) +
-                               "%f, %f, %f, " % (math.degrees(pa), math.degrees(ra), math.degrees(ya)))
+                               "%f, %f, %f, " % (math.degrees(pa), math.degrees(ra), math.degrees(ya)) +
 #                               "%f, %f, %f, %f, %f, %f, %f, %f, %d, " % (qdx_input, qdx_target, qvx_input, qvx_target, math.degrees(apa), math.degrees(pa_target), math.degrees(qry), math.degrees(pr_target), pr_out) +
 #                               "%f, %f, %f, %f, %f, %f, %f, %f, %d, " % (qdy_input, qdy_target, qvy_input, qvy_target, math.degrees(ara), math.degrees(ra_target), math.degrees(qrx), math.degrees(rr_target), rr_out) +
 #                               "%f, %f, %f, %f, %d, " % (qdz_input, qdz_target, qvz_input, qvz_target, qaz_out) +
 #                               "%f, %f, %f, %f, %d, " % (math.degrees(aya), math.degrees(ya_target), math.degrees(qrz), math.degrees(yr_target), yr_out) +
-#                               "%d, %d, %d, %d, " % (self.esc_list[0].pulse_width, self.esc_list[1].pulse_width, self.esc_list[2].pulse_width, self.esc_list[3].pulse_width))
+                               "%d, %d, %d, %d, " % (self.esc_list[0].pulse_width, self.esc_list[1].pulse_width, self.esc_list[2].pulse_width, self.esc_list[3].pulse_width))
 
         logger.critical("Flight time %f", time.time() - start_flight)
         logger.critical("Sampling loops: %d", sampling_loops)
