@@ -18,11 +18,9 @@ from __future__ import with_statement
 import signal
 import socket
 import time
-import string
 import sys
 import getopt
 import math
-import thread
 from array import *
 import smbus
 import select
@@ -33,14 +31,17 @@ import csv
 from RPIO import PWM
 import RPi.GPIO as GPIO
 import subprocess
-from datetime import datetime
-import shutil
 import ctypes
 from ctypes.util import find_library
 import picamera
 import struct
 import gps
 import serial
+
+
+MIN_SATS = 10
+EARTH_RADIUS = 6371000 # meters
+GRAV_ACCEL = 9.80665   # meters per second per second
 
 
 ####################################################################################################
@@ -1010,9 +1011,9 @@ class GLL:
         distance = ((dist1 << 8) + dist2) / 100
 
         '''
-        #AB! Worth trying incase I can drop the I2C usage as a result as it's 
+        #AB! Worth trying incase I can drop the I2C usage as a result as it's
         #AB! used above correctly for the previous reading.
-        
+
         gll_bytes = self.i2c.readList(0x80 | self.__GLL_LAST_DELAY_HIGH, 2)
         dist1 = gll_bytes[0]
         dist2 = gll_bytes[1]
@@ -1318,9 +1319,13 @@ def CheckCLI(argv):
     cli_rtf_period = 0.1
     cli_tau = 7.5
     cli_calibrate_0g = False
-    cli_flight_plan = ''
+    cli_fp_filename = ''
     cli_cc_compass = False
+    cli_file_control = False
     cli_yaw_control = False
+    cli_gps_control = False
+    cli_add_waypoint = False
+    cli_clear_waypoints = False
 
     hover_pwm_defaulted = True
 
@@ -1367,15 +1372,15 @@ def CheckCLI(argv):
         #-------------------------------------------------------------------------------------------
         # Defaults for pitch rotation rate PIDs
         #-------------------------------------------------------------------------------------------
-        cli_prp_gain = 90.0
-        cli_pri_gain = 0.9
+        cli_prp_gain = 120.0
+        cli_pri_gain = 1.0
         cli_prd_gain = 0.0
 
         #-------------------------------------------------------------------------------------------
         # Defaults for roll rotation rate PIDs
         #-------------------------------------------------------------------------------------------
-        cli_rrp_gain = 90.0
-        cli_rri_gain = 0.9
+        cli_rrp_gain = 120.0
+        cli_rri_gain = 1.0
         cli_rrd_gain = 0.0
 
         #-------------------------------------------------------------------------------------------
@@ -1423,7 +1428,7 @@ def CheckCLI(argv):
     # Right, let's get on with reading the command line and checking consistency
     #-----------------------------------------------------------------------------------------------
     try:
-        opts, args = getopt.getopt(argv,'df:gh:r:y', ['cc', 'tc=', 'tau=', 'vdp=', 'vdi=', 'vdd=', 'vvp=', 'vvi=', 'vvd=', 'hdp=', 'hdi=', 'hdd=', 'hvp=', 'hvi=', 'hvd=', 'prp=', 'pri=', 'prd=', 'rrp=', 'rri=', 'rrd=', 'tau=', 'yrp=', 'yri=', 'yrd='])
+        opts, args = getopt.getopt(argv,'df:gh:r:y', ['cc', 'tc=', 'awp', 'cwp', 'gps', 'tau=', 'vdp=', 'vdi=', 'vdd=', 'vvp=', 'vvi=', 'vvd=', 'hdp=', 'hdi=', 'hdd=', 'hvp=', 'hvi=', 'hvd=', 'prp=', 'pri=', 'prd=', 'rrp=', 'rri=', 'rrd=', 'tau=', 'yrp=', 'yri=', 'yrd='])
     except getopt.GetoptError:
         logger.critical('Must specify one of -f or -g or --tc')
         logger.critical('  qc.py')
@@ -1435,6 +1440,9 @@ def CheckCLI(argv):
         logger.critical('  -y use yaw to control the direction of flight')
         logger.critical('  --cc   check or calibrate compass')
         logger.critical('  --tc   select which testcase to run')
+        logger.critical('  --awp  add GPS waypoint to flight plan')
+        logger.critical('  --cwp  clear GPS waypoints from flight plan')
+        logger.critical('  --gps  use the GPS waypoint flight plan')
         logger.critical('  --tau  set the angle CF -3dB point - default: %fs', cli_tau)
         logger.critical('  --vdp  set vertical distance PID P gain - default: %f', cli_vvp_gain)
         logger.critical('  --vdi  set vertical distance PID P gain - default: %f', cli_vvi_gain)
@@ -1462,7 +1470,8 @@ def CheckCLI(argv):
     for opt, arg in opts:
         if opt == '-f':
             cli_fly = True
-            cli_flight_plan = arg
+            cli_file_control = True
+            cli_fp_filename = arg
 
         elif opt in '-h':
             cli_hover_pwm = int(arg)
@@ -1485,6 +1494,17 @@ def CheckCLI(argv):
 
         elif opt in '--tc':
             cli_test_case = int(arg)
+
+        elif opt in '--awp':
+            cli_add_waypoint = True
+
+        elif opt in '--cwp':
+            cli_clear_waypoints = True
+
+        elif opt in '--gps':
+            cli_gps_control = True
+            cli_fly = True
+            cli_fp_filename = "GPSWaypoints.csv"
 
         elif opt in '--tau':
             cli_tau = float(arg)
@@ -1552,15 +1572,18 @@ def CheckCLI(argv):
         elif opt in '--yrd':
             cli_yrd_gain = float(arg)
 
-    if not cli_fly and cli_test_case == 0 and not cli_calibrate_0g and not cli_cc_compass:
-        raise ValueError('Must specify one of -f or --tc or --cc')
+    if not cli_fly and cli_test_case == 0 and not cli_calibrate_0g and not cli_cc_compass and not cli_add_waypoint and not cli_clear_waypoints:
+        raise ValueError('Must specify one of -f or --awp or --cwp or --gps or --tc or --cc')
 
     elif cli_hover_pwm < 1000 or cli_hover_pwm > 1999:
         raise ValueError('Hover speed must lie in the following range: 1000 <= hover pwm < 2000')
 
     elif cli_test_case == 0 and cli_fly:
-        if not os.path.isfile(cli_flight_plan):
-            raise ValueError('The flight plan file "%s" does not exist.' % cli_flight_plan)
+        if cli_file_control and not os.path.isfile(cli_fp_filename):
+            raise ValueError('The flight plan file "%s" does not exist.' % cli_fp_filename)
+        elif cli_gps_control and not os.path.isfile("GPSWaypoints.csv"):
+            raise ValueError('We need at least the target waypoint set for GPS flight control')
+
         print 'Pre-flight checks passed, enjoy your flight, sir!'
 
     elif cli_test_case == 0 and cli_calibrate_0g:
@@ -1569,13 +1592,19 @@ def CheckCLI(argv):
     elif cli_test_case == 0 and cli_cc_compass:
         print "Proceeding with compass calibration"
 
+    elif cli_test_case == 0 and cli_add_waypoint:
+        print "Proceeding with GPS waypoint acquisition"
+
+    elif cli_test_case == 0 and cli_clear_waypoints:
+        print "Proceeding with GPS waypoint clearance"
+
     elif cli_test_case != 1 and cli_test_case != 2:
         raise ValueError('Only 1 or 2 are valid testcases')
 
     elif cli_test_case == 1 and hover_pwm_defaulted:
         raise ValueError('You must choose a specific hover speed (-h) for test case 1 - try 1150')
 
-    return cli_fly, cli_flight_plan, cli_calibrate_0g, cli_cc_compass, cli_yaw_control, cli_hover_pwm, cli_vdp_gain, cli_vdi_gain, cli_vdd_gain, cli_vvp_gain, cli_vvi_gain, cli_vvd_gain, cli_hdp_gain, cli_hdi_gain, cli_hdd_gain, cli_hvp_gain, cli_hvi_gain, cli_hvd_gain, cli_prp_gain, cli_pri_gain, cli_prd_gain, cli_rrp_gain, cli_rri_gain, cli_rrd_gain, cli_yrp_gain, cli_yri_gain, cli_yrd_gain, cli_test_case, cli_rtf_period, cli_tau, cli_diagnostics
+    return cli_fly, cli_fp_filename, cli_calibrate_0g, cli_cc_compass, cli_yaw_control, cli_file_control, cli_gps_control, cli_add_waypoint, cli_clear_waypoints, cli_hover_pwm, cli_vdp_gain, cli_vdi_gain, cli_vdd_gain, cli_vvp_gain, cli_vvi_gain, cli_vvd_gain, cli_hdp_gain, cli_hdi_gain, cli_hdd_gain, cli_hvp_gain, cli_hvi_gain, cli_hvd_gain, cli_prp_gain, cli_pri_gain, cli_prd_gain, cli_rrp_gain, cli_rri_gain, cli_rrd_gain, cli_yrp_gain, cli_yri_gain, cli_yrd_gain, cli_test_case, cli_rtf_period, cli_tau, cli_diagnostics
 
 
 ####################################################################################################
@@ -1609,7 +1638,7 @@ def Daemonize():
 # Start the Scanse Sweep reading process.
 #
 ####################################################################################################
-def RecordSweep():
+def SweepProcessor():
 
     SWEEP_IGNORE_BOUNDARY = 0.5 # 50cm from Sweep central and the prop tips.
     SWEEP_CRITICAL_BOUNDARY = 1.0 # 50cm or less beyond the ignore zone: Hermione's personal space encroached.
@@ -1736,7 +1765,7 @@ def RecordSweep():
 # Process the Scanse Sweep data.
 #
 ####################################################################################################
-class SweepProcessor():
+class SweepManager():
 
     def __init__(self):
         #-------------------------------------------------------------------------------------------
@@ -1774,20 +1803,12 @@ class SweepProcessor():
         #-------------------------------------------------------------------------------------------
         # Stop the Sweep process if it's still running, and clean up the FIFO.
         #-------------------------------------------------------------------------------------------
-        '''
-        #AB! There's a race here: RecordAutopilot has already finished, and asked Sweep to cleanup,
-        #AB! but in the meantime motion processing has caught up and sent RecordAutopilot Ctrl-C via
-        #AB: AutopilotProcessor;  RecordAutpilot is waiting here when that happens, so the wait for
-        #AB! RecordSweep to exit gets interrupts by the Ctrl-C unless we catch it.  Catching the
-        #AB! exception will do for now, but a better solution would be preferable, especially when
-        #AB! GPS also feeds into the Autopilot.
-        '''
         try:
             if self.sweep_process.poll() == None:
                 self.sweep_process.send_signal(signal.SIGINT)
                 self.sweep_process.wait()
         except KeyboardInterrupt as e:
-            print "===================KB IRQ===================="
+            pass
         self.sweep_fifo.close()
         os.unlink("/dev/shm/sweep_stream")
 
@@ -1797,7 +1818,7 @@ class SweepProcessor():
 # Start the GPS reading process.
 #
 ####################################################################################################
-def RecordGPS():
+def GPSProcessor():
     session = gps.gps()
     session.stream(gps.WATCH_ENABLE | gps.WATCH_NEWSTYLE)
 
@@ -1822,6 +1843,10 @@ def RecordGPS():
     pack_format = '=dddb' # latitude, longitude, altitude, num satellites
 
     with io.open("/dev/shm/gps_stream", mode = "wb", buffering = 0) as gps_fifo:
+
+        log = open("gps.csv", "wb")
+        log.write("latitude, longitude, altitude, satellites\n")
+
         while True:
             try:
                 report = session.next()
@@ -1884,6 +1909,8 @@ def RecordGPS():
                 #-----------------------------------------------------------------------------
                 if new_lon and new_lat and new_alt:
 
+                    log.write("%f, %f, %f, %d\n" % (latitude, longitude, altitude, num_sats))
+
                     new_lon = False
                     new_lat = False
                     new_alt = False
@@ -1905,13 +1932,16 @@ def RecordGPS():
             finally:
                 pass
 
+        log.close()
+
+
 
 ####################################################################################################
 #
 # Process the GPS data.
 #
 ####################################################################################################
-class GPSProcessor():
+class GPSManager():
 
     def __init__(self):
         #-------------------------------------------------------------------------------------------
@@ -1929,7 +1959,6 @@ class GPSProcessor():
                 break
 
         self.waypoints = []
-        self.min_satellites = 7 #AB! Seems to be available whatever the weather.
 
         self.unpack_format = '=dddb' # latitude, longitude, altitude, num satellites
         self.unpack_size = struct.calcsize(self.unpack_format)
@@ -1944,14 +1973,19 @@ class GPSProcessor():
 
     def cleanup(self):
         #-------------------------------------------------------------------------------------------
-        # Stop the GPS process
+        # Stop the GPS process if it's still running, and clean up the FIFO.
         #-------------------------------------------------------------------------------------------
-        self.gps_process.send_signal(signal.SIGINT)
-        self.gps_process.wait()
+        try:
+            if self.gps_process.poll() == None:
+                self.gps_process.send_signal(signal.SIGINT)
+                self.gps_process.wait()
+        except KeyboardInterrupt as e:
+            pass
+
         self.gps_fifo.close()
         os.unlink("/dev/shm/gps_stream")
 
-    def acquireSatellites(self):
+    def acquireSatellites(self, num_sats = MIN_SATS):
         gps_lat = 0.0
         gps_lon = 0.0
         gps_alt = 0.0
@@ -1969,7 +2003,7 @@ class GPSProcessor():
             #---------------------------------------------------------------------------------------
             # If we've gpt enough satellites, give up.
             #---------------------------------------------------------------------------------------
-            if gps_sats >= self.min_satellites:
+            if gps_sats >= num_sats:
                 print
                 break
         else:
@@ -1979,7 +2013,7 @@ class GPSProcessor():
             #---------------------------------------------------------------------------------------
             print
             rsp = raw_input("I only got %d.  Good enough? " % gps_sats)
-            if len(rsp) != 0 and (rsp[0] != "y" or rsp[0] != "Y"):
+            if len(rsp) != 0 and rsp[0] != "y" and rsp[0] != "Y":
                 raise EnvironmentError("I can't see enough satellites, I give up!")
 
         return gps_lat, gps_lon, gps_alt, gps_sats
@@ -1990,13 +2024,18 @@ class GPSProcessor():
         latitude, longitude, altitude, satellites = struct.unpack(self.unpack_format, raw_bytes)
         return latitude, longitude, altitude, satellites
 
+    '''
+    #GPS: These two can be deleted
+    
     def addWaypoint(self):
-        latitude, longitude, altitude, num_sats = self.acquireSatellites(min_satellites)
+        latitude, longitude, altitude, num_sats = self.acquireSatellites()
         self.waypoints.append((latitude, longitude))
         logger.critical("WAYPOINT:,lat: %f;,long %f.", latitude, longitude)
 
     def clearWaypoints(self):
         self.waypoints = []
+
+    '''    
 
 
 ####################################################################################################
@@ -2004,10 +2043,7 @@ class GPSProcessor():
 # Start the Autopilot reading process
 #
 ####################################################################################################
-def RecordAutopilot(flight_plan, motion_rate, sweep_installed):
-
-    phase = 0
-    prev_phase = 0
+def AutopilotProcessor(sweep_installed, gps_installed, compass_installed, initial_orientation, file_control = False, gps_control = False, fp_filename = ""):
 
     edx_target = 0.0
     edy_target = 0.0
@@ -2027,58 +2063,143 @@ def RecordAutopilot(flight_plan, motion_rate, sweep_installed):
     PERIOD = 3
     NAME = 4
 
-    file_fp = []
-
-    file_fp.append((0.0, 0.0, 0.0, 0.0, "RTF"))
-
-    with open(flight_plan, 'rb') as fp_csv:
-        fp_reader = csv.reader(fp_csv)
-        for fp_row in fp_reader:
-
-            if len(fp_row) == 0 or (fp_row[0] != '' and fp_row[0][0] == '#'):
-                continue
-            if len(fp_row) != 5:
-                break
-
-            file_fp.append((float(fp_row[0]),
-                            float(fp_row[1]),
-                            float(fp_row[2]),
-                            float(fp_row[3]),
-                            fp_row[4].strip()))
-        else:
-            file_fp.append((0.0, 0.0, 0.0, 0.0, "STOP"))
-
     #-----------------------------------------------------------------------------------------------
-    # Set up the file base flight plan as the active flight plan
+    # Set up the various flight plan options.
     #-----------------------------------------------------------------------------------------------
-    active_fp = file_fp
+    takeoff_fp = []
+    landing_fp = []
     abort_fp = []
+    file_fp = []
+    gps_locating_fp = []
+
+    gps_tracking_fp = []
+
+    gps_waypoints = []
+
+    sats_search_start = 0.0    
 
     #-----------------------------------------------------------------------------------------------
-    # Kick off sweep if necessary
+    # Build the standard takeoff and landing flight plans.
     #-----------------------------------------------------------------------------------------------
-    if sweep_installed:
-        sweepp = SweepProcessor()
-        sweep_fd = sweepp.sweep_fifo.fileno()
-        poll.register(sweep_fd, select.POLLIN | select.POLLPRI)
+    takeoff_fp.append((0.0, 0.0, 0.0, 0.0, "RTF"))
+    takeoff_fp.append((0.0, 0.0, 0.3, 3.3, "TAKEOFF"))
+    takeoff_fp.append((0.0, 0.0, 0.0, 0.5, "HOVER"))
+
+    landing_fp.append((0.0, 0.0, -0.3, 4.4, "LANDING"))
+
+    #-----------------------------------------------------------------------------------------------
+    # Build the initial post-takeoff GPS flight plan as a minutes hover pending GPS satellite acquisition.
+    # If it fails, it drops automatically into landing after that minute.
+    #-----------------------------------------------------------------------------------------------
+    gps_locating_fp.append((0.0, 0.0, 0.0, 60, "GPS: WHERE AM I?"))
+    gps_tracking_fp.append((0.0, 0.0, 0.0, 60, "GPS TRACKING: 0"))
+
+    #-----------------------------------------------------------------------------------------------
+    # Build the file-based flight plan if that's what we're using.
+    #-----------------------------------------------------------------------------------------------
+    if file_control:
+        with open(fp_filename, 'rb') as fp_csv:
+            fp_reader = csv.reader(fp_csv)
+            for fp_row in fp_reader:
+
+                if len(fp_row) == 0 or (fp_row[0] != '' and fp_row[0][0] == '#'):
+                    continue
+                if len(fp_row) != 5:
+                    break
+
+                file_fp.append((float(fp_row[0]),
+                                float(fp_row[1]),
+                                float(fp_row[2]),
+                                float(fp_row[3]),
+                                fp_row[4].strip()))
+
+    #-----------------------------------------------------------------------------------------------
+    # Build the GPS waypoint flight plan if that's what we're using.
+    #-----------------------------------------------------------------------------------------------
+    elif gps_control:
+        with open(fp_filename, 'rb') as fp_csv:
+            fp_reader = csv.reader(fp_csv)
+            for fp_row in fp_reader:
+
+                if len(fp_row) == 0 or (fp_row[0] != '' and fp_row[0][0] == '#'):
+                    continue
+                if len(fp_row) != 4:
+                    break
+
+                gps_waypoints.append((float(fp_row[0]),
+                                      float(fp_row[1]),
+                                      float(fp_row[2]),
+                                      int(fp_row[3])))
+
+    else:
+        #-------------------------------------------------------------------------------------------
+        # Without file or GPS control, just a standard takeoff and landing happens.    
+        #-------------------------------------------------------------------------------------------
+        pass
+
+    #-----------------------------------------------------------------------------------------------
+    # Start up the Sweep and GPS processes if installed
+    #-----------------------------------------------------------------------------------------------
+    running = True
+    try:
+        sweep_started = False
+        gps_started = False
+
+        #-------------------------------------------------------------------------------------------
+        # Kick off sweep if necessary
+        #-------------------------------------------------------------------------------------------
+        if sweep_installed:
+            sweepp = SweepManager()
+            sweep_fd = sweepp.sweep_fifo.fileno()
+            poll.register(sweep_fd, select.POLLIN | select.POLLPRI)
+            sweep_started = True
+
+        #-------------------------------------------------------------------------------------------
+        # Kick off GPS if necessary
+        #-------------------------------------------------------------------------------------------
+        if gps_installed:
+            gpsp = GPSManager()
+            gps_fd = gpsp.gps_fifo.fileno()
+            poll.register(gps_fd, select.POLLIN | select.POLLPRI)
+            gps_started = True
+    except:
+        #-------------------------------------------------------------------------------------------
+        # By setting this, we drop through the big while running the flight plans, and immediately
+        # send a finished message to the autopilot processor
+        #-------------------------------------------------------------------------------------------
+        running = False
 
     #-----------------------------------------------------------------------------------------------
     # Loop for the period of the flight defined by the flight plan contents
     #-----------------------------------------------------------------------------------------------
-    pack_format = '=3f?20s?' # edx, edy and edz float targets, bool phase change, string state name, bool running
-
+    pack_format = '=3f20s?' # edx, edy and edz float targets, string state name, bool running
+    log = open("autopilot.log", "wb")
     try:
-        with io.open("/dev/shm/autopilot_stream", mode = "wb", buffering = 0) as autopilot_fifo:
-            running = True
-            update_time = 0.1 # seconds
-            prev_phase = []
-            elapsed_time = 0.0
-            total_time = 0.0
-            for phase in active_fp:
-                total_time += phase[PERIOD]
 
-            start_time = time.time()
-            while elapsed_time <= total_time:
+        #-------------------------------------------------------------------------------------------
+        # Off we go!
+        #-------------------------------------------------------------------------------------------
+        with io.open("/dev/shm/autopilot_stream", mode = "wb", buffering = 0) as autopilot_fifo:
+            
+            update_time = 0.1 # seconds
+            phase = []
+            prev_phase = []
+
+            #--------------------------------------------------------------------------------------
+            # Do not 'break' out of this loop; this will skip the else at the end doing post successfuk
+            # flight cleanup.
+            #--------------------------------------------------------------------------------------
+            active_fp = takeoff_fp
+            fp_changed = True
+            while running:
+
+                #-----------------------------------------------------------------------------------
+                # If there's a new flight plan, reset the timings
+                #-----------------------------------------------------------------------------------
+                if fp_changed:
+                    fp_changed = False 
+                    start_time = time.time()
+                    elapsed_time = 0.0
 
                 #-----------------------------------------------------------------------------------
                 # How long is it since we were last here?  Based on that, how long should we sleep (if
@@ -2090,39 +2211,35 @@ def RecordAutopilot(flight_plan, motion_rate, sweep_installed):
                 results = poll.poll(sleep_time * 1000)
 
                 #----------------------------------------------------------------------------------
-                # Placeholder for Sweep and GPS data receipt
+                # Check whether there's input from Sweep or GPS to trigger a flight plan change
                 #----------------------------------------------------------------------------------
                 for fd, event in results:
                     if sweep_installed and fd == sweep_fd:
                         try:
                             sweep_critical, sweep_warning, sweep_distance, sweep_direction = sweepp.read()
 
-                            if sweep_critical and active_fp != abort_fp:
-                                print "SWEEP ABORT: DISTANCE %fm; DIRECTION %do" % (sweep_distance, sweep_direction * 180 / math.pi)
+                            if sweep_critical and active_fp != landing_fp:
 
                                 #-------------------------------------------------------------------
                                 # What target height has the flight achieved so far? Use this to
                                 # determine how long the descent must be at fixed velocity of 0.25m/s
                                 #-------------------------------------------------------------------
-                                descent_time = edz_target / 0.25
+                                descent_time = edz_target / 0.3
 
                                 #-------------------------------------------------------------------
-                                # Build the DESCENT, STOP abort flight plan based upon the
-                                # current height.
-                                #AB! WIBNI there's a RETREAT state first, where the direction
-                                #AB! is the opposite direction of the obstruction detected.
+                                # Override that standard landing_fp to this custom one.
                                 #-------------------------------------------------------------------
-                                abort_fp.append((0.0, 0.0, -0.25, descent_time, "ABORT (%.2fm)" % edz_target))
-                                abort_fp.append((0.0, 0.0, 0.0, 0.0, "STOP"))
-                                active_fp = abort_fp
+                                landing_fp.append((0.0, 0.0, -0.3, descent_time, "ABORT (%.2fm)" % edz_target))
 
-                                #-------------------------------------------------------------------
-                                # Need to reset time to start this new flight plan
-                                #-------------------------------------------------------------------
-                                total_time = descent_time
-                                start_time = time.time()
-                                elapsed_time = 0.0
-                                print "==============OA ABORT==============="
+                                #==================================================================#
+                                #                        FLIGHT PLAN CHANGE                        #
+                                #==================================================================#
+                                log.write("AP: ABORT FLIGHT\n")
+                                active_fp = landing_fp
+                                fp_changed = True
+                                #===================================================================
+                                #                        FLIGHT PLAN CHANGE                        #
+                                #===================================================================
 
                             elif sweep_warning:
                                 #-------------------------------------------------------------------
@@ -2132,12 +2249,212 @@ def RecordAutopilot(flight_plan, motion_rate, sweep_installed):
                                 pass
 
                         except AssertionError as e:
-                            print "FMR SWEEP"
-                            break
+                            '''
+                            #GPS: Would it be better to set up landing, or is FINISHED / STOP better
+                            #GPS: as something is seriously wrong with object detection?  We MUST
+                            #GPS: do either a landing or abort here; FINISHED will hover if not
+                            #GPS: landed first.
+                            '''
+                            running = False
+                            continue
+
+                    if gps_installed and fd == gps_fd:
+                        #---------------------------------------------------------------------------
+                        # Run the GPS Processor, and convert response to X, Y coordinate in earth NSEW
+                        # frame.
+                        #---------------------------------------------------------------------------
+                        try:
+                            current_gps = gpsp.read()
+                            current_lat, current_lon, current_alt, current_sats = current_gps
+
+                            #-----------------------------------------------------------------------
+                            # If we aren't using the GPS flight plan, then move to the next 
+                            # poll.poll() results list (if any) - note that doing the read above is 
+                            # necessary notheless to flush the FIFO.
+                            #-----------------------------------------------------------------------
+                            if not gps_control:
+                                continue
+
+                            #-----------------------------------------------------------------------
+                            # If we're currently not using a GPS flightplan, keep GPS processing
+                            # out of it.
+                            #-----------------------------------------------------------------------
+                            if active_fp != gps_locating_fp and active_fp != gps_tracking_fp:
+                                continue
+
+                            #-----------------------------------------------------------------------
+                            # If the active_fp is the gps_locating_fp, then get on with satellite
+                            # acquisition.  
+                            #-----------------------------------------------------------------------
+                            if active_fp == gps_locating_fp:
+
+                                if current_sats >= MIN_SATS:
+                                    #--------------------------------------------------------------#
+                                    # Set target to current here will trigger an update from the
+                                    # waypoint list lower down.
+                                    #--------------------------------------------------------------#
+                                    target_gps = current_gps
+                                    target_lat, target_lon, target_alt, target_sats = target_gps
+
+                                    #==============================================================#
+                                    #                       FLIGHT PLAN CHANGE                     #
+                                    #==============================================================#
+                                    log.write("AP: GPS TRACKING\n")
+                                    active_fp = gps_tracking_fp
+                                    fp_changed = True
+                                    #==============================================================#
+                                    #                       FLIGHT PLAN CHANGE                     #
+                                    #==============================================================#
+
+                                elif time.time() - sats_search_start > 60.0:
+                                    #==============================================================#
+                                    #                       FLIGHT PLAN CHANGE                     #
+                                    #==============================================================#
+                                    log.write("AP: GPS SATS SHORTAGE, LANDING...\n")
+                                    active_fp = landing_fp
+                                    fp_changed = True
+                                    #==============================================================#
+                                    #                       FLIGHT PLAN CHANGE                     #
+                                    #==============================================================#
+
+                                    #---------------------------------------------------------------
+                                    # Skip past the GPS processing  
+                                    #---------------------------------------------------------------
+                                    continue
+                                else:
+                                    #---------------------------------------------------------------
+                                    # How many satellites do we have so far?
+                                    #---------------------------------------------------------------
+                                    continue
+
+                            #-----------------------------------------------------------------------
+                            # Have we reached our destination?  Check for next waypoint or land.  By 
+                            # this point we should only be runniing the gps_tracking_fp
+                            #-----------------------------------------------------------------------
+                            assert (active_fp == gps_tracking_fp), "FSM state error"
+
+                            #-----------------------------------------------------------------------
+                            # First, make sure the new data comes from enough satellites
+                            #-----------------------------------------------------------------------
+                            if current_sats < MIN_SATS:
+                                #==============================================================#
+                                #                      FLIGHT PLAN CHANGE                      #
+                                #==============================================================#
+                                log.write("AP: GPS TOO FEW SATS, LANDING...\n")
+                                active_fp = landing_fp
+                                fp_changed = True
+                                #==============================================================#
+                                #                      FLIGHT PLAN CHANGE                      #
+                                #==============================================================#
+
+
+                            #-----------------------------------------------------------------------
+                            # Latitude = North (+) / South (-) - 0.0 running E/W around the equator;
+                            #            range is +/- 90 degrees
+                            # Longitude = East (+) / West (-) - 0.0 running N/S through Greenwich;
+                            #             range is +/- 180 degrees
+                            #
+                            # With a base level longitude and latitude in degrees, we can calculate the
+                            # current X and Y coordinates in meters using equirectangular approximation:
+                            #
+                            # ns = movement North / South - movement in a northerly direction is positive
+                            # ew = movement East / West - movement in an easterly direction is positive
+                            # R = average radius of earth in meters = 6,371,000 meters
+                            #
+                            # ns = (lat2 - lat1) * R meters
+                            # ew = (long2 - long1) * cos ((lat1 + lat2) / 2) * R meters
+                            #
+                            # Note longitude / latitude are in degrees and need to be converted into
+                            # radians i.e degrees * pi / 180 both for the cos and also the EARTH_RADIUS scale
+                            #
+                            # More at http://www.movable-type.co.uk/scripts/latlong.html
+                            #
+                            #-----------------------------------------------------------------------
+                            target_ns = (target_lat - current_lat) * EARTH_RADIUS * math.pi / 180
+                            target_ew = (target_lon - current_lon) * math.cos((target_lat + current_lat) * math.pi / 360) * EARTH_RADIUS * math.pi / 180
+                            target_direction = math.atan2(target_ew, target_ns)
+
+                            distance = math.pow((math.pow(target_ns, 2) + math.pow(target_ew, 2)), 0.5)
+                            if distance < 1.0: # meters
+                                if len(gps_waypoints) > 0:
+                                    #---------------------------------------------------------------
+                                    # Move to the next waypoint target                                
+                                    #---------------------------------------------------------------
+                                    gps_waypoint = gps_waypoints.pop(0)
+                                    log.write("AP: GPS NEW WAYPOINT\n")
+                                    target_gps = gps_waypoint
+
+                                else:
+                                    #==============================================================#
+                                    #                      FLIGHT PLAN CHANGE                      #
+                                    #==============================================================#
+                                    log.write("AP: GPS @ TARGET, LANDING...\n")
+                                    active_fp = landing_fp
+                                    fp_changed = True
+                                    #==============================================================#
+                                    #                      FLIGHT PLAN CHANGE                      #
+                                    #==============================================================#
+
+                            #-----------------------------------------------------------------------
+                            # Update the target direction based upon where we are now.
+                            #-----------------------------------------------------------------------
+                            if active_fp == gps_tracking_fp:
+                                #-------------------------------------------------------------------
+                                # Yaw target based on quad IMU not GPS POV.
+                                #-------------------------------------------------------------------
+                                yaw_target = ((initial_orientation - target_direction) + math.pi) % (2 * math.pi) - math.pi
+
+                                s_yaw = math.sin(yaw_target)
+                                c_yaw = math.cos(yaw_target)
+
+                                x = c_yaw * 0.3 # evx_target
+                                y = s_yaw * 0.3 # evx_target
+
+                                #------------------------------------------------------------------
+                                # Half second pause for thought, then new distance / direction.
+                                #------------------------------------------------------------------
+                                gps_tracking_fp = [(0.0, 0.0, 0.0, 0.5, "P4T"), 
+                                                   (x, y, 0.0, 3600, "GPS TARGET %dm %do" % (int(round(distance)), int(round(yaw_target * 180 / math.pi))))]
+
+                                #==================================================================#
+                                #                        FLIGHT PLAN CHANGE                        #
+                                #==================================================================#
+                                log.write("AP: GPS TRACKING UPDATE\n")
+                                active_fp = gps_tracking_fp
+                                fp_changed = True
+                                #==================================================================#
+                                #                        FLIGHT PLAN CHANGE                        #
+                                #==================================================================#
+
+                        except AssertionError as e:
+                            #-----------------------------------------------------------------------
+                            # If there's a GPS error, flip to landing fp
+                            #-----------------------------------------------------------------------
+                            print e
+
+                            #======================================================================#
+                            #                          FLIGHT PLAN CHANGE                          #
+                            #======================================================================#
+                            log.write("AP: GPS EXCEPTION, LANDING...\n")
+                            active_fp = landing_fp
+                            fp_changed = True
+                            #======================================================================#
+                            #                          FLIGHT PLAN CHANGE                          #
+                            #======================================================================#
+
+                
+                else:
+                    #-------------------------------------------------------------------------------
+                    # Finished the poll.poll() results processing; has the world changed beneath our feet?
+                    # If so, head back to the top "while running:" to reset flight plan timings if 
+                    # there's been a fp change.
+                    #-------------------------------------------------------------------------------
+                    if fp_changed: 
+                        continue # Right back to the top with the "while running:"
 
                 #-----------------------------------------------------------------------------------
-                # Based on the elapsed time since the flight started, find which of the flight plan
-                # phases we are in.
+                # Based on the elapsed time since the flight plan started, find which of the flight
+                # plan phases we are in.
                 #-----------------------------------------------------------------------------------
                 phase_time = 0.0
                 for phase in active_fp:
@@ -2145,7 +2462,77 @@ def RecordAutopilot(flight_plan, motion_rate, sweep_installed):
                     if elapsed_time <= phase_time:
                         break
                 else:
-                    running = False
+                    #-------------------------------------------------------------------------------
+                    # We're fallen out the end of one flight plan - change active_fp to the next in
+                    # line.
+                    #-------------------------------------------------------------------------------
+                    if active_fp == takeoff_fp:
+                        if gps_installed and gps_control:
+                            #-----------------------------------------------------------------------
+                            # Hover while sat hunting
+                            #-----------------------------------------------------------------------
+                            active_fp = gps_locating_fp
+
+                            #-----------------------------------------------------------------------
+                            # Take a timestamp of this transition; it's used later to see whether we've
+                            # been unable to find enough satellites in 60s
+                            #-----------------------------------------------------------------------
+                            sats_search_start = time.time()
+                            log.write("AP: # SATS: ...\n")
+
+                        elif file_control:
+                            log.write("AP: FILE FLIGHT PLAN\n")
+                            active_fp = file_fp
+
+                        else:
+                            log.write("AP: LANDING...\n")
+                            active_fp = landing_fp
+
+                    elif active_fp == gps_locating_fp:
+                        #---------------------------------------------------------------------------
+                        # We've dropped off the end of the satellite acquisition flight plan i.e. it's
+                        # timed out without a good result.  Swap to landing.       
+                        #---------------------------------------------------------------------------
+                        log.write("AP: GPS SATS TIMEOUT, LANDING...\n")
+                        active_fp = landing_fp
+
+                    elif active_fp == gps_tracking_fp:
+                        #---------------------------------------------------------------------------
+                        # We're not going to get here as the tracking fp is set to 1 hour, and swaps
+                        # fp above when it reaches it's GPS target.  Nevertheless, lets include it.
+                        # Swap to landing.       
+                        #---------------------------------------------------------------------------
+                        log.write("AP: GPS TRACKING TIMEOUT, LANDING...\n")
+                        active_fp = landing_fp
+
+                    elif active_fp == file_fp:
+                        #---------------------------------------------------------------------------
+                        # We've finished the hard coded file flight plan, time to land.
+                        #---------------------------------------------------------------------------
+                        log.write("AP: FILE COMPLETE, LANDING...\n")
+                        active_fp = landing_fp
+
+                    elif active_fp != landing_fp:
+                        #---------------------------------------------------------------------------
+                        # This shouldn't never get hit; finished flight plans all have next steps 
+                        # above, but may as well cover it.
+                        #---------------------------------------------------------------------------
+                        log.write("AP: UNEXPLAINED, LANDING...\n")
+                        active_fp = landing_fp
+
+                    elif active_fp == landing_fp:
+                        #---------------------------------------------------------------------------
+                        # If we've finished the landing flight plan, the autopilot's job is done.
+                        #---------------------------------------------------------------------------
+                        log.write("AP: LANDING COMPLETE\n")
+                        running = False
+
+                    #-------------------------------------------------------------------------------
+                    # After falling through to the next flight plan, reset the timing and go back right
+                    # to the start.
+                    #-------------------------------------------------------------------------------
+                    fp_changed = True
+                    continue # Right back to the top with the "while running:"
 
                 #-----------------------------------------------------------------------------------
                 # Have we crossed into a new phase of the flight plan? Log it if so.
@@ -2169,17 +2556,16 @@ def RecordAutopilot(flight_plan, motion_rate, sweep_installed):
                 edz_target += evz_target * delta_time
 
                 #-----------------------------------------------------------------------------------
-                # No point updating the main processor if nothing has changed.
+                # No point updating the main processor velocities if nothing has changed.
                 #-----------------------------------------------------------------------------------
                 if not phase_changed:
                     continue
 
-                print "AP phase change: %s" % phase_name
+                log.write("AP: PHASE CHANGE: %s\n" % phase_name)
                 output = struct.pack(pack_format,
                                      evx_target,
                                      evy_target,
                                      evz_target,
-                                     phase_changed,
                                      phase_name,
                                      running)
 
@@ -2187,10 +2573,19 @@ def RecordAutopilot(flight_plan, motion_rate, sweep_installed):
 
             else:
                 #-----------------------------------------------------------------------------------
-                # Ideally the end of flight processing should be here, but duplicates lots from above
-                # for no benefit
+                # We've dropped out of the end of all flight plans - let the motion processor know we
+                # are done.
                 #-----------------------------------------------------------------------------------
-                pass
+                log.write("AP: FINISHED\n")
+                output = struct.pack(pack_format,
+                                     0.0,
+                                     0.0,
+                                     0.0,
+                                     "FINISHED",
+                                     False)
+
+                autopilot_fifo.write(output)
+
 
     except KeyboardInterrupt as e:
         #-------------------------------------------------------------------------------------------
@@ -2200,15 +2595,29 @@ def RecordAutopilot(flight_plan, motion_rate, sweep_installed):
         if not autopilot_fifo.closed:
             print "Autopilot FIFO not closed! WTF!"
 
+    except Exception as e:
+        log.write("AP: UNIDENTIFIED EXCEPTION: %s\n" % e)        
+
     finally:
         #-------------------------------------------------------------------------------------------
         # Cleanup Sweep if installed.
         #-------------------------------------------------------------------------------------------
-        if sweep_installed:
+        if sweep_installed and sweep_started:
             print "Stopping Sweep... ",
             sweepp.cleanup()
+            poll.unregister(sweep_fd)
             print "stopped."
 
+        #-------------------------------------------------------------------------------------------
+        # Cleanup GPS if installed.
+        #-------------------------------------------------------------------------------------------
+        if gps_installed and gps_started:
+            print "Stopping GPS... ",
+            gpsp.cleanup()
+            poll.unregister(gps_fd)
+            print "stopped."
+
+        log.close()    
 
 
 ####################################################################################################
@@ -2216,15 +2625,15 @@ def RecordAutopilot(flight_plan, motion_rate, sweep_installed):
 # Process the Autopilot data.
 #
 ####################################################################################################
-class AutopilotProcessor():
+class AutopilotManager():
 
-    def __init__(self, flight_plan, motion_rate, sweep_installed):
+    def __init__(self, sweep_installed, gps_installed, compass_installed, initial_orientation, file_control, gps_control, fp_filename):
         #-------------------------------------------------------------------------------------------
         # Setup a shared memory based data stream for the Sweep output
         #-------------------------------------------------------------------------------------------
         os.mkfifo("/dev/shm/autopilot_stream")
 
-        self.autopilot_process = subprocess.Popen(["python", __file__, "AUTOPILOT", flight_plan, str(motion_rate), "True" if sweep_installed else "False"], preexec_fn =  Daemonize)
+        self.autopilot_process = subprocess.Popen(["python", __file__, "AUTOPILOT", "%s" % sweep_installed, "%s" % gps_installed, "%s" % compass_installed, "%f" % initial_orientation, "%s" % file_control, "%s" % gps_control, fp_filename], preexec_fn =  Daemonize)
         while True:
             try:
                 self.autopilot_fifo = io.open("/dev/shm/autopilot_stream", mode="rb")
@@ -2233,7 +2642,7 @@ class AutopilotProcessor():
             else:
                 break
 
-        self.unpack_format = "=3f?20s?"
+        self.unpack_format = "=3f20s?"
         self.unpack_size = struct.calcsize(self.unpack_format)
 
     def flush(self):
@@ -2247,16 +2656,19 @@ class AutopilotProcessor():
     def read(self):
         raw_bytes = self.autopilot_fifo.read(self.unpack_size)
         assert (len(raw_bytes) == self.unpack_size), "Incomplete data received from Autopilot reader"
-        evx_target, evy_target, evz_target, state_change, state_name, keep_looping = struct.unpack(self.unpack_format, raw_bytes)
-        return evx_target, evy_target, evz_target, state_change, state_name, keep_looping
+        evx_target, evy_target, evz_target, state_name, keep_looping = struct.unpack(self.unpack_format, raw_bytes)
+        return evx_target, evy_target, evz_target, state_name, keep_looping
 
     def cleanup(self):
         #-------------------------------------------------------------------------------------------
         # Stop the Autopilot process if it's still running, and cleanup the FIFO.
         #-------------------------------------------------------------------------------------------
-        if self.autopilot_process.poll() == None:
-            self.autopilot_process.send_signal(signal.SIGINT)
-            self.autopilot_process.wait()
+        try:
+            if self.autopilot_process.poll() == None:
+                self.autopilot_process.send_signal(signal.SIGINT)
+                self.autopilot_process.wait()
+        except KeyboardInterrupt as e:
+            pass        
         self.autopilot_fifo.close()
         os.unlink("/dev/shm/autopilot_stream")
 
@@ -2269,14 +2681,14 @@ class AutopilotProcessor():
 # bytes SAD (sum of absolute differences).
 #
 ####################################################################################################
-def RecordVideo(frame_width, frame_height, frame_rate):
+def VideoProcessor(frame_width, frame_height, frame_rate):
     with picamera.PiCamera() as camera:
         camera.resolution = (frame_width, frame_height)
         camera.framerate = frame_rate
 
-        '''
-        #AB! I have no idea what level is best in range 0 - 100?
-        '''
+        #-------------------------------------------------------------------------------------------
+        # 50% contrast seems to work well - completely arbitrary.
+        #-------------------------------------------------------------------------------------------
         camera.contrast = 50
 
         with io.open("/dev/shm/motion_stream", mode = "wb", buffering = 0) as vofi:
@@ -2289,12 +2701,13 @@ def RecordVideo(frame_width, frame_height, frame_rate):
             finally:
                 camera.stop_recording()
 
+
 ####################################################################################################
 #
 # Class to process video frame macro-block motion tracking.
 #
 ####################################################################################################
-class VideoMotionProcessor:
+class VideoManager:
 
     def __init__(self, motion_fifo, yaw_increment):
         self.motion_fifo = motion_fifo
@@ -2559,7 +2972,7 @@ class Quadcopter:
             self.camera_installed = True
             self.gll_installed = True
             self.gps_installed = True
-            self.sweep_installed = True
+            self.sweep_installed = False 
             X8 = True
 
         #-------------------------------------------------------------------------------------------
@@ -2752,12 +3165,12 @@ class Quadcopter:
             sampling_rate = 1000    # Hz
             motion_rate = 100       # Hz
 
-        glpf = 1                    #AB: 184Hz    
+        glpf = 1                    #AB: 184Hz
 
         #-------------------------------------------------------------------------------------------
         # This is not for antialiasing: the accelerometer low pass filter happens between the ADC
-        # rate and our IMU sampling rate.  ADC rate is 1kHz through this case.  However, I've seen poor 
-        # behavious in double integration when IMU sampling rate is 500Hz and alpf = 460Hz. 
+        # rate and our IMU sampling rate.  ADC rate is 1kHz through this case.  However, I've seen poor
+        # behavious in double integration when IMU sampling rate is 500Hz and alpf = 460Hz.
         #-------------------------------------------------------------------------------------------
         if sampling_rate == 1000:   #AB: SRD = 0 (1kHz)
             alpf = 0                #AB: alpf = 460Hz
@@ -2766,15 +3179,15 @@ class Quadcopter:
         elif sampling_rate >= 200:  #AB: SRD = 2, 3, 4 (333, 250, 200Hz)
             alpf = 2                #AB: alpf = 92Hz
         elif sampling_rate >= 100:  #AB: SRD = 5, 6, 7, 8, 9 (166, 143, 125, 111, 100Hz)
-            alpf = 3                #ABL alpf = 41Hz    
+            alpf = 3                #ABL alpf = 41Hz
         else:
             #--------------------------------------------------------------------------------------
-            # There's no point going less than 100Hz IMU sampling; we need about 100Hz motion 
-            # processing for an level of stability. 
+            # There's no point going less than 100Hz IMU sampling; we need about 100Hz motion
+            # processing for some degree of level of stability.
             #--------------------------------------------------------------------------------------
             print "SRD + alpf useless: forget it!"
             return
-                 
+
         global mpu6050
         mpu6050 = MPU6050(0x68, alpf, glpf)
 
@@ -2809,13 +3222,6 @@ class Quadcopter:
             global gll
             gll = GLL(rate = self.tracking_rate)
 
-        #-------------------------------------------------------------------------------------------
-        # Initialise GPS
-        #-------------------------------------------------------------------------------------------
-        if self.gps_installed:
-            global gpsp
-            gpsp = GPSProcessor()
-
     #===============================================================================================
     # Keyboard input between flights for CLI update etc
     #===============================================================================================
@@ -2839,13 +3245,13 @@ class Quadcopter:
         #-------------------------------------------------------------------------------------------
         print "Just checking a few details.  Gimme a few seconds..."
         try:
-            flying, flight_plan, calibrate_0g, cc_compass, yaw_control, hover_pwm, vdp_gain, vdi_gain, vdd_gain, vvp_gain, vvi_gain, vvd_gain, hdp_gain, hdi_gain, hdd_gain, hvp_gain, hvi_gain, hvd_gain, prp_gain, pri_gain, prd_gain, rrp_gain, rri_gain, rrd_gain, yrp_gain, yri_gain, yrd_gain, test_case, rtf_period, atau, diagnostics = CheckCLI(self.argv)
+            flying, fp_filename, calibrate_0g, cc_compass, yaw_control, file_control, gps_control, add_waypoint, clear_waypoints, hover_pwm, vdp_gain, vdi_gain, vdd_gain, vvp_gain, vvi_gain, vvd_gain, hdp_gain, hdi_gain, hdd_gain, hvp_gain, hvi_gain, hvd_gain, prp_gain, pri_gain, prd_gain, rrp_gain, rri_gain, rrd_gain, yrp_gain, yri_gain, yrd_gain, test_case, rtf_period, atau, diagnostics = CheckCLI(self.argv)
         except ValueError, err:
             print "Command line error: %s" % err
             return
 
-        logger.warning("fly = %s, flight plan = %s, calibrate_0g = %d, check / calibrate compass = %s, yaw_control = %s, hover_pwm = %d, vdp_gain = %f, vdi_gain = %f, vdd_gain= %f, vvp_gain = %f, vvi_gain = %f, vvd_gain= %f, hdp_gain = %f, hdi_gain = %f, hdd_gain = %f, hvp_gain = %f, hvi_gain = %f, hvd_gain = %f, prp_gain = %f, pri_gain = %f, prd_gain = %f, rrp_gain = %f, rri_gain = %f, rrd_gain = %f, yrp_gain = %f, yri_gain = %f, yrd_gain = %f, test_case = %d, rtf_period = %f, atau = %f, diagnostics = %s",
-                flying, flight_plan, calibrate_0g, cc_compass, yaw_control, hover_pwm, vdp_gain, vdi_gain, vdd_gain, vvp_gain, vvi_gain, vvd_gain, hdp_gain, hdi_gain, hdd_gain, hvp_gain, hvi_gain, hvd_gain, prp_gain, pri_gain, prd_gain, rrp_gain, rri_gain, rrd_gain, yrp_gain, yri_gain, yrd_gain, test_case, rtf_period, atau, diagnostics)
+        logger.warning("fly = %s, fp_filename = %s, calibrate_0g = %d, check / calibrate compass = %s, yaw_control = %s, file_control = %s, gps_control = %s, add_waypoint = %s, clear_waypoints = %s, hover_pwm = %d, vdp_gain = %f, vdi_gain = %f, vdd_gain= %f, vvp_gain = %f, vvi_gain = %f, vvd_gain= %f, hdp_gain = %f, hdi_gain = %f, hdd_gain = %f, hvp_gain = %f, hvi_gain = %f, hvd_gain = %f, prp_gain = %f, pri_gain = %f, prd_gain = %f, rrp_gain = %f, rri_gain = %f, rrd_gain = %f, yrp_gain = %f, yri_gain = %f, yrd_gain = %f, test_case = %d, rtf_period = %f, atau = %f, diagnostics = %s",
+                flying, fp_filename, calibrate_0g, cc_compass, yaw_control, file_control, gps_control, add_waypoint, clear_waypoints, hover_pwm, vdp_gain, vdi_gain, vdd_gain, vvp_gain, vvi_gain, vvd_gain, hdp_gain, hdi_gain, hdd_gain, hvp_gain, hvi_gain, hvd_gain, prp_gain, pri_gain, prd_gain, rrp_gain, rri_gain, rrd_gain, yrp_gain, yri_gain, yrd_gain, test_case, rtf_period, atau, diagnostics)
 
         #-------------------------------------------------------------------------------------------
         # Calibrate gravity or use previous settings
@@ -2853,7 +3259,7 @@ class Quadcopter:
         if calibrate_0g:
             if not mpu6050.calibrate0g():
                 print "0g calibration error, abort"
-            return
+                return
         elif not mpu6050.load0gCalibration():
             print "0g calibration data not found."
             return
@@ -2871,6 +3277,43 @@ class Quadcopter:
                 return
         elif cc_compass:
             print "Compass not installed, check / calibration not possible."
+            return
+
+        #-------------------------------------------------------------------------------------------
+        # Sanity check that if we are using a GPS flight plan, then GPS needs to have been installed.
+        #-------------------------------------------------------------------------------------------
+        if (gps_control or add_waypoint) and not self.gps_installed:
+            print "Can't do GPS prcocessing without GPS installed!"
+            return
+
+        #-------------------------------------------------------------------------------------------
+        # Add GPS waypoint.
+        #-------------------------------------------------------------------------------------------
+        if add_waypoint:
+            gpsp = GPSManager()
+            try:
+                lat, lon, alt, sats = gpsp.acquireSatellites()
+            except EnvironmentError as e:
+                print e
+            else:
+                with open("GPSWaypoints.csv", "ab") as gps_waypoints:
+                    gps_waypoints.write("%f, %f, %f, %d\n" % (lat, lon, alt, sats))
+                    '''
+                    #GPS: Is there better resolution for printing than %f?
+                    '''
+            finally:
+                gpsp.cleanup()
+                gpsp = None
+            return
+
+        #-------------------------------------------------------------------------------------------
+        # Clear GPS waypoints.
+        #-------------------------------------------------------------------------------------------
+        if clear_waypoints:
+            try:
+                os.remove("GPSWaypoints.csv")
+            except OSError:
+                pass            
             return
 
         #-------------------------------------------------------------------------------------------
@@ -3064,12 +3507,6 @@ class Quadcopter:
         yr_pid = PID(PID_YR_P_GAIN, PID_YR_I_GAIN, PID_YR_D_GAIN)
 
         #-------------------------------------------------------------------------------------------
-        # Set up the global constants - gravity in meters per second squared
-        #-------------------------------------------------------------------------------------------
-        GRAV_ACCEL = 9.80665
-        EARTH_RADIUS = 6371000 # meters
-
-        #-------------------------------------------------------------------------------------------
         # Set up the constants for motion fusion if we have lateral and vertical distance / velocity
         # sensors.
         # - vvf, hvf, vdf, hdf flag which must all be set to true for fusion to be triggered
@@ -3184,39 +3621,6 @@ class Quadcopter:
             poll.register(motion_fd, select.POLLIN | select.POLLPRI)
             logger.warning("Video @, %d, %d,  pixels, %d, fps", frame_width, frame_height, frame_rate)
 
-        #-------------------------------------------------------------------------------------------
-        # See how many satellites GPS can pick up.
-        #-------------------------------------------------------------------------------------------
-        gps_lat = 0.0
-        gps_lon = 0.0
-        gps_alt = 0.0
-        gps_sats = 0
-        gps_ns = 0.0
-        gps_ew = 0.0
-        gps_dalt = 0.0
-        if self.gps_installed:
-            print "Couple of seconds to set up the GPS..."
-
-            gps_fifo = gpsp.gps_fifo
-            gps_fd = gps_fifo.fileno()
-            poll.register(gps_fd, select.POLLIN | select.POLLPRI)
-
-            #---------------------------------------------------------------------------------------
-            # Get an initial GPS result.  If we don't get enough and the user is insistent we should
-            # the EnvironmentError is raised, and we abort the flight.  We're don't return here as
-            # we need to do the tidy up later at the end of the while self.keep_looping:
-            #---------------------------------------------------------------------------------------
-            try:
-                gps_lat, gps_lon, gps_alt, gps_sats = gpsp.acquireSatellites()
-            except EnvironmentError as e:
-                print e
-                self.keep_looping = False
-            base_lat = gps_lat
-            base_lon = gps_lon
-            base_alt = gps_alt
-
-            logger.warning("GPS location: latitude %f; longitude %f; altitude %f, satellites %d.", gps_lon, gps_lat, gps_alt, gps_sats)
-
         #--------------------------------------------------------------------------------------------
         # Last chance to change your mind about the flight if all's ok so far
         #--------------------------------------------------------------------------------------------
@@ -3233,52 +3637,13 @@ class Quadcopter:
         print "################################################################################"
         print ""
 
-        #-------------------------------------------------------------------------------------------
-        # Used for total flight length only
-        #-------------------------------------------------------------------------------------------
-        start_flight = time.time()
-
-        #-------------------------------------------------------------------------------------------
-        # Flush any OS FIFO content
-        #-------------------------------------------------------------------------------------------
-        gps_flush = 0
-        video_flush = 0
-        flushing = True
-        while flushing:
-            results = poll.poll(0.0)
-            for fd, event in results:
-
-                if self.gps_installed and fd == gps_fd:
-                    gps_flush += gpsp.flush()
-
-                if self.camera_installed and fd == motion_fd:
-                    video_flush += VideoMotionProcessor(motion_fifo, 0).flush()
-
-            else:
-                if len(results) == 0:
-                    flushing = False
-        else:
-            print "GPS Flush: %d" % gps_flush
-            print "Video Flush: %d" % video_flush
-
-        #-------------------------------------------------------------------------------------------
-        # Start the autopilot
-        #-------------------------------------------------------------------------------------------
-        app = AutopilotProcessor(flight_plan, motion_rate, self.sweep_installed)
-        autopilot_fifo = app.autopilot_fifo
-        autopilot_fd = autopilot_fifo.fileno()
-        poll.register(autopilot_fd, select.POLLIN | select.POLLPRI)
-
-
         ################################### INITIAL IMU READINGS ###################################
 
 
         #-------------------------------------------------------------------------------------------
-        # Flush the IMU FIFO and enable the FIFO overflow interrupt
+        # Get IMU takeoff info.
         #-------------------------------------------------------------------------------------------
-        GPIO.event_detected(GPIO_FIFO_OVERFLOW_INTERRUPT)
         mpu6050.flushFIFO()
-        mpu6050.enableFIFOOverflowISR()
 
         temp = mpu6050.readTemperature()
         logger.critical("IMU core temp (start): ,%f", temp / 333.86 + 21.0)
@@ -3350,15 +3715,32 @@ class Quadcopter:
         mgx = 0.0
         mgy = 0.0
         mgz = 0.0
+        cya_base = 0.0
 
         if self.compass_installed:
-            mgx, mgy, mgz = mpu6050.readCompass()
+            #---------------------------------------------------------------------------------------
+            # Take 100 samples at the sampling rate
+            #---------------------------------------------------------------------------------------
+            mgx_ave = 0.0
+            mgy_ave = 0.0
+            mgz_ave = 0.0
+            for ii in range(100):
+                mgx, mgy, mgz = mpu6050.readCompass()
+                mgx_ave += mgx
+                mgy_ave += mgy
+                mgz_ave += mgz
 
-            #-----------------------------------------------------------------------------------
+                time.sleep(1 / sampling_rate)
+
+            mgx = mgx_ave / 100    
+            mgy = mgy_ave / 100    
+            mgz = mgz_ave / 100    
+
+            #---------------------------------------------------------------------------------------
             # Rotate compass readings back to earth plan.  Note the compass coodintates are N,E
-            # positive, which is different to that from the IMU.  Overide the init yaw angle PID
-            # input and target with the new compass orientation values.
-            #-----------------------------------------------------------------------------------
+            # positive, which is different to that from the IMU forward / left.  Overide the init
+            # yaw angle PID input and target with the new compass orientation values.
+            #---------------------------------------------------------------------------------------
             cax, cay, caz = RotateVector(mgx, mgy, mgz, -pa, -ra, 0)
             cya_base = math.atan2(cax, cay)
             logger.critical("Initial orientation:, %f." % (cya_base * 180 / math.pi))
@@ -3366,10 +3748,19 @@ class Quadcopter:
 
         ######################################### GO GO GO! ########################################
 
+        #-------------------------------------------------------------------------------------------
+        # Start the autopilot - use compass angle plus magnetic declination angle (1o 5') to pass through the 
+        # take-off orientation angle wrt GPS / true north 
+        #-------------------------------------------------------------------------------------------
+        app = AutopilotManager(self.sweep_installed, self.gps_installed, self.compass_installed, cya_base + (1 + 5/60) * math.pi / 180, file_control, gps_control, fp_filename)
+        autopilot_fifo = app.autopilot_fifo
+        autopilot_fd = autopilot_fifo.fileno()
+        poll.register(autopilot_fd, select.POLLIN | select.POLLPRI)
 
         #-------------------------------------------------------------------------------------------
         # Set up the various timing constants and stats.
         #-------------------------------------------------------------------------------------------
+        start_flight = time.time()
         motion_dt = 0.0
         fusion_dt = 0.0
         sampling_loops = 0
@@ -3377,7 +3768,6 @@ class Quadcopter:
         fusion_loops = 0
         garmin_loops = 0
         video_loops = 0
-        gps_loops = 0
         autopilot_loops = 0
 
         #-------------------------------------------------------------------------------------------
@@ -3386,22 +3776,47 @@ class Quadcopter:
         if diagnostics:
             logger.warning("time, dt, loops, " +
                            "temperature, " +
-                           "latitude, longitude, altitude, satellites, north, east, height, " +
+#                           "latitude, longitude, altitude, satellites, north, east, height, " +
                            "mgx, mgy, mgz, cya, " +
 #                           "sweep proximity, sweep direction, " +
-                           "qdx_fuse, qdy_fuze, qdz_fuse, " +
+                           "qdx_fuse, qdy_fuse, qdz_fuse, " +
                            "qvx_fuse, qvy_fuse, qvz_fuse, " +
                            "edx_target, edy_target, edz_target, " +
                            "evx_target, evy_target, evz_target, " +
                            "qrx, qry, qrz, " +
                            "qax, qay, qaz, " +
                            "qgx, qgy, qgz, " +
-                           "pitch, roll, yaw" +
+                           "pitch, roll, yaw," +
 #                            "qdx_input, qdx_target, qvx_input, qvx_target, pa_input, pa_target, pr_input, pr_target, pr_out, " +
 #                            "qdy_input, qdy_target, qvy_input, qvy_target, ra_input, ra_target, rr_input, rr_target, rr_out, " +
 #                            "qdz_input, qdz_target, qvz_input, qvz_target, qvz_out, " +
 #                            "ya_input, ya_target, yr_input, yr_target, yr_out, " +
                            "FL PWM, FR PWM, BL PWM, BR PWM")
+
+        #-------------------------------------------------------------------------------------------
+        # Flush the video motion FIFO
+        #-------------------------------------------------------------------------------------------
+        video_flush = 0
+        flushing = True
+        while flushing:
+            results = poll.poll(0.0)
+            for fd, event in results:
+
+                if self.camera_installed and fd == motion_fd:
+                    video_flush += VideoManager(motion_fifo, 0).flush()
+
+            else:
+                if len(results) == 0:
+                    flushing = False
+        else:
+            print "Video Flush: %d" % video_flush
+
+        #-------------------------------------------------------------------------------------------
+        # Flush the IMU FIFO and enable the FIFO overflow interrupt
+        #-------------------------------------------------------------------------------------------
+        GPIO.event_detected(GPIO_FIFO_OVERFLOW_INTERRUPT)
+        mpu6050.flushFIFO()
+        mpu6050.enableFIFOOverflowISR()
 
         #===========================================================================================
         #
@@ -3475,49 +3890,8 @@ class Quadcopter:
                         # Run the Autopilot Processor to get the latest stage of the flight plan.
                         #---------------------------------------------------------------------------
                         autopilot_loops += 1
-                        evx_target, evy_target, evz_target, state_change, state_name, self.keep_looping = app.read()
-                        if state_change:
-                            logger.critical(state_name)
-
-
-                    if self.gps_installed and fd == gps_fd:
-                        #---------------------------------------------------------------------------
-                        # Run the GPS Processor, and convert response to X, Y coordinate in earth NSEW
-                        # frame.
-                        #---------------------------------------------------------------------------
-                        gps_loops += 1
-                        try:
-                            gps_lat, gps_lon, gps_alt, gps_sats = gpsp.read()
-
-                            #---------------------------------------------------------------------------
-                            # Latitude = North (+) / South (-) - 0.0 running E/W around the equator;
-                            #            range is +/- 90 degrees
-                            # Longitude = East (+) / West (-) - 0.0 running N/S through Greenwich;
-                            #             range is +/- 180 degrees
-                            #
-                            # With a base level longitude and latitude in degrees, we can calculate the
-                            # current X and Y coordinates in meters using equirectangular approximation:
-                            #
-                            # ns = movement North / South - movement in a northerly direction is positive
-                            # ew = movement East / West - movement in an easterly direction is positive
-                            # R = average radius of earth in meters = 6,371,000 meters
-                            #
-                            # ns = (long2 - long1) * cos ((lat1 + lat2) / 2) * R meters
-                            # ew = (lat2 - lat1) * R meters
-                            #
-                            # Note longitude / latitude are in degrees and need to be converted into
-                            # radians i.e degrees * pi / 180 both for the cos and also the EARTH_RADIUS scale
-                            #
-                            # More at http://www.movable-type.co.uk/scripts/latlong.html
-                            #
-                            #---------------------------------------------------------------------------
-                            gps_ns = (gps_lon - base_lon) * math.cos((gps_lat + base_lat) * math.pi / 360) * EARTH_RADIUS * math.pi / 180
-                            gps_ew = (gps_lat - base_lat) * EARTH_RADIUS * math.pi / 180
-                            gps_dalt = (gps_alt - base_alt)
-
-                        except AssertionError as e:
-                            print "FMR GPS"
-                            break
+                        evx_target, evy_target, evz_target, state_name, self.keep_looping = app.read()
+                        logger.critical(state_name)
 
                     if self.camera_installed and fd == motion_fd:
                         #---------------------------------------------------------------------------
@@ -3549,7 +3923,7 @@ class Quadcopter:
                         video_loops += 1
 
                         try:
-                            vmp = VideoMotionProcessor(motion_fifo, aya_increment)
+                            vmp = VideoManager(motion_fifo, aya_increment)
                             vmp.process()
                         except ValueError as e:
                             #-----------------------------------------------------------------------
@@ -3661,7 +4035,8 @@ class Quadcopter:
             # The temperature drifts throughout the flight, and if below about 20 degrees, this drift
             # causes major problems with double integration of accelerometer readings vs gravity.
             # However, because the flights are mostly fixed velocity = zero acceleration, a simple
-            # complementary filter can keep gravity in sync with this drift.
+            # complementary filter can keep gravity in sync with this drift.  Worth also checking
+            # Butterworth used in past?
             #---------------------------------------------------------------------------------------
             eax, eay, eaz = RotateVector(qax, qay, qaz, -pa, -ra, -ya)
             gtau = 10 # seconds
@@ -3737,7 +4112,19 @@ class Quadcopter:
                 cya = -((cya + math.pi) % (2 * math.pi) - math.pi)
 
                 '''
-                #AB! Fuse aya gyro increment and compase absolute
+                #AB! Compass and gyro can get nearly 180 out of sync between +/- 180; this needs 
+                #AB! omitting from the fusion.  Is this just a case of say adding the two together
+                #AB! adding the two together and ignoring differences nearly 360?  Defined "nearly"? 
+                #-----------------------------------------------------------------------------------
+                # Fuse compass with integrated gyro yaw very gently
+                #-----------------------------------------------------------------------------------
+                ytau = 10.0 # seconds
+                ytau_fraction = ytau / (ytau + motion_dt)
+                ya = ytau_fraction * ya + (1 - ytau_fraction) * cya
+                aya = ytau_fraction * aya + (1 - ytau_fraction) * cya
+
+                ya = (ya + math.pi) % (2 * math.pi) - math.pi
+                aya = (aya + math.pi) % (2 * math.pi) - math.pi
                 '''
 
 
@@ -3884,6 +4271,7 @@ class Quadcopter:
             edz_target += evz_target * motion_dt
             qdx_target, qdy_target, qdz_target = RotateVector(edx_target, edy_target, edz_target, pa, ra, ya)
 
+            '''
             #---------------------------------------------------------------------------------------
             # If we're doing yaw control, then from the iDrone POV, she's always flying forward, and
             # it's the responsibility of the yaw target to keep her facing in the right direction.
@@ -3891,6 +4279,7 @@ class Quadcopter:
             if yaw_control:
                 qdx_target = math.pow(math.pow(qdx_target, 2) + math.pow(qdy_target, 2), 0.5)
                 qdy_target = 0.0
+            '''    
 
 
             ########### QUAD FRAME VELOCITY / DISTANCE / ANGLE / ROTATION PID PROCESSING ###########
@@ -3983,8 +4372,8 @@ class Quadcopter:
             MAX_RATE = math.pi
             if yaw_control and abs(ya_target - aya) > math.pi / 9:
                 YAW_MAX_RATE = math.pi / 3
-            else:     
-                YAW_MAX_RATE = MAX_RATE 
+            else:
+                YAW_MAX_RATE = MAX_RATE
 
             pr_target = pr_target if abs(pr_target) < MAX_RATE else (pr_target / abs(pr_target) * MAX_RATE)
             rr_target = rr_target if abs(rr_target) < MAX_RATE else (rr_target / abs(rr_target) * MAX_RATE)
@@ -4088,7 +4477,7 @@ class Quadcopter:
                 temp = mpu6050.readTemperature()
                 logger.warning("%f, %f, %d, " % (sampling_loops / sampling_rate, motion_dt, sampling_loops) +
                                "%f, " % (temp / 333.86 + 21) +
-                               "%f, %f, %f, %d, %f, %f, %f, " % (gps_lat, gps_lon, gps_alt, gps_sats, gps_ns, gps_ew, gps_dalt) +
+#                               "%f, %f, %f, %d, %f, %f, %f, " % (gps_lat, gps_lon, gps_alt, gps_sats, gps_ns, gps_ew, gps_dalt) +
                                "%f, %f, %f, %f, " % (mgx, mgy, mgz, cya * 180 / math.pi) +
 #                               "%f, %f, " % (sweep_distance, sweep_direction * 180 / math.pi) +
                                "%f, %f, %f, " % (qdx_fuse, qdy_fuse, qdz_fuse) +
@@ -4110,7 +4499,6 @@ class Quadcopter:
         logger.critical("Motion processing loops: %d", motion_loops)
         logger.critical("Fusion processing loops: %d", fusion_loops)
         logger.critical("LiDAR processing loops: %d", garmin_loops)
-        logger.critical("GPS processing loops: %d", gps_loops)
         logger.critical("Autopilot processing loops: %d.", autopilot_loops)
         if sampling_loops != 0:
             logger.critical("Video frame rate: %f", video_loops * sampling_rate / sampling_loops )
@@ -4132,23 +4520,24 @@ class Quadcopter:
         # Unregister poll registrars
         #-------------------------------------------------------------------------------------------
         poll.unregister(autopilot_fd)
-        if self.gps_installed:
-            poll.unregister(gps_fd)
         if self.camera_installed:
             poll.unregister(motion_fd)
 
         #-------------------------------------------------------------------------------------------
-        # Stop the camera motion processing
+        # Stop the Camera process if it's still running, and clean up the FIFO.
         #-------------------------------------------------------------------------------------------
         if self.camera_installed:
             print "Stopping video... ",
-            video_process.send_signal(signal.SIGINT)
-            '''
-            #AB! video_process.wait() NEED TO TIDY THIS UP - COMMUNICATE OR SPEED UP VIDEO CYCLE?
-            '''
+            try:
+                if video_process.poll() == None:
+                    video_process.send_signal(signal.SIGINT)
+                    video_process.wait()
+            except KeyboardInterrupt as e:
+                pass
             motion_fifo.close()
             os.unlink("/dev/shm/motion_stream")
             print "stopped."
+
 
         #-------------------------------------------------------------------------------------------
         # Stop the autopilot
@@ -4164,14 +4553,6 @@ class Quadcopter:
     #
     ################################################################################################
     def shutdown(self):
-
-        #-------------------------------------------------------------------------------------------
-        # Stop the child GPS process
-        #-------------------------------------------------------------------------------------------
-        if self.gps_installed:
-            print "Stopping GPS... ",
-            gpsp.cleanup()
-            print "stopped."
 
         #-------------------------------------------------------------------------------------------
         # Stop the signal handler
@@ -4247,31 +4628,35 @@ if __name__ == '__main__':
             frame_width = int(sys.argv[2])
             frame_height = int(sys.argv[3])
             frame_rate = int(sys.argv[4])
-            RecordVideo(frame_width, frame_height, frame_rate)
+            VideoProcessor(frame_width, frame_height, frame_rate)
 
         #-------------------------------------------------------------------------------------------
         # Start the process recording GPS
         #-------------------------------------------------------------------------------------------
         elif sys.argv[1] == "GPS":
             assert (len(sys.argv) == 2), "Bad parameters for GPS"
-            RecordGPS()
+            GPSProcessor()
 
         #-------------------------------------------------------------------------------------------
         # Start the process recording Sweep
         #-------------------------------------------------------------------------------------------
         elif sys.argv[1] == "SWEEP":
             assert (len(sys.argv) == 2), "Bad parameters for Sweep"
-            RecordSweep()
+            SweepProcessor()
 
         #-------------------------------------------------------------------------------------------
         # Start the process recording Autopilot
         #-------------------------------------------------------------------------------------------
         elif sys.argv[1] == "AUTOPILOT":
-            assert (len(sys.argv) == 5), "Bad parameters for AUTOPILOT"
-            flight_plan = sys.argv[2]
-            motion_rate = int(sys.argv[3])
-            sweep_installed = True if (sys.argv[4] == "True") else False
-            RecordAutopilot(flight_plan, motion_rate, sweep_installed)
+            assert (len(sys.argv) == 9), "Bad parameters for AUTOPILOT"
+            sweep_installed = True if (sys.argv[2] == "True") else False
+            gps_installed = True if (sys.argv[3] == "True") else False
+            compass_installed = True if (sys.argv[4] == "True") else False
+            initial_orientation = float(sys.argv[5])
+            file_control = True if (sys.argv[6] == "True") else False
+            gps_control = True if (sys.argv[7] == "True") else False
+            fp_filename = sys.argv[8]
+            AutopilotProcessor(sweep_installed, gps_installed, compass_installed, initial_orientation, file_control, gps_control, fp_filename)
         else:
             assert (False), "Invalid process request."
 
