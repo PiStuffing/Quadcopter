@@ -308,8 +308,14 @@ class MPU6050:
         self.i2c = I2C(address)
         self.address = address
 
-        self.max_az = int(1 / self.__SCALE_ACCEL)
-        self.min_az = int(1 / self.__SCALE_ACCEL)
+        self.min_az = 0
+        self.max_az = 0
+        self.min_gx = 0
+        self.max_gx = 0
+        self.min_gy = 0
+        self.max_gy = 0
+        self.min_gz = 0
+        self.max_gz = 0
 
         self.ax_offset = 0.0
         self.ay_offset = 0.0
@@ -440,7 +446,6 @@ class MPU6050:
         #AB! Something odd here: can't clear the GPIO pin if the ISR is enabled, and then status read
         #AB! in that order
         '''
-
         self.i2c.write8(self.__MPU6050_RA_INT_ENABLE, 0x10)
         self.i2c.readU8(self.__MPU6050_RA_INT_STATUS)
 
@@ -472,8 +477,6 @@ class MPU6050:
         gy = 0.0
         gz = 0.0
 
-        batch_size = 6   # signed shorts: ax, ay, az, gx, gy, gz
-
         for ii in range(fifo_batches):
             sensor_data = []
             fifo_batch = self.i2c.readList(self.__MPU6050_RA_FIFO_R_W, 12)
@@ -492,11 +495,17 @@ class MPU6050:
             gy += sensor_data[4]
             gz += sensor_data[5]
 
-            if sensor_data[2] > self.max_az:
-                self.max_az = sensor_data[2]
+            self.max_az = self.max_az if sensor_data[2] < self.max_az else sensor_data[2]
+            self.min_az = self.min_az if sensor_data[2] > self.min_az else sensor_data[2]
 
-            if sensor_data[2] < self.min_az:
-                self.min_az = sensor_data[2]
+            self.max_gx = self.max_gx if sensor_data[3] < self.max_gx else sensor_data[3]
+            self.min_gx = self.min_gx if sensor_data[3] > self.min_gx else sensor_data[3]
+
+            self.max_gy = self.max_gy if sensor_data[4] < self.max_gy else sensor_data[4]
+            self.min_gy = self.min_gy if sensor_data[4] > self.min_gy else sensor_data[4]
+
+            self.max_gz = self.max_gz if sensor_data[5] < self.max_gz else sensor_data[5]
+            self.min_gz = self.min_gz if sensor_data[5] > self.min_gz else sensor_data[5]
 
         ax /= fifo_batches
         ay /= fifo_batches
@@ -910,7 +919,14 @@ class MPU6050:
         return offs_rc
 
     def getStats(self):
-        return self.max_az * self.__SCALE_ACCEL, self.min_az * self.__SCALE_ACCEL
+        return (self.max_az * self.__SCALE_ACCEL,
+                self.min_az * self.__SCALE_ACCEL,
+                self.max_gx * self.__SCALE_GYRO,
+                self.min_gx * self.__SCALE_GYRO,
+                self.max_gy * self.__SCALE_GYRO,
+                self.min_gy * self.__SCALE_GYRO,
+                self.max_gz * self.__SCALE_GYRO,
+                self.min_gz * self.__SCALE_GYRO)
 
 
 ####################################################################################################
@@ -1338,9 +1354,10 @@ def CheckCLI(argv):
     cli_hdd_gain = 0.0
 
     #-----------------------------------------------------------------------------------------------
-    # Defaults for horizontal velocity PIDs
+    # Defaults for horizontal velocity PIDs.  Note this is tightly bound to the aov value.  Riase one
+    # and reduce the other in sync.
     #-----------------------------------------------------------------------------------------------
-    cli_hvp_gain = 1.6
+    cli_hvp_gain = 1.5
     cli_hvi_gain = 0.0
     cli_hvd_gain = 0.0
 
@@ -1354,7 +1371,7 @@ def CheckCLI(argv):
         #-------------------------------------------------------------------------------------------
         # Hermione's PID configuration due to using her frame / ESCs / motors / props
         #-------------------------------------------------------------------------------------------
-        cli_hover_pwm = 1600 # XOAR 12x4 1640 /1600 depending on 150/75g feet; T-Motor Beech 12x4.7 1500
+        cli_hover_pwm = 1600
 
         #-------------------------------------------------------------------------------------------
         # Defaults for vertical velocity PIDs.
@@ -1366,15 +1383,15 @@ def CheckCLI(argv):
         #-------------------------------------------------------------------------------------------
         # Defaults for pitch rotation rate PIDs
         #-------------------------------------------------------------------------------------------
-        cli_prp_gain = 150.0
-        cli_pri_gain = 1.0
+        cli_prp_gain = 90.0
+        cli_pri_gain = 0.9
         cli_prd_gain = 0.0
 
         #-------------------------------------------------------------------------------------------
         # Defaults for roll rotation rate PIDs
         #-------------------------------------------------------------------------------------------
-        cli_rrp_gain = 160.0
-        cli_rri_gain = 1.0
+        cli_rrp_gain = 90.0
+        cli_rri_gain = 0.9
         cli_rrd_gain = 0.0
 
         #-------------------------------------------------------------------------------------------
@@ -1636,7 +1653,7 @@ def SweepProcessor():
 
     with serial.Serial("/dev/ttySWEEP",
                           baudrate = 115200,
-                          parity=serial.PARITY_NONE,
+                          parity = serial.PARITY_NONE,
                           bytesize = serial.EIGHTBITS,
                           stopbits = serial.STOPBITS_ONE,
                           xonxoff = False,
@@ -2013,6 +2030,242 @@ class GPSManager():
         assert (len(raw_bytes) == self.unpack_size), "Invalid data block received from GPS reader"
         latitude, longitude, altitude, satellites = struct.unpack(self.unpack_format, raw_bytes)
         return latitude, longitude, altitude, satellites
+
+
+####################################################################################################
+#
+# Video at 10fps. Each frame is 320 x 320 pixels.  Each macro-block is 16 x 16 pixels.  Due to an
+# extra column of macro-blocks (dunno why), that means each frame breaks down into 21 columns by
+# 20 rows = 420 macro-blocks, each of which is 4 bytes - 1 signed byte X, 1 signed byte Y and 2 unsigned
+# bytes SAD (sum of absolute differences).
+#
+####################################################################################################
+def VideoProcessor(frame_width, frame_height, frame_rate):
+    with picamera.PiCamera() as camera:
+        camera.resolution = (frame_width, frame_height)
+        camera.framerate = frame_rate
+
+        #-------------------------------------------------------------------------------------------
+        # 50% contrast seems to work well - completely arbitrary.
+        #-------------------------------------------------------------------------------------------
+        camera.contrast = 50
+
+        with io.open("/dev/shm/motion_stream", mode = "wb", buffering = 0) as vofi:
+            camera.start_recording('/dev/null', format='h264', motion_output=vofi, quality=23)
+            try:
+                while True:
+                    camera.wait_recording(1.0)
+            except KeyboardInterrupt:
+                pass
+            finally:
+                camera.stop_recording()
+
+
+####################################################################################################
+#
+# Class to process video frame macro-block motion tracking.
+#
+####################################################################################################
+class VideoManager:
+
+    def __init__(self, video_fifo, yaw_increment):
+        self.video_fifo = video_fifo
+        self.yaw_increment = yaw_increment
+        self.phase = 0
+
+        mb_size = 16           # 16 x 16 pixels are combined to make a macro-block
+        bytes_per_mb = 4       # Each macro-block is 4 bytes, 1 X, 1 Y and 2 SAD
+
+        self.mbs_per_frame = int(round((frame_width / mb_size + 1) * (frame_height / mb_size)))
+        self.bytes_per_frame = self.mbs_per_frame * bytes_per_mb
+
+    def flush(self):
+        #-------------------------------------------------------------------------------------------
+        # Read what should be the backlog of frames, and return how many there are.
+        #-------------------------------------------------------------------------------------------
+        frame_bytes = self.video_fifo.read(self.bytes_per_frame)
+        assert (len(frame_bytes) % self.bytes_per_frame == 0), "Incomplete video frames received: %f" % (len(frame_bytes) / self.bytes_per_frame)
+        return (len(frame_bytes) / self.bytes_per_frame)
+
+    def phase0(self):
+        #-------------------------------------------------------------------------------------------
+        # Read the video stream and parse into a list of macro-block vectors
+        #-------------------------------------------------------------------------------------------
+        self.vector_dict = {}
+        self.vector_list = []
+        self.c_yaw = math.cos(self.yaw_increment)
+        self.s_yaw = math.sin(self.yaw_increment)
+
+        sign = 1 # Was '-1 if i_am_chloe else 1' as Chloe had the camera twisted by 180 degrees
+
+        frames = self.video_fifo.read(self.bytes_per_frame)
+        assert (len(frames) != 0), "Shouldn't be here, no bytes to read"
+        assert (len(frames) % self.bytes_per_frame == 0), "Incomplete frame bytes read"
+
+        num_frames = int(len(frames) / self.bytes_per_frame)
+        assert (num_frames == 1), "Read more than one frame somehow?"
+
+        #-------------------------------------------------------------------------------------------
+        # Convert the data to byte, byte, ushort of x, y, sad structure and process them.  The
+        # exception here happens when a macro-block is filled with zeros, indicating either a full
+        # reset or no movement, and hence no processing required.
+        #-------------------------------------------------------------------------------------------
+        format = '=' + 'bbH' * self.mbs_per_frame * num_frames
+        iframe = struct.unpack(format, frames)
+        assert (len(iframe) % 3 == 0), "iFrame size error"
+
+        self.mbs_per_iframe = int(round(len(iframe) / 3 / num_frames))
+        assert (self.mbs_per_iframe == self.mbs_per_frame), "iframe mb count different to frame mb count"
+
+        #---------------------------------------------------------------------------------------
+        # Split the iframe into a list of macro-block vectors.  The mapping from each iframe
+        # in idx, idy depends on how the camera is orientated WRT the frame.
+        # This must be checked callibrated.
+        #
+        # Note: all macro-block vectors are even integers, so we divide them by 2 here for use
+        #       walking the vector dictionary for neighbours; we reinstate this at the end.
+        #
+        #---------------------------------------------------------------------------------------
+        for ii in range(self.mbs_per_iframe):
+            idx = iframe[3 * ii + 1]
+            idy = iframe[3 * ii]
+            assert (idx % 2 == 0 and idy % 2 == 0), "Odd (not even) MB vector"
+
+            idx = int(round(sign * idx / 2))
+            idy = int(round(sign * idy / 2))
+
+            if idx == 0 and idy == 0:
+                continue
+
+            self.vector_list.append((idx, idy))
+
+        #-------------------------------------------------------------------------------------------
+        # If the dictionary is empty, this indicates a new frame; this is not an error strictly,
+        # more of a reset to tell the outer world about.
+        #-------------------------------------------------------------------------------------------
+        if len(self.vector_list) == 0:
+            raise ValueError("Empty Video Frame Object")
+
+    def phase1(self):
+        #-------------------------------------------------------------------------------------------
+        # Unyaw the list of vectors, overwriting the yaw list
+        #-------------------------------------------------------------------------------------------
+        unyawed_vectors = []
+
+        #-------------------------------------------------------------------------------------------
+        # Undo the yaw increment - we could use the full rotation matrix here (as elsewhere), but
+        # this is more efficient in this very time sensitive function.
+        #-------------------------------------------------------------------------------------------
+        for vector in self.vector_list:
+            idx, idy = vector
+            uvx = self.c_yaw * idx - self.s_yaw * idy
+            uvy = self.s_yaw * idx + self.c_yaw * idy
+            unyawed_vectors.append((int(round(uvx)), int(round(uvy))))
+
+        self.vector_list = unyawed_vectors
+
+    def phase2(self):
+        #-------------------------------------------------------------------------------------------
+        # Build the dictionary of unyawed vectors; they score 2 because of the next phase
+        #-------------------------------------------------------------------------------------------
+        for (idx, idy) in self.vector_list:
+            if (idx, idy) in self.vector_dict:
+                self.vector_dict[(idx, idy)] += 2
+            else:
+                self.vector_dict[(idx, idy)] = 2
+
+    def phase3(self):
+        #-------------------------------------------------------------------------------------------
+        # Pass again through the dictionary of vectors, building up clusters based on neighbours.
+        #-------------------------------------------------------------------------------------------
+        best_score = 0
+        self.best_vectors = []
+
+        for vector in self.vector_dict.keys():
+            vector_score = self.vector_dict[vector]
+            for ii in range(-1, 2):
+                for jj in range(-1, 2):
+                    if ii == 0 and jj == 0:
+                        continue
+
+                    vector_x, vector_y = vector
+                    neighbour = (vector_x + ii, vector_y + jj)
+                    if neighbour in self.vector_dict:
+                        vector_score += self.vector_dict[neighbour]
+
+            if vector_score > best_score:
+                best_score = vector_score
+                self.best_vectors = [(vector, vector_score)]
+
+            elif vector_score == best_score:
+                self.best_vectors.append((vector, vector_score))
+
+    def phase4(self):
+        #-------------------------------------------------------------------------------------------
+        # Now we've collected the clusters of the best score vectors in the frame, average and reyaw
+        # it before returning the result.
+        #-------------------------------------------------------------------------------------------
+        sum_score = 0
+        sum_x = 0
+        sum_y = 0
+
+        for (vector_x, vector_y), vector_score in self.best_vectors:
+            sum_x += vector_x * vector_score
+            sum_y += vector_y * vector_score
+            sum_score += vector_score
+
+        best_x = sum_x / sum_score
+        best_y = sum_y / sum_score
+
+        #-------------------------------------------------------------------------------------------
+        # Redo the yaw increment - we could use the full rotation matrix here (as elsewhere), but
+        # this is more efficient in this very time sensitive function.
+        #-------------------------------------------------------------------------------------------
+        idx = self.c_yaw * best_x + self.s_yaw * best_y
+        idy = -self.s_yaw * best_x + self.c_yaw * best_y
+
+        return 2 * idx, 2 * idy
+
+    def process(self):
+        assert(self.phase < 5), "Phase shift in motion vector processing"
+
+        #-------------------------------------------------------------------------------------------
+        # Phase 0 - load the data and convert into a macro-block vector list
+        #-------------------------------------------------------------------------------------------
+        if self.phase == 0:
+            self.phase0()
+            rv = None
+
+        #-------------------------------------------------------------------------------------------
+        # Phase 1 - take the list of macro blocks and undo yaw
+        #-------------------------------------------------------------------------------------------
+        elif self.phase == 1:
+            self.phase1()
+            rv = None
+
+        #-------------------------------------------------------------------------------------------
+        # Phase 2 - build the dictionary of int rounded unyawed vectors
+        #-------------------------------------------------------------------------------------------
+        elif self.phase == 2:
+            self.phase2()
+            rv = None
+
+        #-------------------------------------------------------------------------------------------
+        # Phase 3 - walk the dictionary, looking for neighbouring clusters and score them
+        #-------------------------------------------------------------------------------------------
+        elif self.phase == 3:
+            self.phase3()
+            rv = None
+
+        #-------------------------------------------------------------------------------------------
+        # Phase 4 - average highest peak clusters, redo yaw, and return result
+        #-------------------------------------------------------------------------------------------
+        elif self.phase == 4:
+            idx, idy = self.phase4()
+            rv = idx, idy
+
+        self.phase += 1
+        return rv
 
 
 ####################################################################################################
@@ -2652,242 +2905,6 @@ class AutopilotManager():
 
 ####################################################################################################
 #
-# Video at 10fps. Each frame is 320 x 320 pixels.  Each macro-block is 16 x 16 pixels.  Due to an
-# extra column of macro-blocks (dunno why), that means each frame breaks down into 21 columns by
-# 20 rows = 420 macro-blocks, each of which is 4 bytes - 1 signed byte X, 1 signed byte Y and 2 unsigned
-# bytes SAD (sum of absolute differences).
-#
-####################################################################################################
-def VideoProcessor(frame_width, frame_height, frame_rate):
-    with picamera.PiCamera() as camera:
-        camera.resolution = (frame_width, frame_height)
-        camera.framerate = frame_rate
-
-        #-------------------------------------------------------------------------------------------
-        # 50% contrast seems to work well - completely arbitrary.
-        #-------------------------------------------------------------------------------------------
-        camera.contrast = 50
-
-        with io.open("/dev/shm/motion_stream", mode = "wb", buffering = 0) as vofi:
-            camera.start_recording('/dev/null', format='h264', motion_output=vofi, quality=23)
-            try:
-                while True:
-                    camera.wait_recording(1.0)
-            except KeyboardInterrupt:
-                pass
-            finally:
-                camera.stop_recording()
-
-
-####################################################################################################
-#
-# Class to process video frame macro-block motion tracking.
-#
-####################################################################################################
-class VideoManager:
-
-    def __init__(self, video_fifo, yaw_increment):
-        self.video_fifo = video_fifo
-        self.yaw_increment = yaw_increment
-        self.phase = 0
-
-        mb_size = 16           # 16 x 16 pixels are combined to make a macro-block
-        bytes_per_mb = 4       # Each macro-block is 4 bytes, 1 X, 1 Y and 2 SAD
-
-        self.mbs_per_frame = int(round((frame_width / mb_size + 1) * (frame_height / mb_size)))
-        self.bytes_per_frame = self.mbs_per_frame * bytes_per_mb
-
-    def flush(self):
-        #-------------------------------------------------------------------------------------------
-        # Read what should be the backlog of frames, and return how many there are.
-        #-------------------------------------------------------------------------------------------
-        frame_bytes = self.video_fifo.read(self.bytes_per_frame)
-        assert (len(frame_bytes) % self.bytes_per_frame == 0), "Incomplete video frames received: %f" % (len(frame_bytes) / self.bytes_per_frame)
-        return (len(frame_bytes) / self.bytes_per_frame)
-
-    def phase0(self):
-        #-------------------------------------------------------------------------------------------
-        # Read the video stream and parse into a list of macro-block vectors
-        #-------------------------------------------------------------------------------------------
-        self.vector_dict = {}
-        self.vector_list = []
-        self.c_yaw = math.cos(self.yaw_increment)
-        self.s_yaw = math.sin(self.yaw_increment)
-
-        sign = 1 # Was '-1 if i_am_chloe else 1' as Chloe had the camera twisted by 180 degrees
-
-        frames = self.video_fifo.read(self.bytes_per_frame)
-        assert (len(frames) != 0), "Shouldn't be here, no bytes to read"
-        assert (len(frames) % self.bytes_per_frame == 0), "Incomplete frame bytes read"
-
-        num_frames = int(len(frames) / self.bytes_per_frame)
-        assert (num_frames == 1), "Read more than one frame somehow?"
-
-        #-------------------------------------------------------------------------------------------
-        # Convert the data to byte, byte, ushort of x, y, sad structure and process them.  The
-        # exception here happens when a macro-block is filled with zeros, indicating either a full
-        # reset or no movement, and hence no processing required.
-        #-------------------------------------------------------------------------------------------
-        format = '=' + 'bbH' * self.mbs_per_frame * num_frames
-        iframe = struct.unpack(format, frames)
-        assert (len(iframe) % 3 == 0), "iFrame size error"
-
-        self.mbs_per_iframe = int(round(len(iframe) / 3 / num_frames))
-        assert (self.mbs_per_iframe == self.mbs_per_frame), "iframe mb count different to frame mb count"
-
-        #---------------------------------------------------------------------------------------
-        # Split the iframe into a list of macro-block vectors.  The mapping from each iframe
-        # in idx, idy depends on how the camera is orientated WRT the frame.
-        # This must be checked callibrated.
-        #
-        # Note: all macro-block vectors are even integers, so we divide them by 2 here for use
-        #       walking the vector dictionary for neighbours; we reinstate this at the end.
-        #
-        #---------------------------------------------------------------------------------------
-        for ii in range(self.mbs_per_iframe):
-            idx = iframe[3 * ii + 1]
-            idy = iframe[3 * ii]
-            assert (idx % 2 == 0 and idy % 2 == 0), "Odd (not even) MB vector"
-
-            idx = int(round(sign * idx / 2))
-            idy = int(round(sign * idy / 2))
-
-            if idx == 0 and idy == 0:
-                continue
-
-            self.vector_list.append((idx, idy))
-
-        #-------------------------------------------------------------------------------------------
-        # If the dictionary is empty, this indicates a new frame; this is not an error strictly,
-        # more of a reset to tell the outer world about.
-        #-------------------------------------------------------------------------------------------
-        if len(self.vector_list) == 0:
-            raise ValueError("Empty Video Frame Object")
-
-    def phase1(self):
-        #-------------------------------------------------------------------------------------------
-        # Unyaw the list of vectors, overwriting the yaw list
-        #-------------------------------------------------------------------------------------------
-        unyawed_vectors = []
-
-        #-------------------------------------------------------------------------------------------
-        # Undo the yaw increment - we could use the full rotation matrix here (as elsewhere), but
-        # this is more efficient in this very time sensitive function.
-        #-------------------------------------------------------------------------------------------
-        for vector in self.vector_list:
-            idx, idy = vector
-            uvx = self.c_yaw * idx - self.s_yaw * idy
-            uvy = self.s_yaw * idx + self.c_yaw * idy
-            unyawed_vectors.append((int(round(uvx)), int(round(uvy))))
-
-        self.vector_list = unyawed_vectors
-
-    def phase2(self):
-        #-------------------------------------------------------------------------------------------
-        # Build the dictionary of unyawed vectors; they score 2 because of the next phase
-        #-------------------------------------------------------------------------------------------
-        for (idx, idy) in self.vector_list:
-            if (idx, idy) in self.vector_dict:
-                self.vector_dict[(idx, idy)] += 2
-            else:
-                self.vector_dict[(idx, idy)] = 2
-
-    def phase3(self):
-        #-------------------------------------------------------------------------------------------
-        # Pass again through the dictionary of vectors, building up clusters based on neighbours.
-        #-------------------------------------------------------------------------------------------
-        best_score = 0
-        self.best_vectors = []
-
-        for vector in self.vector_dict.keys():
-            vector_score = self.vector_dict[vector]
-            for ii in range(-1, 2):
-                for jj in range(-1, 2):
-                    if ii == 0 and jj == 0:
-                        continue
-
-                    vector_x, vector_y = vector
-                    neighbour = (vector_x + ii, vector_y + jj)
-                    if neighbour in self.vector_dict:
-                        vector_score += self.vector_dict[neighbour]
-
-            if vector_score > best_score:
-                best_score = vector_score
-                self.best_vectors = [(vector, vector_score)]
-
-            elif vector_score == best_score:
-                self.best_vectors.append((vector, vector_score))
-
-    def phase4(self):
-        #-------------------------------------------------------------------------------------------
-        # Now we've collected the clusters of the best score vectors in the frame, average and reyaw
-        # it before returning the result.
-        #-------------------------------------------------------------------------------------------
-        sum_score = 0
-        sum_x = 0
-        sum_y = 0
-
-        for (vector_x, vector_y), vector_score in self.best_vectors:
-            sum_x += vector_x * vector_score
-            sum_y += vector_y * vector_score
-            sum_score += vector_score
-
-        best_x = sum_x / sum_score
-        best_y = sum_y / sum_score
-
-        #-------------------------------------------------------------------------------------------
-        # Redo the yaw increment - we could use the full rotation matrix here (as elsewhere), but
-        # this is more efficient in this very time sensitive function.
-        #-------------------------------------------------------------------------------------------
-        idx = self.c_yaw * best_x + self.s_yaw * best_y
-        idy = -self.s_yaw * best_x + self.c_yaw * best_y
-
-        return 2 * idx, 2 * idy
-
-    def process(self):
-        assert(self.phase < 5), "Phase shift in motion vector processing"
-
-        #-------------------------------------------------------------------------------------------
-        # Phase 0 - load the data and convert into a macro-block vector list
-        #-------------------------------------------------------------------------------------------
-        if self.phase == 0:
-            self.phase0()
-            rv = None
-
-        #-------------------------------------------------------------------------------------------
-        # Phase 1 - take the list of macro blocks and undo yaw
-        #-------------------------------------------------------------------------------------------
-        elif self.phase == 1:
-            self.phase1()
-            rv = None
-
-        #-------------------------------------------------------------------------------------------
-        # Phase 2 - build the dictionary of int rounded unyawed vectors
-        #-------------------------------------------------------------------------------------------
-        elif self.phase == 2:
-            self.phase2()
-            rv = None
-
-        #-------------------------------------------------------------------------------------------
-        # Phase 3 - walk the dictionary, looking for neighbouring clusters and score them
-        #-------------------------------------------------------------------------------------------
-        elif self.phase == 3:
-            self.phase3()
-            rv = None
-
-        #-------------------------------------------------------------------------------------------
-        # Phase 4 - average highest peak clusters, redo yaw, and return result
-        #-------------------------------------------------------------------------------------------
-        elif self.phase == 4:
-            idx, idy = self.phase4()
-            rv = idx, idy
-
-        self.phase += 1
-        return rv
-
-
-####################################################################################################
-#
 # Class to split initialation, flight startup and flight control
 #
 ####################################################################################################
@@ -2942,7 +2959,7 @@ class Quadcopter:
             self.compass_installed = True
             self.camera_installed = True
             self.gll_installed = True
-            self.gps_installed = True
+            self.gps_installed = False
             self.sweep_installed = False
         elif i_am_hermione:
             self.compass_installed = True
@@ -3553,9 +3570,13 @@ class Quadcopter:
             # - V1 camera angle of view (aov): 54 x 41 degrees
             # - V2 camera angle of view (aov): 62.2 x 48.8 degrees.
             # Because we're shooting a 320 x 320 video from with a V2 camera this means a macro-block is
-            # 2 x height x tan ( aov / 2) / 320 meters.  However, on testing this, it seems to be out by a
-            # fraction of 1.55, so I've added a very speculative pi/2 factor.
+            # 2 x height x tan ( aov / 2) / 320 meters.  
             #
+            '''
+            # However, on testing this, it seems to be out by a fraction of 1.55, so I've added a very
+            # speculative pi/2 factor.  Note that if this is changes, then cli_hvp_gain must be shifted
+            # in sync too?
+            '''
             #
             # The macro-block vectors represent the movement of a macro-block between frames.  This is
             # implied by the fact that each vector can only be between +/- 128 in X and Y which allows for
@@ -3566,7 +3587,7 @@ class Quadcopter:
             #------------------------------------------------------------------------------------------
             camera_version = 2
             aov = math.radians(48.8 if camera_version == 2 else 41)
-            scale = math.tan(aov / 2) * math.pi / frame_width
+            scale = 2 * math.tan(aov / 2) / frame_width
 
             #---------------------------------------------------------------------------------------
             # Setup a shared memory based data stream for the PiCamera video motion output
@@ -3888,8 +3909,8 @@ class Quadcopter:
                                 vmp = None
                             else:
                                 video_loops += 1
-
                                 vmp.process()
+
                         except ValueError as e:
                             #-----------------------------------------------------------------------
                             # First pass of the video frame shows no movement detected, and thus no
@@ -4167,7 +4188,7 @@ class Quadcopter:
                 #-----------------------------------------------------------------------------------
                 '''
                 #AB! Note that because we always get an update from the GLL each motion cycle, we can
-                #AB! us the motion_dt.  If we ever get the GLL interrupt to work, this needs changing
+                #AB! use the motion_dt.  If we ever get the GLL interrupt to work, this needs changing
                 #AB! to an equivalent of the fusion_dt used in the horizontal fusion lower down.
                 '''
                 fusion_fraction = fusion_tau / (fusion_tau + motion_dt)
@@ -4250,7 +4271,7 @@ class Quadcopter:
             '''
             '''
             #---------------------------------------------------------------------------------------
-            # For control reasons, limit the maximum target speed to 1m/s
+            # Constrain the target velocity to 1m/s.
             #---------------------------------------------------------------------------------------
             MAX_VEL = 1.0
             qvx_target = qvx_target if abs(qvx_target) < MAX_VEL else (qvx_target / abs(qvx_target) * MAX_VEL)
@@ -4293,13 +4314,17 @@ class Quadcopter:
             ra_target = -math.atan(qay_target)
             ya_target = ya_target if not yaw_control else (ya_target if (abs(evx_target) + abs(evy_target)) == 0 else math.atan2(evy_target, evx_target))
 
+            '''
+            '''
             #---------------------------------------------------------------------------------------
-            # For safety reasons, limit the maximum target angle to 30 degrees.  Note yaw is deliberately
-            # not included as it needs full rotation to track the direction of flight.
+            # Contrain the target angle to 30 degrees.  Note yaw is deliberately not included as it
+            # needs full rotation to track the direction of flight when yaw_control = True.
             #---------------------------------------------------------------------------------------
             MAX_ANGLE = math.radians(30)
             pa_target = pa_target if abs(pa_target) < MAX_ANGLE else (pa_target / abs(pa_target) * MAX_ANGLE)
             ra_target = ra_target if abs(ra_target) < MAX_ANGLE else (ra_target / abs(ra_target) * MAX_ANGLE)
+            '''
+            '''
 
             #======================================================================================
             # Angle PIDs
@@ -4313,8 +4338,9 @@ class Quadcopter:
             [p_out, i_out, d_out] = ya_pid.Compute(aya, ya_target, motion_dt)
             yr_target = p_out + i_out + d_out
 
+            '''
             #---------------------------------------------------------------------------------------
-            # For safety reasons, limit the maximum target rotation rate to 180 degrees / second.
+            # Constrain the target rotation rate to pi / second.
             # Additionally, if we're under yaw control, and there has been a significant course change
             # more than 20 degrees, then limit it to 30 degrees / second.
             #---------------------------------------------------------------------------------------
@@ -4327,6 +4353,7 @@ class Quadcopter:
             pr_target = pr_target if abs(pr_target) < MAX_RATE else (pr_target / abs(pr_target) * MAX_RATE)
             rr_target = rr_target if abs(rr_target) < MAX_RATE else (rr_target / abs(rr_target) * MAX_RATE)
             yr_target = yr_target if abs(yr_target) < YAW_MAX_RATE else (yr_target / abs(yr_target) * YAW_MAX_RATE)
+            '''    
 
             #=======================================================================================
             # Rotation rate PIDs
@@ -4357,7 +4384,7 @@ class Quadcopter:
             yr_out = p_out + i_out + d_out
 
 
-            ################################## PID OUTPUT -> PWM CONVERTION ########################
+            ################################## PID OUTPUT -> PWM CONVERSION ########################
 
 
             #---------------------------------------------------------------------------------------
@@ -4477,9 +4504,15 @@ class Quadcopter:
 
         temp = mpu6050.readTemperature()
         logger.critical("IMU core temp (end): ,%f", temp / 333.86 + 21.0)
-        max_az, min_az = mpu6050.getStats()
-        logger.critical("Min Z acceleration: %f", min_az)
+        max_az, min_az, max_gx, min_gx, max_gy, min_gy, max_gz, min_gz, = mpu6050.getStats()
         logger.critical("Max Z acceleration: %f", max_az)
+        logger.critical("Min Z acceleration: %f", min_az)
+        logger.critical("Max X gyrometer: %f", max_gx)
+        logger.critical("Min X gyrometer: %f", min_gx)
+        logger.critical("Max Y gyrometer: %f", max_gy)
+        logger.critical("Min Y gyrometer: %f", min_gy)
+        logger.critical("Max Z gyrometer: %f", max_gz)
+        logger.critical("Min Z gyrometer: %f", min_gz)
 
         #-------------------------------------------------------------------------------------------
         # Stop the PWM and FIFO overflow interrupt between flights
