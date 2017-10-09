@@ -1354,8 +1354,7 @@ def CheckCLI(argv):
     cli_hdd_gain = 0.0
 
     #-----------------------------------------------------------------------------------------------
-    # Defaults for horizontal velocity PIDs.  Note this is tightly bound to the aov value.  Riase one
-    # and reduce the other in sync.
+    # Defaults for horizontal velocity PIDs
     #-----------------------------------------------------------------------------------------------
     cli_hvp_gain = 1.5
     cli_hvi_gain = 0.0
@@ -1383,15 +1382,15 @@ def CheckCLI(argv):
         #-------------------------------------------------------------------------------------------
         # Defaults for pitch rotation rate PIDs
         #-------------------------------------------------------------------------------------------
-        cli_prp_gain = 90.0
-        cli_pri_gain = 0.9
+        cli_prp_gain = 100.0
+        cli_pri_gain = 1.0
         cli_prd_gain = 0.0
 
         #-------------------------------------------------------------------------------------------
         # Defaults for roll rotation rate PIDs
         #-------------------------------------------------------------------------------------------
-        cli_rrp_gain = 90.0
-        cli_rri_gain = 0.9
+        cli_rrp_gain = 100.0
+        cli_rri_gain = 1.0
         cli_rrd_gain = 0.0
 
         #-------------------------------------------------------------------------------------------
@@ -1418,14 +1417,14 @@ def CheckCLI(argv):
         # Defaults for pitch rotation rate PIDs
         #-------------------------------------------------------------------------------------------
         cli_prp_gain = 80.0
-        cli_pri_gain = 0.8
+        cli_pri_gain = 0.0
         cli_prd_gain = 0.0
 
         #-------------------------------------------------------------------------------------------
         # Defaults for roll rotation rate PIDs
         #-------------------------------------------------------------------------------------------
         cli_rrp_gain = 80.0
-        cli_rri_gain = 0.8
+        cli_rri_gain = 0.0
         cli_rrd_gain = 0.0
 
         #-------------------------------------------------------------------------------------------
@@ -2034,242 +2033,6 @@ class GPSManager():
 
 ####################################################################################################
 #
-# Video at 10fps. Each frame is 320 x 320 pixels.  Each macro-block is 16 x 16 pixels.  Due to an
-# extra column of macro-blocks (dunno why), that means each frame breaks down into 21 columns by
-# 20 rows = 420 macro-blocks, each of which is 4 bytes - 1 signed byte X, 1 signed byte Y and 2 unsigned
-# bytes SAD (sum of absolute differences).
-#
-####################################################################################################
-def VideoProcessor(frame_width, frame_height, frame_rate):
-    with picamera.PiCamera() as camera:
-        camera.resolution = (frame_width, frame_height)
-        camera.framerate = frame_rate
-
-        #-------------------------------------------------------------------------------------------
-        # 50% contrast seems to work well - completely arbitrary.
-        #-------------------------------------------------------------------------------------------
-        camera.contrast = 50
-
-        with io.open("/dev/shm/motion_stream", mode = "wb", buffering = 0) as vofi:
-            camera.start_recording('/dev/null', format='h264', motion_output=vofi, quality=23)
-            try:
-                while True:
-                    camera.wait_recording(1.0)
-            except KeyboardInterrupt:
-                pass
-            finally:
-                camera.stop_recording()
-
-
-####################################################################################################
-#
-# Class to process video frame macro-block motion tracking.
-#
-####################################################################################################
-class VideoManager:
-
-    def __init__(self, video_fifo, yaw_increment):
-        self.video_fifo = video_fifo
-        self.yaw_increment = yaw_increment
-        self.phase = 0
-
-        mb_size = 16           # 16 x 16 pixels are combined to make a macro-block
-        bytes_per_mb = 4       # Each macro-block is 4 bytes, 1 X, 1 Y and 2 SAD
-
-        self.mbs_per_frame = int(round((frame_width / mb_size + 1) * (frame_height / mb_size)))
-        self.bytes_per_frame = self.mbs_per_frame * bytes_per_mb
-
-    def flush(self):
-        #-------------------------------------------------------------------------------------------
-        # Read what should be the backlog of frames, and return how many there are.
-        #-------------------------------------------------------------------------------------------
-        frame_bytes = self.video_fifo.read(self.bytes_per_frame)
-        assert (len(frame_bytes) % self.bytes_per_frame == 0), "Incomplete video frames received: %f" % (len(frame_bytes) / self.bytes_per_frame)
-        return (len(frame_bytes) / self.bytes_per_frame)
-
-    def phase0(self):
-        #-------------------------------------------------------------------------------------------
-        # Read the video stream and parse into a list of macro-block vectors
-        #-------------------------------------------------------------------------------------------
-        self.vector_dict = {}
-        self.vector_list = []
-        self.c_yaw = math.cos(self.yaw_increment)
-        self.s_yaw = math.sin(self.yaw_increment)
-
-        sign = 1 # Was '-1 if i_am_chloe else 1' as Chloe had the camera twisted by 180 degrees
-
-        frames = self.video_fifo.read(self.bytes_per_frame)
-        assert (len(frames) != 0), "Shouldn't be here, no bytes to read"
-        assert (len(frames) % self.bytes_per_frame == 0), "Incomplete frame bytes read"
-
-        num_frames = int(len(frames) / self.bytes_per_frame)
-        assert (num_frames == 1), "Read more than one frame somehow?"
-
-        #-------------------------------------------------------------------------------------------
-        # Convert the data to byte, byte, ushort of x, y, sad structure and process them.  The
-        # exception here happens when a macro-block is filled with zeros, indicating either a full
-        # reset or no movement, and hence no processing required.
-        #-------------------------------------------------------------------------------------------
-        format = '=' + 'bbH' * self.mbs_per_frame * num_frames
-        iframe = struct.unpack(format, frames)
-        assert (len(iframe) % 3 == 0), "iFrame size error"
-
-        self.mbs_per_iframe = int(round(len(iframe) / 3 / num_frames))
-        assert (self.mbs_per_iframe == self.mbs_per_frame), "iframe mb count different to frame mb count"
-
-        #---------------------------------------------------------------------------------------
-        # Split the iframe into a list of macro-block vectors.  The mapping from each iframe
-        # in idx, idy depends on how the camera is orientated WRT the frame.
-        # This must be checked callibrated.
-        #
-        # Note: all macro-block vectors are even integers, so we divide them by 2 here for use
-        #       walking the vector dictionary for neighbours; we reinstate this at the end.
-        #
-        #---------------------------------------------------------------------------------------
-        for ii in range(self.mbs_per_iframe):
-            idx = iframe[3 * ii + 1]
-            idy = iframe[3 * ii]
-            assert (idx % 2 == 0 and idy % 2 == 0), "Odd (not even) MB vector"
-
-            idx = int(round(sign * idx / 2))
-            idy = int(round(sign * idy / 2))
-
-            if idx == 0 and idy == 0:
-                continue
-
-            self.vector_list.append((idx, idy))
-
-        #-------------------------------------------------------------------------------------------
-        # If the dictionary is empty, this indicates a new frame; this is not an error strictly,
-        # more of a reset to tell the outer world about.
-        #-------------------------------------------------------------------------------------------
-        if len(self.vector_list) == 0:
-            raise ValueError("Empty Video Frame Object")
-
-    def phase1(self):
-        #-------------------------------------------------------------------------------------------
-        # Unyaw the list of vectors, overwriting the yaw list
-        #-------------------------------------------------------------------------------------------
-        unyawed_vectors = []
-
-        #-------------------------------------------------------------------------------------------
-        # Undo the yaw increment - we could use the full rotation matrix here (as elsewhere), but
-        # this is more efficient in this very time sensitive function.
-        #-------------------------------------------------------------------------------------------
-        for vector in self.vector_list:
-            idx, idy = vector
-            uvx = self.c_yaw * idx - self.s_yaw * idy
-            uvy = self.s_yaw * idx + self.c_yaw * idy
-            unyawed_vectors.append((int(round(uvx)), int(round(uvy))))
-
-        self.vector_list = unyawed_vectors
-
-    def phase2(self):
-        #-------------------------------------------------------------------------------------------
-        # Build the dictionary of unyawed vectors; they score 2 because of the next phase
-        #-------------------------------------------------------------------------------------------
-        for (idx, idy) in self.vector_list:
-            if (idx, idy) in self.vector_dict:
-                self.vector_dict[(idx, idy)] += 2
-            else:
-                self.vector_dict[(idx, idy)] = 2
-
-    def phase3(self):
-        #-------------------------------------------------------------------------------------------
-        # Pass again through the dictionary of vectors, building up clusters based on neighbours.
-        #-------------------------------------------------------------------------------------------
-        best_score = 0
-        self.best_vectors = []
-
-        for vector in self.vector_dict.keys():
-            vector_score = self.vector_dict[vector]
-            for ii in range(-1, 2):
-                for jj in range(-1, 2):
-                    if ii == 0 and jj == 0:
-                        continue
-
-                    vector_x, vector_y = vector
-                    neighbour = (vector_x + ii, vector_y + jj)
-                    if neighbour in self.vector_dict:
-                        vector_score += self.vector_dict[neighbour]
-
-            if vector_score > best_score:
-                best_score = vector_score
-                self.best_vectors = [(vector, vector_score)]
-
-            elif vector_score == best_score:
-                self.best_vectors.append((vector, vector_score))
-
-    def phase4(self):
-        #-------------------------------------------------------------------------------------------
-        # Now we've collected the clusters of the best score vectors in the frame, average and reyaw
-        # it before returning the result.
-        #-------------------------------------------------------------------------------------------
-        sum_score = 0
-        sum_x = 0
-        sum_y = 0
-
-        for (vector_x, vector_y), vector_score in self.best_vectors:
-            sum_x += vector_x * vector_score
-            sum_y += vector_y * vector_score
-            sum_score += vector_score
-
-        best_x = sum_x / sum_score
-        best_y = sum_y / sum_score
-
-        #-------------------------------------------------------------------------------------------
-        # Redo the yaw increment - we could use the full rotation matrix here (as elsewhere), but
-        # this is more efficient in this very time sensitive function.
-        #-------------------------------------------------------------------------------------------
-        idx = self.c_yaw * best_x + self.s_yaw * best_y
-        idy = -self.s_yaw * best_x + self.c_yaw * best_y
-
-        return 2 * idx, 2 * idy
-
-    def process(self):
-        assert(self.phase < 5), "Phase shift in motion vector processing"
-
-        #-------------------------------------------------------------------------------------------
-        # Phase 0 - load the data and convert into a macro-block vector list
-        #-------------------------------------------------------------------------------------------
-        if self.phase == 0:
-            self.phase0()
-            rv = None
-
-        #-------------------------------------------------------------------------------------------
-        # Phase 1 - take the list of macro blocks and undo yaw
-        #-------------------------------------------------------------------------------------------
-        elif self.phase == 1:
-            self.phase1()
-            rv = None
-
-        #-------------------------------------------------------------------------------------------
-        # Phase 2 - build the dictionary of int rounded unyawed vectors
-        #-------------------------------------------------------------------------------------------
-        elif self.phase == 2:
-            self.phase2()
-            rv = None
-
-        #-------------------------------------------------------------------------------------------
-        # Phase 3 - walk the dictionary, looking for neighbouring clusters and score them
-        #-------------------------------------------------------------------------------------------
-        elif self.phase == 3:
-            self.phase3()
-            rv = None
-
-        #-------------------------------------------------------------------------------------------
-        # Phase 4 - average highest peak clusters, redo yaw, and return result
-        #-------------------------------------------------------------------------------------------
-        elif self.phase == 4:
-            idx, idy = self.phase4()
-            rv = idx, idy
-
-        self.phase += 1
-        return rv
-
-
-####################################################################################################
-#
 # Start the Autopilot reading process
 #
 ####################################################################################################
@@ -2524,7 +2287,6 @@ def AutopilotProcessor(sweep_installed, gps_installed, compass_installed, initia
                                     # waypoint list lower down.
                                     #--------------------------------------------------------------#
                                     target_gps = current_gps
-                                    target_lat, target_lon, target_alt, target_sats = target_gps
 
                                     #==============================================================#
                                     #                       FLIGHT PLAN CHANGE                     #
@@ -2535,6 +2297,12 @@ def AutopilotProcessor(sweep_installed, gps_installed, compass_installed, initia
                                     #==============================================================#
                                     #                       FLIGHT PLAN CHANGE                     #
                                     #==============================================================#
+
+                                    '''
+                                    #GPS! Add some test code here which the right GPS direction known
+                                    #GPS! we go that way for two meters and land.  Do this by editing
+                                    #GPS! the 3600 below to 6.66s
+                                    '''
 
                                 elif time.time() - sats_search_start > 60.0:
                                     #==============================================================#
@@ -2555,6 +2323,9 @@ def AutopilotProcessor(sweep_installed, gps_installed, compass_installed, initia
                                     #---------------------------------------------------------------
                                     # How many satellites do we have so far?
                                     #---------------------------------------------------------------
+                                    '''
+                                    #GPS: put a "print count," here with "\b\b" to track
+                                    '''
                                     continue
 
                             #-----------------------------------------------------------------------
@@ -2576,6 +2347,11 @@ def AutopilotProcessor(sweep_installed, gps_installed, compass_installed, initia
                                 #==============================================================#
                                 #                      FLIGHT PLAN CHANGE                      #
                                 #==============================================================#
+
+                                '''
+                                #GPS: Necessary to continue here to prevent any further fp_changed to override
+                                #GPS: this one?
+                                '''
 
 
                             #-----------------------------------------------------------------------
@@ -2600,30 +2376,51 @@ def AutopilotProcessor(sweep_installed, gps_installed, compass_installed, initia
                             # More at http://www.movable-type.co.uk/scripts/latlong.html
                             #
                             #-----------------------------------------------------------------------
-                            target_ns = math.radians(target_lat - current_lat) * EARTH_RADIUS
-                            target_ew = math.radians((target_lon - current_lon) * math.cos(math.radians((target_lat + current_lat) / 2))) * EARTH_RADIUS
-                            target_direction = math.atan2(target_ew, target_ns)
+                            '''
+                            #GPS: Why loop when everyone breaks?
+                            '''
+                            while True:
+                                target_lat, target_lon, target_alt, target_sats = target_gps
+                                target_ns = math.radians(target_lat - current_lat) * EARTH_RADIUS
+                                target_ew = math.radians((target_lon - current_lon) * math.cos(math.radians((target_lat + current_lat) / 2))) * EARTH_RADIUS
+                                target_direction = math.atan2(target_ew, target_ns)
 
-                            distance = math.pow((math.pow(target_ns, 2) + math.pow(target_ew, 2)), 0.5)
-                            if distance < 1.0: # meters
-                                if len(gps_waypoints) > 0:
-                                    #---------------------------------------------------------------
-                                    # Move to the next waypoint target
-                                    #---------------------------------------------------------------
-                                    gps_waypoint = gps_waypoints.pop(0)
-                                    log.write("AP: GPS NEW WAYPOINT\n")
-                                    target_gps = gps_waypoint
+                                distance = math.pow((math.pow(target_ns, 2) + math.pow(target_ew, 2)), 0.5)
+                                if distance < 1.0: # meters
+                                    if len(gps_waypoints) > 0:
+                                        #---------------------------------------------------------------
+                                        # Move to the next waypoint target
+                                        #---------------------------------------------------------------
+                                        gps_waypoint = gps_waypoints.pop(0)
+                                        log.write("AP: GPS NEW WAYPOINT\n")
+                                        target_gps = gps_waypoint
 
+                                        '''
+                                        #GPS: This needs to extract the new target_direction & distance
+                                        #GPS: required below.  Current is ok, extracted at the top.
+                                        #GPS: Just "while True:" loop and break out once has an answer?
+                                        '''
+                                        break
+
+                                    else:
+                                        #==============================================================#
+                                        #                      FLIGHT PLAN CHANGE                      #
+                                        #==============================================================#
+                                        log.write("AP: GPS @ TARGET, LANDING...\n")
+                                        active_fp = landing_fp
+                                        fp_changed = True
+                                        #==============================================================#
+                                        #                      FLIGHT PLAN CHANGE                      #
+                                        #==============================================================#
+                                        break
                                 else:
-                                    #==============================================================#
-                                    #                      FLIGHT PLAN CHANGE                      #
-                                    #==============================================================#
-                                    log.write("AP: GPS @ TARGET, LANDING...\n")
-                                    active_fp = landing_fp
-                                    fp_changed = True
-                                    #==============================================================#
-                                    #                      FLIGHT PLAN CHANGE                      #
-                                    #==============================================================#
+                                    '''
+                                    #GPS: Not reached the target, nor reached a waypoint, do we need
+                                    #GPS: something here for an updated current GPS against current target?
+                                    #GPS: This probably happens automatically at the top; given therefore
+                                    #GPS: all if/else's break is there anything needs here?
+                                    '''
+                                    break
 
                             #-----------------------------------------------------------------------
                             # Update the target direction based upon where we are now.
@@ -2640,9 +2437,19 @@ def AutopilotProcessor(sweep_installed, gps_installed, compass_installed, initia
                                 x = c_yaw * 0.3 # evx_target
                                 y = s_yaw * 0.3 # evx_target
 
+                                '''
+                                #GPS: Fuse this new value with the old based on the distance, so that
+                                #GPS: after initial target direction set, only minimal updates are
+                                #GPS: made.
+                                '''
+
                                 #------------------------------------------------------------------
                                 # Half second pause for thought, then new distance / direction.
                                 #------------------------------------------------------------------
+                                '''
+                                #GPS: Dummp the Pause for Thought.  Don't forget the comma so it's
+                                #GPS: a list of tuples.
+                                '''
                                 gps_tracking_fp = [(0.0, 0.0, 0.0, 0.5, "P4T"),
                                                    (x, y, 0.0, 3600, "GPS TARGET %dm %do" % (int(round(distance)), int(round(math.degrees(yaw_target)))))]
 
@@ -2744,7 +2551,7 @@ def AutopilotProcessor(sweep_installed, gps_installed, compass_installed, initia
 
                     elif active_fp != landing_fp:
                         #---------------------------------------------------------------------------
-                        # This shouldn't never get hit; finished flight plans all have next steps
+                        # This shouldn't ever get hit; finished flight plans all have next steps
                         # above, but may as well cover it.
                         #---------------------------------------------------------------------------
                         log.write("AP: UNEXPLAINED, LANDING...\n")
@@ -2905,6 +2712,242 @@ class AutopilotManager():
 
 ####################################################################################################
 #
+# Video at 10fps. Each frame is 320 x 320 pixels.  Each macro-block is 16 x 16 pixels.  Due to an
+# extra column of macro-blocks (dunno why), that means each frame breaks down into 21 columns by
+# 20 rows = 420 macro-blocks, each of which is 4 bytes - 1 signed byte X, 1 signed byte Y and 2 unsigned
+# bytes SAD (sum of absolute differences).
+#
+####################################################################################################
+def VideoProcessor(frame_width, frame_height, frame_rate):
+    with picamera.PiCamera() as camera:
+        camera.resolution = (frame_width, frame_height)
+        camera.framerate = frame_rate
+
+        #-------------------------------------------------------------------------------------------
+        # 50% contrast seems to work well - completely arbitrary.
+        #-------------------------------------------------------------------------------------------
+        camera.contrast = 50
+
+        with io.open("/dev/shm/motion_stream", mode = "wb", buffering = 0) as vofi:
+            camera.start_recording('/dev/null', format='h264', motion_output=vofi, quality=23)
+            try:
+                while True:
+                    camera.wait_recording(1.0)
+            except KeyboardInterrupt:
+                pass
+            finally:
+                camera.stop_recording()
+
+
+####################################################################################################
+#
+# Class to process video frame macro-block motion tracking.
+#
+####################################################################################################
+class VideoManager:
+
+    def __init__(self, video_fifo, yaw_increment):
+        self.video_fifo = video_fifo
+        self.yaw_increment = yaw_increment
+        self.phase = 0
+
+        mb_size = 16           # 16 x 16 pixels are combined to make a macro-block
+        bytes_per_mb = 4       # Each macro-block is 4 bytes, 1 X, 1 Y and 2 SAD
+
+        self.mbs_per_frame = int(round((frame_width / mb_size + 1) * (frame_height / mb_size)))
+        self.bytes_per_frame = self.mbs_per_frame * bytes_per_mb
+
+    def flush(self):
+        #-------------------------------------------------------------------------------------------
+        # Read what should be the backlog of frames, and return how many there are.
+        #-------------------------------------------------------------------------------------------
+        frame_bytes = self.video_fifo.read(self.bytes_per_frame)
+        assert (len(frame_bytes) % self.bytes_per_frame == 0), "Incomplete video frames received: %f" % (len(frame_bytes) / self.bytes_per_frame)
+        return (len(frame_bytes) / self.bytes_per_frame)
+
+    def phase0(self):
+        #-------------------------------------------------------------------------------------------
+        # Read the video stream and parse into a list of macro-block vectors
+        #-------------------------------------------------------------------------------------------
+        self.vector_dict = {}
+        self.vector_list = []
+        self.c_yaw = math.cos(self.yaw_increment)
+        self.s_yaw = math.sin(self.yaw_increment)
+
+        sign = 1 # Was '-1 if i_am_chloe else 1' as Chloe had the camera twisted by 180 degrees
+
+        frames = self.video_fifo.read(self.bytes_per_frame)
+        assert (len(frames) != 0), "Shouldn't be here, no bytes to read"
+        assert (len(frames) % self.bytes_per_frame == 0), "Incomplete frame bytes read"
+
+        num_frames = int(len(frames) / self.bytes_per_frame)
+        assert (num_frames == 1), "Read more than one frame somehow?"
+
+        #-------------------------------------------------------------------------------------------
+        # Convert the data to byte, byte, ushort of x, y, sad structure and process them.  The
+        # exception here happens when a macro-block is filled with zeros, indicating either a full
+        # reset or no movement, and hence no processing required.
+        #-------------------------------------------------------------------------------------------
+        format = '=' + 'bbH' * self.mbs_per_frame * num_frames
+        iframe = struct.unpack(format, frames)
+        assert (len(iframe) % 3 == 0), "iFrame size error"
+
+        self.mbs_per_iframe = int(round(len(iframe) / 3 / num_frames))
+        assert (self.mbs_per_iframe == self.mbs_per_frame), "iframe mb count different to frame mb count"
+
+        #---------------------------------------------------------------------------------------
+        # Split the iframe into a list of macro-block vectors.  The mapping from each iframe
+        # in idx, idy depends on how the camera is orientated WRT the frame.
+        # This must be checked callibrated.
+        #
+        # Note: all macro-block vectors are even integers, so we divide them by 2 here for use
+        #       walking the vector dictionary for neighbours; we reinstate this at the end.
+        #
+        #---------------------------------------------------------------------------------------
+        for ii in range(self.mbs_per_iframe):
+            idx = iframe[3 * ii + 1]
+            idy = iframe[3 * ii]
+            assert (idx % 2 == 0 and idy % 2 == 0), "Odd (not even) MB vector"
+
+            idx = int(round(sign * idx / 2))
+            idy = int(round(sign * idy / 2))
+
+            if idx == 0 and idy == 0:
+                continue
+
+            self.vector_list.append((idx, idy))
+
+        #-------------------------------------------------------------------------------------------
+        # If the dictionary is empty, this indicates a new frame; this is not an error strictly,
+        # more of a reset to tell the outer world about.
+        #-------------------------------------------------------------------------------------------
+        if len(self.vector_list) == 0:
+            raise ValueError("Empty Video Frame Object")
+
+    def phase1(self):
+        #-------------------------------------------------------------------------------------------
+        # Unyaw the list of vectors, overwriting the yaw list
+        #-------------------------------------------------------------------------------------------
+        unyawed_vectors = []
+
+        #-------------------------------------------------------------------------------------------
+        # Undo the yaw increment - we could use the full rotation matrix here (as elsewhere), but
+        # this is more efficient in this very time sensitive function.
+        #-------------------------------------------------------------------------------------------
+        for vector in self.vector_list:
+            idx, idy = vector
+            uvx = self.c_yaw * idx - self.s_yaw * idy
+            uvy = self.s_yaw * idx + self.c_yaw * idy
+            unyawed_vectors.append((int(round(uvx)), int(round(uvy))))
+
+        self.vector_list = unyawed_vectors
+
+    def phase2(self):
+        #-------------------------------------------------------------------------------------------
+        # Build the dictionary of unyawed vectors; they score 2 because of the next phase
+        #-------------------------------------------------------------------------------------------
+        for (idx, idy) in self.vector_list:
+            if (idx, idy) in self.vector_dict:
+                self.vector_dict[(idx, idy)] += 2
+            else:
+                self.vector_dict[(idx, idy)] = 2
+
+    def phase3(self):
+        #-------------------------------------------------------------------------------------------
+        # Pass again through the dictionary of vectors, building up clusters based on neighbours.
+        #-------------------------------------------------------------------------------------------
+        best_score = 0
+        self.best_vectors = []
+
+        for vector in self.vector_dict.keys():
+            vector_score = self.vector_dict[vector]
+            for ii in range(-1, 2):
+                for jj in range(-1, 2):
+                    if ii == 0 and jj == 0:
+                        continue
+
+                    vector_x, vector_y = vector
+                    neighbour = (vector_x + ii, vector_y + jj)
+                    if neighbour in self.vector_dict:
+                        vector_score += self.vector_dict[neighbour]
+
+            if vector_score > best_score:
+                best_score = vector_score
+                self.best_vectors = [(vector, vector_score)]
+
+            elif vector_score == best_score:
+                self.best_vectors.append((vector, vector_score))
+
+    def phase4(self):
+        #-------------------------------------------------------------------------------------------
+        # Now we've collected the clusters of the best score vectors in the frame, average and reyaw
+        # it before returning the result.
+        #-------------------------------------------------------------------------------------------
+        sum_score = 0
+        sum_x = 0
+        sum_y = 0
+
+        for (vector_x, vector_y), vector_score in self.best_vectors:
+            sum_x += vector_x * vector_score
+            sum_y += vector_y * vector_score
+            sum_score += vector_score
+
+        best_x = sum_x / sum_score
+        best_y = sum_y / sum_score
+
+        #-------------------------------------------------------------------------------------------
+        # Redo the yaw increment - we could use the full rotation matrix here (as elsewhere), but
+        # this is more efficient in this very time sensitive function.
+        #-------------------------------------------------------------------------------------------
+        idx = self.c_yaw * best_x + self.s_yaw * best_y
+        idy = -self.s_yaw * best_x + self.c_yaw * best_y
+
+        return 2 * idx, 2 * idy
+
+    def process(self):
+        assert(self.phase < 5), "Phase shift in motion vector processing"
+
+        #-------------------------------------------------------------------------------------------
+        # Phase 0 - load the data and convert into a macro-block vector list
+        #-------------------------------------------------------------------------------------------
+        if self.phase == 0:
+            self.phase0()
+            rv = None
+
+        #-------------------------------------------------------------------------------------------
+        # Phase 1 - take the list of macro blocks and undo yaw
+        #-------------------------------------------------------------------------------------------
+        elif self.phase == 1:
+            self.phase1()
+            rv = None
+
+        #-------------------------------------------------------------------------------------------
+        # Phase 2 - build the dictionary of int rounded unyawed vectors
+        #-------------------------------------------------------------------------------------------
+        elif self.phase == 2:
+            self.phase2()
+            rv = None
+
+        #-------------------------------------------------------------------------------------------
+        # Phase 3 - walk the dictionary, looking for neighbouring clusters and score them
+        #-------------------------------------------------------------------------------------------
+        elif self.phase == 3:
+            self.phase3()
+            rv = None
+
+        #-------------------------------------------------------------------------------------------
+        # Phase 4 - average highest peak clusters, redo yaw, and return result
+        #-------------------------------------------------------------------------------------------
+        elif self.phase == 4:
+            idx, idy = self.phase4()
+            rv = idx, idy
+
+        self.phase += 1
+        return rv
+
+
+####################################################################################################
+#
 # Class to split initialation, flight startup and flight control
 #
 ####################################################################################################
@@ -3010,7 +3053,7 @@ class Quadcopter:
         #-------------------------------------------------------------------------------------------
         # First log, whose flying and under what configuration
         #-------------------------------------------------------------------------------------------
-        logger.warning("%s is flying.", "Zoe" if i_am_zoe else "Hermione" if i_am_hermione else "Chloe")
+        logger.warning("%s is flying.", "Zoe" if i_am_zoe else "Hermione")
 
         #-------------------------------------------------------------------------------------------
         # Set the BCM pin assigned to the FIFO overflow
@@ -3048,7 +3091,7 @@ class Quadcopter:
         signal.signal(signal.SIGINT, self.shutdownSignalHandler)
 
         #-------------------------------------------------------------------------------------------
-        # Phoebe, Chloe and Zoe have similar custom PCBs so share the same PWM pin layouts.
+        # Zoe is a Quad, Hermione is an X8
         #-------------------------------------------------------------------------------------------
         ESC_BCM_FLT = 0
         ESC_BCM_FRT = 0
@@ -3563,24 +3606,35 @@ class Quadcopter:
             frame_height = frame_width
             frame_rate = fusion_rate
 
-            camera_data_update = False
+            video_update = False
 
             #------------------------------------------------------------------------------------------
             # Scale is the convertion from macro-blocks to meters at a given height.
             # - V1 camera angle of view (aov): 54 x 41 degrees
             # - V2 camera angle of view (aov): 62.2 x 48.8 degrees.
             # Because we're shooting a 320 x 320 video from with a V2 camera this means a macro-block is
-            # 2 x height x tan ( aov / 2) / 320 meters.  
+            # 2 x height (h) x tan ( aov / 2) / 320 meters:
             #
-            '''
-            # However, on testing this, it seems to be out by a fraction of 1.55, so I've added a very
-            # speculative pi/2 factor.  Note that if this is changes, then cli_hvp_gain must be shifted
-            # in sync too?
-            '''
+            #             ^       
+            #            /|\
+            #           / | \
+            #          /  |  \
+            #         /   h   \
+            #        /    |    \
+            #       /     |     \
+            #      /      |      \ 
+            #     /_______v_______\ 
+            #    
+            #     \______/V\______/
             #
-            # The macro-block vectors represent the movement of a macro-block between frames.  This is
-            # implied by the fact that each vector can only be between +/- 128 in X and Y which allows for
-            # shifts up to +/- 2048 pixels in a frame which seems reasonable given the h.264 compression.
+            #     aov = 48.8 degrees
+            #
+            # The macro-block vector is the movement in pixels between frames.  This is guessed by the
+            # fact each vector can only be between +/- 128 in X and Y which allows for shifts up to
+            # +/- 2048 pixels in a frame which seems reasonable given the h.264 compression.
+            #
+            # Testing has proven this true - all errors are just a percent or so - well within the 
+            # scope of the "nut behind the wheel" error.
             #
             # scale just needs to be multiplied by (macro-block shift x height) to produce the increment of
             # horizontal movement in meters.
@@ -3637,7 +3691,7 @@ class Quadcopter:
         temp = mpu6050.readTemperature()
         logger.critical("IMU core temp (start): ,%f", temp / 333.86 + 21.0)
 
-        time.sleep(20 / sampling_rate)
+        time.sleep(20 / sampling_rate) # 20 < 0.5 x FIFO_SIZE
         nfb = mpu6050.numFIFOBatches()
         qax, qay, qaz, qrx, qry, qrz, dt = mpu6050.readFIFO(nfb)
 
@@ -3662,9 +3716,9 @@ class Quadcopter:
         apa, ara = GetAbsoluteAngles(qax, qay, qaz)
         aya = 0.0
 
-        papa = apa
-        para = ara
-        paya = aya
+        pqrx = qrx
+        pqry = qry
+        pqrz = qrz
 
         #-------------------------------------------------------------------------------------------
         # Get the value for gravity.
@@ -3699,7 +3753,7 @@ class Quadcopter:
         mgx = 0.0
         mgy = 0.0
         mgz = 0.0
-        cya_base = 0.0
+        cya_prev = 0.0
 
         if self.compass_installed:
             #---------------------------------------------------------------------------------------
@@ -3725,7 +3779,7 @@ class Quadcopter:
             #---------------------------------------------------------------------------------------
             cax, cay, caz = RotateVector(mgx, mgy, mgz, -pa, -ra, 0)
             cya_prev = -(math.atan2(cax, cay) + 2 * math.pi) % (2 * math.pi)
-            logger.critical("Initial orientation:, %f." % (math.degrees(cya_base)))
+            logger.critical("Initial orientation:, %f." % (math.degrees(cya_prev)))
 
 
         ######################################### GO GO GO! ########################################
@@ -3734,7 +3788,7 @@ class Quadcopter:
         # Start the autopilot - use compass angle plus magnetic declination angle (1o 5') to pass through the
         # take-off orientation angle wrt GPS / true north
         #-------------------------------------------------------------------------------------------
-        app = AutopilotManager(self.sweep_installed, self.gps_installed, self.compass_installed, cya_base + math.radians(1 + 5/60), file_control, gps_control, fp_filename)
+        app = AutopilotManager(self.sweep_installed, self.gps_installed, self.compass_installed, cya_prev + math.radians(1 + 5/60), file_control, gps_control, fp_filename)
         autopilot_fifo = app.autopilot_fifo
         autopilot_fd = autopilot_fifo.fileno()
         poll.register(autopilot_fd, select.POLLIN | select.POLLPRI)
@@ -3760,11 +3814,11 @@ class Quadcopter:
             pwm_header = "FL PWM, FR PWM, BL PWM, BR PWM" if i_am_zoe else "FLT PWM, FRT PWM, BLT PWM, BRT PWM, FLB PWM, FRB PWM, BLB PWM, BRB PWM"
             logger.warning("time, dt, loops, " +
                            "temperature, " +
-#                           "latitude, longitude, altitude, satellites, north, east, height, " +
                            "mgx, mgy, mgz, cya, " +
-#                           "sweep proximity, sweep direction, " +
-                           "qdx_fuse, qdy_fuse, qdz_fuse, " +
-                           "qvx_fuse, qvy_fuse, qvz_fuse, " +
+                           "edx_fuse, edy_fuse, edz_fuse, " +
+                           "evx_fuse, evy_fuse, evz_fuse, " +
+#                           "qdx_fuse, qdy_fuse, qdz_fuse, " +
+#                           "qvx_fuse, qvy_fuse, qvz_fuse, " +
                            "edx_target, edy_target, edz_target, " +
                            "evx_target, evy_target, evz_target, " +
                            "qrx, qry, qrz, " +
@@ -3772,7 +3826,7 @@ class Quadcopter:
                            "qgx, qgy, qgz, " +
                            "pitch, roll, yaw, yaw2, " +
 
-                           "qdx_input, qdy_input, qdz_input, " +
+#                           "qdx_input, qdy_input, qdz_input, " +
 #                           "qdx_target, qdy_target, qdz_target' " +
 #                           "qvx_input, qvy_input, qvz_input, " +
 #                           "qvx_target, qvy_target, qvz_target, " +
@@ -3820,13 +3874,16 @@ class Quadcopter:
         #
         # Motion and PID processing loop naming conventions
         #
+        # qd* = quad frame distance
+        # qv* = quad frame velocity
         # qa? = quad frame acceleration
         # qg? = quad frame gravity
-        # qr? = quad motion rotation
+        # qr? = quad frame rotation
         # ea? = earth frame acceleration
         # eg? = earth frame gravity
-        # ua? = euler angles between reference frames
+        # ua? = euler angles between frames
         # ur? = euler rotation between frames
+        # a?a = absoluted angles between frames
         #
         #===========================================================================================
         while self.keep_looping:
@@ -3860,7 +3917,7 @@ class Quadcopter:
                         vvx, vvy = result
                         vvx *= scale
                         vvy *= scale
-                        camera_data_update = True
+                        video_update = True
                         vmp = None
 
                     '''
@@ -3893,12 +3950,12 @@ class Quadcopter:
                         # Run the Video Motion Processor.
                         #---------------------------------------------------------------------------
                         vmp_dt = vmpt - pvmpt
-                        apa_increment = apa - papa
-                        ara_increment = ara - para
-                        aya_increment = aya - paya
-                        papa = apa
-                        para = ara
-                        paya = aya
+                        apa_increment = (qry + pqry) * vmp_dt / 2
+                        ara_increment = (qrx + pqrx) * vmp_dt / 2
+                        aya_increment = (qrz + pqry) * vmp_dt / 2
+                        pqrx = qrx
+                        pqry = qry
+                        pqrz = qrz
                         pvmpt = vmpt
 
                         try:
@@ -4086,8 +4143,8 @@ class Quadcopter:
                 # Rotate compass readings back to earth plane and rescale to 0 - 2 * pi
                 #-----------------------------------------------------------------------------------
                 cax, cay, caz = RotateVector(mgx, mgy, mgz, -pa, -ra, 0)
-                cya = -(math.atan2(cax, cay) + math.pi * 2) % (2 * math.pi)
-                cya_increment = (cya - cya_prev + math.pi * 2) % (2 * math.pi)
+                cya = (-math.atan2(cax, cay) + 2 * math.pi) % (2 * math.pi)
+                cya_increment = cya - cya_prev
                 cya_prev = cya
 
                 #-----------------------------------------------------------------------------------
@@ -4129,102 +4186,78 @@ class Quadcopter:
             # If the camera is installed, and we have an absolute height measurement, get the horizontal
             # distance and velocity.  Note we always have height measurement, even if only from the
             # double integrated accelerometer.
+            #AB: gll_update uf added above and test here would always be true.
             #---------------------------------------------------------------------------------------
-            if self.camera_installed and self.gll_installed and camera_data_update:
+            '''
+            #AB! Can this be refined further so earth frame rotation can be removed better?
+            '''
+
+            if self.camera_installed and self.gll_installed and video_update:
 
                 #-----------------------------------------------------------------------------------
                 # Take the increment of the scaled X and Y distance, and muliply by the height to
                 # get the absolute position, allowing for tilt increment.
                 #-----------------------------------------------------------------------------------
-                '''
-                #AB! Don't like the nomenclature of ed?_increment and vv?: ed*_increment should be
-                #AB! qd*_increment but that exists.  vv* = video 'velocity' but it's an increment
-                #AB! between video frames, in kinda pixel units until height is know.
-                '''
-
-                edx_increment = (g_distance * tilt_ratio) * (vvx + apa_increment / (2 * math.pi))
-                edy_increment = (g_distance * tilt_ratio) * (vvy - ara_increment / (2 * math.pi))
+                edx_increment = g_distance * (tilt_ratio * vvx + apa_increment)
+                edy_increment = g_distance * (tilt_ratio * vvy - ara_increment)
 
                 #-----------------------------------------------------------------------------------
                 # Add the incremental distance to the total distance, and differentiate against time for
                 # velocity.  The camera output is already in the quad frame, so all e??_increment need
                 # renaming.
                 #-----------------------------------------------------------------------------------
-                qdx_fuse += edx_increment
-                qdy_fuse += edy_increment
+                edx_fuse += edx_increment
+                edy_fuse += edy_increment
 
-                qvx_fuse = edx_increment / vmp_dt
-                qvy_fuse = edy_increment / vmp_dt
+                '''
+                #AB: Occasionally vmp_dt is 0.0 resulting in devision by zero; catch it here until
+                #AB: I know how this happens - it should be impossible AFAIK
+                '''
+                if vmp_dt != 0.0:
+                    evx_fuse = edx_increment / vmp_dt
+                    evy_fuse = edy_increment / vmp_dt
 
-                #-----------------------------------------------------------------------------------
-                # Set the flags for horizontal distance and velocity fusion
-                #-----------------------------------------------------------------------------------
-                hdf = True
-                hvf = True
+                    #-----------------------------------------------------------------------------------
+                    # Set the flags for horizontal distance and velocity fusion
+                    #-----------------------------------------------------------------------------------
+                    hdf = True
+                    hvf = True
 
-                camera_data_update = False
+                    video_update = False
 
 
             ######################################## FUSION ########################################
 
 
             #---------------------------------------------------------------------------------------
-            # If we have new vertical data, fuse it.
+            # If we have new full set of data, fuse it.
             #---------------------------------------------------------------------------------------
-            if vvf and vdf:
-                #-----------------------------------------------------------------------------------
-                # We need to rotate e*z_fuse into the quad frame.  First get best estimates of e?x +
-                # e?y by rotations of the q?x / q?y values back to the earth frame.  Then use the new
-                # Z value as part of the rerotation back to quad frame.
-                #-----------------------------------------------------------------------------------
-                edx_fuse, edy_fuse, __ = RotateVector(qdx_input, qdy_input, qdz_input, -pa, -ra, -ya)
-                evx_fuse, evy_fuse, __ = RotateVector(qvx_input, qvy_input, qvz_input, -pa, -ra, -ya)
+            if vvf and vdf and hvf and hdf:
 
-                __, __, qdz_fuse = RotateVector(edx_fuse, edy_fuse, edz_fuse, pa, ra, ya)
-                __, __, qvz_fuse = RotateVector(evx_fuse, evy_fuse, evz_fuse, pa, ra, ya)
+                qdx_fuse, qdy_fuse, qdz_fuse = RotateVector(edx_fuse, edy_fuse, edz_fuse, pa, ra, ya)
+                qvx_fuse, qvy_fuse, qvz_fuse = RotateVector(evx_fuse, evy_fuse, evz_fuse, pa, ra, ya)
 
-                #-----------------------------------------------------------------------------------
-                # Now fuse with complementary filters.
-                #-----------------------------------------------------------------------------------
-                '''
-                #AB! Note that because we always get an update from the GLL each motion cycle, we can
-                #AB! use the motion_dt.  If we ever get the GLL interrupt to work, this needs changing
-                #AB! to an equivalent of the fusion_dt used in the horizontal fusion lower down.
-                '''
-                fusion_fraction = fusion_tau / (fusion_tau + motion_dt)
+                fusion_fraction = fusion_tau / (fusion_tau + fusion_dt)
+ 
+                qvx_input = fusion_fraction * qvx_input + (1 - fusion_fraction) * qvx_fuse
+                qdx_input = fusion_fraction * qdx_input + (1 - fusion_fraction) * qdx_fuse
+
+                qvy_input = fusion_fraction * qvy_input + (1 - fusion_fraction) * qvy_fuse
+                qdy_input = fusion_fraction * qdy_input + (1 - fusion_fraction) * qdy_fuse
 
                 qvz_input = fusion_fraction * qvz_input + (1 - fusion_fraction) * qvz_fuse
                 qdz_input = fusion_fraction * qdz_input + (1 - fusion_fraction) * qdz_fuse
-
-                #-----------------------------------------------------------------------------------
-                # Clear the flags for vertical distance and velocity fusion
-                #-----------------------------------------------------------------------------------
-                vdf = False
-                vvf = False
-
-            #---------------------------------------------------------------------------------------
-            # If we have new horizontal data, fuse it.
-            #---------------------------------------------------------------------------------------
-            if hdf and hvf:
-                #-----------------------------------------------------------------------------------
-                # Now fuse with complementary filters
-                #-----------------------------------------------------------------------------------
-                fusion_fraction = fusion_tau / (fusion_tau + fusion_dt)
-
-                qvx_input = fusion_fraction * qvx_input + (1 - fusion_fraction) * qvx_fuse
-                qvy_input = fusion_fraction * qvy_input + (1 - fusion_fraction) * qvy_fuse
-
-                qdx_input = fusion_fraction * qdx_input + (1 - fusion_fraction) * qdx_fuse
-                qdy_input = fusion_fraction * qdy_input + (1 - fusion_fraction) * qdy_fuse
 
                 fusion_loops += 1
                 fusion_dt = 0.0
 
                 #-----------------------------------------------------------------------------------
-                # Clear the flags for horizontal distance and velocity fusion
+                # Clear the flags for vertical distance and velocity fusion
                 #-----------------------------------------------------------------------------------
                 hdf = False
                 hvf = False
+                vdf = False
+                vvf = False
 
 
             ########################### VELOCITY / DISTANCE PID TARGETS ############################
@@ -4353,7 +4386,7 @@ class Quadcopter:
             pr_target = pr_target if abs(pr_target) < MAX_RATE else (pr_target / abs(pr_target) * MAX_RATE)
             rr_target = rr_target if abs(rr_target) < MAX_RATE else (rr_target / abs(rr_target) * MAX_RATE)
             yr_target = yr_target if abs(yr_target) < YAW_MAX_RATE else (yr_target / abs(yr_target) * YAW_MAX_RATE)
-            '''    
+            '''
 
             #=======================================================================================
             # Rotation rate PIDs
@@ -4466,15 +4499,18 @@ class Quadcopter:
                 logger.warning("%f, %f, %d, " % (sampling_loops / sampling_rate, motion_dt, sampling_loops) +
                                "%f, " % (temp / 333.86 + 21) +
                                "%f, %f, %f, %f, " % (mgx, mgy, mgz, math.degrees(cya)) +
-                               "%f, %f, %f, " % (qdx_fuse, qdy_fuse, qdz_fuse) +
-                               "%f, %f, %f, " % (qvx_fuse, qvy_fuse, qvz_fuse) +
+                               "%f, %f, %f, " % (edx_fuse, edy_fuse, edz_fuse) +
+                               "%f, %f, %f, " % (evx_fuse, evy_fuse, evz_fuse) +
+#                               "%f, %f, %f, " % (qdx_fuse, qdy_fuse, qdz_fuse) +
+#                               "%f, %f, %f, " % (qvx_fuse, qvy_fuse, qvz_fuse) +
                                "%f, %f, %f, " % (edx_target, edy_target, edz_target) +
                                "%f, %f, %f, " % (evx_target, evy_target, evz_target) +
                                "%f, %f, %f, " % (qrx, qry, qrz) +
                                "%f, %f, %f, " % (qax, qay, qaz) +
                                "%f, %f, %f, " % (qgx, qgy, qgz) +
                                "%f, %f, %f, %f, " % (math.degrees(pa), math.degrees(ra), math.degrees(ya), math.degrees(ya_fused)) +
-                               "%f, %f, %f, " % (qdx_input, qdy_input, qdz_input) +
+
+#                               "%f, %f, %f, " % (qdx_input, qdy_input, qdz_input) +
 #                               "%f, %f, %f, " % (qdx_target, qdy_target, qdz_target) +
 #                               "%f, %f, %f, " % (qvx_input, qvy_input, qvz_input) +
 #                               "%f, %f, %f, " % (qvx_target, qvy_target, qvz_target) +
@@ -4484,7 +4520,6 @@ class Quadcopter:
 #                               "%f, %f, %f, " % (math.degrees(qry), math.degrees(qrx), math.degrees(qrz)) +
 #                               "%f, %f, %f, " % (math.degrees(pr_target), math.degrees(rr_target), math.degrees(yr_target)) +
 #                               "%f, %f, %f, " % (math.degrees(pr_out), math.degrees(rr_out), math.degrees(yr_out)) +
-
 
 #                               "%f, %f, %f, %f, %f, %f, %f, %f, %d, " % (qdx_input, qdx_target, qvx_input, qvx_target, math.degrees(apa), math.degrees(pa_target), math.degrees(qry), math.degrees(pr_target), pr_out) +
 #                               "%f, %f, %f, %f, %f, %f, %f, %f, %d, " % (qdy_input, qdy_target, qvy_input, qvy_target, math.degrees(ara), math.degrees(ra_target), math.degrees(qrx), math.degrees(rr_target), rr_out) +
