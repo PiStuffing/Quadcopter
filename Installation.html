@@ -1,99 +1,122 @@
-Here's the installation steps I took to install Hermione from scratch today.
+<html>
+<head><meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+	<title></title>
+</head>
+<body>
+<p>Here&#39;s the installation steps I took to install Hermione from scratch today.</p>
+
+<p><strong>http://downloads.raspberrypi.org/raspbian/images/raspbian-2017-02-27/ February 2017 Jessie Lite image is the last that works due to I2C enhancements which the Garmin Lidar-Lite V3 do not support</strong></p>
+
 <ul>
-    <li>Use <a href="https://etcher.io/">Etcher</a> to write the SD card with the latest <a href="https://www.raspberrypi.org/downloads/raspbian/">Raspian Jessie Lite</a> image</li>
-    <li>In windows in the root directory of the SD card, create an SSH file to enable it
-<pre>echo hello &gt; ssh</pre>
-</li>
-    <li>Boot up your RPi with SD card, keyboard, mouse, monitor and WAP / soft AP supporting WiFi dongle installed (no WiFi dongle needed for 3B and Zero-W)</li>
-    <li>raspi-config to set hostname, GPU memory (128MB), enable I2C, overclock to 1GHz, disable overscan, disable serial UART, enable camera support and SSH server.  Do this incrementally to make sure each change takes effect in /boot/config.txt</li>
-    <li>Set up a WiFi internet connection from the CLI as per https://www.raspberrypi.org/documentation/configuration/wireless/wireless-cli.md</a>.</li>
-    <li>sudo apt-get update</li>
-    <li>sudo apt-get dist-upgrade</li>
-    <li>sudo apt-get install i2c-tools python-smbus python-dev python-setuptools python-picamera python-gps python-serial git ftp udhcpd hostapd <del>serial minimalmodbus</del></li>
-    <li>edit /boot/config.txt adding
-<pre><code>dtparam=i2c_arm_baudrate=400000</code></pre>
-</li>
-    <li>while in /boot/config.txt, disable pointless functions thus
-<pre><code>dtparam=audio=off
+	<li>Use <a href="https://etcher.io/">Etcher</a> to write the SD card with the latest <a href="https://www.raspberrypi.org/downloads/raspbian/">Raspian Jessie Lite</a> image</li>
+	<li>In windows in the root directory of the SD card, create an SSH file to enable it
+	<pre>
+echo hello &gt; ssh</pre>
+	</li>
+	<li>Boot up your RPi with SD card, keyboard, mouse, monitor and WAP / soft AP supporting WiFi dongle installed (no WiFi dongle needed for 3B and Zero-W)</li>
+	<li>raspi-config to set hostname, GPU memory (128MB), enable I2C, overclock to 1GHz, disable overscan, disable serial UART, enable camera support and SSH server. Do this incrementally to make sure each change takes effect in /boot/config.txt</li>
+	<li>Set up a WiFi internet connection from the CLI as per https://www.raspberrypi.org/documentation/configuration/wireless/wireless-cli.md.</li>
+	<li>sudo apt-get update</li>
+	<li>sudo apt-get dist-upgrade</li>
+	<li>sudo apt-get install i2c-tools python-smbus python-dev python-setuptools python-picamera python-gps python-serial git ftp udhcpd hostapd <del>serial minimalmodbus</del></li>
+	<li>edit /boot/config.txt adding
+	<pre>
+<code>dtparam=i2c_arm_baudrate=400000</code></pre>
+	</li>
+	<li>while in /boot/config.txt, disable pointless functions thus
+	<pre>
+<code>dtparam=audio=off
 start_x=0</code></pre>
-</li>
-<li>If you are using a B+ or B2, add the following to /boot/config.txt<pre>max_usb_current=1</pre></li>
-    <li>If you are using a Zero-W, you may want to disable Bluetooth in /etc/modprobe.d/raspi-blacklist.conf thus:
-        <pre># WiFi
+	</li>
+	<li>If you are using a Pi3 or Zero-W, you may want to disable Bluetooth in /etc/modprobe.d/raspi-blacklist.conf thus:
+	<pre>
+# WiFi
 # blacklist brcmfmac
 # blacklist brcmutil
 
 # Bluetooth
 blacklist btbcm
 blacklist hci_uart</pre>
-Likewise if you're using an WiFi USB dongle, you can disable the internal one by removing the '#'s for that pair of lines.</li>
-    <li>For the above, you can do the B3 this way instead
-        <pre>dtoverlay=pi3-disable-wifi
-dtoverlay=pi3-disable-bt</pre></li>
-    <li>If you are using a B2 V1.2, it can be overclockec to 1.2GHz thus in /boot/config.txt
-        <pre>arm_freq=1200
+	Likewise if you&#39;re using an WiFi USB dongle, you can disable the internal one by removing the &#39;#&#39;s for that pair of lines.</li>
+	<li>If you are using a B2 V1.2, it can be overclocked&nbsp;to 1.2GHz thus in /boot/config.txt
+	<pre>
+arm_freq=1200
 core_freq=500
 sdram_freq=600
-over_voltage=6
-force_turbo=1</pre></li>
-    <li>If you are using USB GPS and / or Scanse Sweep, it's worth linking the USB tty to a unique name for each.  In /etc/udev/rules.d add a file such as '99-usb-serial.rules containing something like this:
-<pre>SUBSYSTEM=="tty", ATTRS{idVendor}=="0403", ATTRS{idProduct}=="6015", ATTRS{serial}=="DO004VY5", SYMLINK+="ttySWEEP"
-SUBSYSTEM=="tty", ATTRS{idVendor}=="067b", ATTRS{idProduct}=="2303", SYMLINK+="ttyGPS"
+force_turbo=1
+over_voltage=6</pre>
+	</li>
+	<li>If you are using USB GPS and / or Scanse Sweep, it&#39;s worth linking the USB tty to a unique name for each. In /etc/udev/rules.d add a file such as &#39;99-usb-serial.rules containing something like this:
+	<pre>
+SUBSYSTEM==&quot;tty&quot;, ATTRS{idVendor}==&quot;0403&quot;, ATTRS{idProduct}==&quot;6015&quot;, ATTRS{serial}==&quot;DO004VY5&quot;, SYMLINK+=&quot;ttySWEEP&quot;
+SUBSYSTEM==&quot;tty&quot;, ATTRS{idVendor}==&quot;067b&quot;, ATTRS{idProduct}==&quot;2303&quot;, SYMLINK+=&quot;ttyGPS&quot;
 </pre>
-The details of what to fill in come from /var/log/messages as a USB UART is plugged in.  Also update /etc/default/gpsd and Quadcopter.py to reference these tty* names instead of ttyUSB*</li>
-    <li>git clone -b v2 https://github.com/metachris/RPIO</li>
-    <li>cd RPIO</li>
-    <li>check mailbox.c code present in source/c_pwm/mailbox.c)</li>
-    <li>sudo python ./setup.py install</li>
-    <li>cd ~</li>
-    <li>git clone https://github.com/PiStuffing/Quadcopter</li>
-    <li>cp Quadcopter/qc.py .</li>
-    <li>cp Quadcopter/fp.csv .</li>
-    <li>cp Quadcopter/Quadcopter.py .</li>
-    <li>sudo python ./qc.py
-<ul>
-    <li>--tc 1 -h 1150</li>
-    <li>-f fp.csv</li>
+	The details of what to fill in come from /var/log/messages as a USB UART is plugged in. Also /etc/default/gpsd and Quadcopter.py to reference these tty* names instead of ttyUSB*</li>
+	<li><del>git clone https://github.com/pyhys/minimalmodbus</del></li>
+	<li><del>cd minimalmodbus</del></li>
+	<li><del>sudo python ./setup install</del></li>
+	<li><del>cd ~</del></li>
+	<li>git clone -b v2 https://github.com/metachris/RPIO</li>
+	<li>cd RPIO</li>
+	<li>check mailbox.c code present in source/c_pwm/mailbox.c)</li>
+	<li>sudo python ./setup.py install</li>
+	<li>cd ~</li>
+	<li>git clone https://github.com/PiStuffing/Quadcopter</li>
+	<li>cp Quadcopter/qc.py .</li>
+	<li>cp Quadcopter/fp.csv .</li>
+	<li>cp Quadcopter/Quadcopter.py .</li>
+	<li>sudo python ./qc.py
+	<ul>
+		<li>--tc 1 -h 1150</li>
+		<li>-f fp.csv</li>
+	</ul>
+	</li>
 </ul>
-</li>
-</ul>
-Finally, to make her a WAP:
+
+<p>Finally, to make her a WAP:</p>
+
 <ul>
-    <li>Disable the new style network tools:
-<pre>sudo apt-get remove dhcpcd5 raspberrypi-net-mods</pre>
-</li>
-    <li>Configure hostapd by creating /etc/hostapd/hostapd.conf "sudo vi /etc/hostapd/hostapd.conf" and add the following:
-<pre>interface=wlan0
+	<li>Disable the new style network tools:
+	<pre>
+sudo apt-get remove dhcpcd5 raspberrypi-net-mods</pre>
+	</li>
+	<li>Configure hostapd by creating /etc/hostapd/hostapd.conf &quot;sudo vi /etc/hostapd/hostapd.conf&quot; and add the following:
+	<pre>
+interface=wlan0
 driver=nl80211
-ssid=WAPPi
+ssid=HoGWAP
 channel=1
 wmm_enabled=0
 wpa=1
-wpa_passphrase=WAP3.141592654
+wpa_passphrase=HoG3.141592654
 wpa_key_mgmt=WPA-PSK
 wpa_pairwise=TKIP
 rsn_pairwise=CCMP
 auth_algs=1
 macaddr_acl=0</pre>
-</li>
-    <li>Enable hostapd by editing /etc/default/hostapd thus, adding
-<pre>DAEMON_CONF="/etc/hostapd/hostapd.conf"</pre>
-</li>
-    <li>We next need to configure dhcp for the clients accessing the network to provide their IP addresses - edit /etc/udhcpd.conf adding:
-<pre>start 192.168.42.20 # This is the range of IPs that the hostspot will give to client devices.
+	</li>
+	<li>Enable hostapd by editing /etc/default/hostapd thus, adding
+	<pre>
+DAEMON_CONF=&quot;/etc/hostapd/hostapd.conf&quot;</pre>
+	</li>
+	<li>We next need to configure dhcp for the clients accessing the network to provide their IP addresses - edit /etc/udhcpd.conf adding:
+	<pre>
+start 192.168.42.20 # This is the range of IPs that the hostspot will give to client devices.
 end 192.168.42.254
 interface wlan0 # The device uDHCP listens on.
 opt domain local
 # opt dns 8.8.8.8 4.2.2.2 # The DNS servers client devices will use.
 opt subnet 255.255.255.0
-opt router 192.168.42.1 # The Pi's IP address on wlan0 which we have set up.
+opt router 192.168.42.1 # The Pi&#39;s IP address on wlan0 which we have set up.
 opt lease 864000 # 10 day DHCP lease time in seconds</pre>
-</li>
-    <li>Enable dhcp by editing /etc/default/udhcpd thus to comment out the line
-<pre>#DHCPD_ENABLED="no"</pre>
-</li>
-    <li>Now to configure the WAP static IP address - "sudo vi /etc/network/interfaces", adding the static IP address for wlan0 and commenting out anything related to the dynamic address.
-<pre>auto wlan0
+	</li>
+	<li>Enable dhcp by editing /etc/default/udhcpd thus to comment out the line
+	<pre>
+#DHCPD_ENABLED=&quot;no&quot;</pre>
+	</li>
+	<li>Now to configure the WAP static IP address - &quot;sudo vi /etc/network/interfaces&quot;, adding the static IP address for wlan0 and commenting out anything related to the dynamic address.
+	<pre>
+auto wlan0
 iface wlan0 inet static
 address 192.168.42.1
 netmask 255.255.255.0
@@ -102,20 +125,25 @@ netmask 255.255.255.0
 #iface wlan0 inet manual
 #    wpa-roam /etc/wpa_supplicant/wpa_supplicant.conf
 #iface default inet dhcp</pre>
-</li>
-    <li>Edit /etc/hostname to ensure the domain name is included - in my case, the domain is called local, and the hostname is wappi, so /etc/hosts reads
-<pre>wappi.local</pre>
-</li>
-    <li>Next assign static IP address for the server in /etc/hosts
-<pre>127.0.1.1 wappi.local
+	</li>
+	<li>Edit /etc/hostname to ensure the domain name is included - in my case, the domain is called local, and the hostname is wappi, so /etc/hosts reads
+	<pre>
+wappi.local</pre>
+	</li>
+	<li>Next assign static IP address for the server in /etc/hosts
+	<pre>
+127.0.1.1 wappi.local
 192.168.42.1 wappi.local wappi</pre>
-</li>
-    <li>Check, double check, and triple check that you've done all the above steps, and then finally
-<pre> sudo reboot</pre>
-</li>
+	</li>
+	<li>Check, double check, and triple check that you&#39;ve done all the above steps, and then finally
+	<pre>
+ sudo reboot</pre>
+	</li>
 </ul>
-<hr/>
-BACK OUT THE CHANGES TO THE FOLLOWING FILES FOR INTERNET ACCESS UPGRADES ETC
+
+<hr />
+<p>BACK OUT THE CHANGES TO THE FOLLOWING FILES FOR INTERNET ACCESS UPGRADES ETC</p>
+
 <pre>
 /etc/default/hostapd
 /etc/default/udhcpd
@@ -124,3 +152,5 @@ BACK OUT THE CHANGES TO THE FOLLOWING FILES FOR INTERNET ACCESS UPGRADES ETC
 /etc/hostname
 sudo reboot
 </pre>
+</body>
+</html>
