@@ -39,7 +39,7 @@ import gps
 import serial
 
 
-MIN_SATS = 9
+MIN_SATS = 7
 EARTH_RADIUS = 6371000 # meters
 GRAV_ACCEL = 9.80665   # meters per second per second
 
@@ -749,7 +749,7 @@ class MPU6050:
                 number_len = 0
 
                 #-------------------------------------------------------------------------------
-                # While integrated X+Y axis gyro < 2 pi i.e. 360 degrees, keep flashing the light
+                # While integrated X+Y axis gyro < 4 pi i.e. 720 degrees, keep flashing the light
                 #-------------------------------------------------------------------------------
                 while abs(rotation) < 4 * math.pi:
                     time.sleep(10 / sampling_rate)
@@ -1648,8 +1648,8 @@ def Daemonize():
 def SweepProcessor():
 
     SWEEP_IGNORE_BOUNDARY = 0.5 # 50cm from Sweep central and the prop tips.
-    SWEEP_CRITICAL_BOUNDARY = 1.5 # 1m or less beyond the ignore zone: Hermione's personal space encroached.
-    SWEEP_WARNING_BOUNDARY = 2.0 # 50cm or less beyond the critical zone: Pause for thought what to do next.
+    SWEEP_CRITICAL_BOUNDARY = 1.0 # 50cm or less beyond the ignore zone: Hermione's personal space encroached.
+    SWEEP_WARNING_BOUNDARY = 2.0 # 1m or less beyond the critical zone: Pause for thought what to do next.
 
     with serial.Serial("/dev/ttySWEEP",
                           baudrate = 115200,
@@ -1823,8 +1823,11 @@ def GPSProcessor():
     session.stream(gps.WATCH_ENABLE | gps.WATCH_NEWSTYLE)
 
     num_sats = 0
+    num_used_sats = 0
     latitude = 0.0
+    altitude = 0.0
     longitude = 0.0
+    '''
     time = ""
     epx = 0.0
     epy = 0.0
@@ -1832,9 +1835,9 @@ def GPSProcessor():
     ept = 0.0
     eps = 0.0
     climb = 0.0
-    altitude = 0.0
     speed = 0.0
     direction = 0.0
+    '''
 
     new_lat = False
     new_lon = False
@@ -1899,16 +1902,18 @@ def GPSProcessor():
                 if report['class'] == 'SKY':
                     if hasattr(report, 'satellites'):
                         num_sats = 0
+                        num_used_sats = 0
                         for satellite in report.satellites:
+                            num_sats += 1
                             if hasattr(satellite, 'used') and satellite.used:
-                                num_sats += 1
+                                num_used_sats += 1
 
                 #-----------------------------------------------------------------------------
                 # Send the new batch.
                 #-----------------------------------------------------------------------------
                 if new_lon and new_lat:
 
-                    log.write("%.10f, %.10f, %.10f, %d\n" % (latitude, longitude, altitude, num_sats))
+                    log.write("%.10f, %.10f, %.10f, %d, %d\n" % (latitude, longitude, altitude, num_sats, num_used_sats))
 
                     new_lon = False
                     new_lat = False
@@ -1917,7 +1922,7 @@ def GPSProcessor():
                                          latitude,
                                          longitude,
                                          altitude,
-                                         num_sats)
+                                         num_used_sats)
 
                     gps_fifo.write(output)
             except KeyError:
@@ -2442,8 +2447,8 @@ def AutopilotProcessor(sweep_installed, gps_installed, compass_installed, initia
                                     s_yaw = math.sin(yaw_target)
                                     c_yaw = math.cos(yaw_target)
 
-                                    x = c_yaw * 0.3 # evx_target
-                                    y = s_yaw * 0.3 # evx_target
+                                    x = c_yaw * 1.0 # m/s evx_target
+                                    y = s_yaw * 1.0 # m/s evy_target
 
                                     #---------------------------------------------------------------
                                     # Pause for though for 0.5s (i.e. stop), then head of in new direction
@@ -3033,7 +3038,7 @@ class Quadcopter:
             self.camera_installed = True
             self.gll_installed = True
             self.gps_installed = True
-            self.sweep_installed = True
+            self.sweep_installed = False
             X8 = True
 
         #-------------------------------------------------------------------------------------------
@@ -3613,7 +3618,7 @@ class Quadcopter:
             eftoh = 0.04 # meters
         else:
             assert i_am_hermione, "Hey, I'm not supported"
-            eftoh = 0.17 #meters
+            eftoh = 0.23 # meters: 0.23m long legs, 0.17m medium
 
         #-------------------------------------------------------------------------------------------
         # Set up the video macro-block parameters
@@ -3991,14 +3996,14 @@ class Quadcopter:
                         vmp = None
 
                     #-------------------------------------------------------------------------------
-                    # If we've done a video loop, still check the other sensors, but don't sleep polling.  
+                    # If we've done a video loop, still check the other sensors, but don't sleep polling.
                     # Previously, this was a 'continue'; this gives a better priorities over these
                     # inputs but risks completely ruling out below inputs if video processing takes too long.
                     #-------------------------------------------------------------------------------
                     if True:
-                        timeout = 0.0    
+                        timeout = 0.0
                     else:
-                        continue    
+                        continue
 
                 #-----------------------------------------------------------------------------------
                 # Check for other external data sources with lower priority or performance impact.
@@ -4065,7 +4070,7 @@ class Quadcopter:
             if GPIO.event_detected(GPIO_FIFO_OVERFLOW_INTERRUPT):
                 logger.critical("ABORT: FIFO overflow.")
                 break
-            '''    
+            '''
 
             #---------------------------------------------------------------------------------------
             # Power brownout check - doesn't work on 3B onwards
