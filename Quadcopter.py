@@ -1111,6 +1111,8 @@ class YAW_PID(PID):
 
     def Error(self, input, target):
         #-------------------------------------------------------------------------------------------
+        # input and target are both in the +/- 180 degrees range.  Minimize the output rotation rate
+        #
         # An example in degrees is the best way to explain this.  If the target is -179 degrees
         # and the input is +179 degrees, the standard PID output would be -358 degrees leading to
         # a very high yaw rotation rate to correct the -358 degrees error.  However, +2 degrees
@@ -1177,7 +1179,7 @@ def GetRotationAngles(ax, ay, az):
     # What's the angle in the x and y plane from horizontal in radians?
     #-----------------------------------------------------------------------------------------------
     pitch = math.atan2(-ax, math.pow(math.pow(ay, 2) + math.pow(az, 2), 0.5))
-    roll = math. atan2(ay, az)
+    roll = math.atan2(ay, az)
 
     return pitch, roll
 
@@ -1255,6 +1257,48 @@ def RotateVector(evx, evy, evz, pa, ra, ya):
 
     return qvx, qvy, qvz
 
+
+####################################################################################################
+#
+# Butterwork IIR Filter calculator and actor - this is carried out in the earth frame as we are track
+# gravity drift over time from 0, 0, 1 (the primer values for egx, egy and egz)
+#
+# Code is derived from http://www.exstrom.com/journal/sigproc/bwlpf.c
+#
+####################################################################################################
+class BUTTERWORTH:
+    def __init__(self, sampling, cutoff, order, primer):
+
+        self.n = int(round(order / 2))
+        self.A = []
+        self.d1 = []
+        self.d2 = []
+        self.w0 = []
+        self.w1 = []
+        self.w2 = []
+
+        a = math.tan(math.pi * cutoff / sampling)
+        a2 = math.pow(a, 2.0)
+
+        for ii in range(0, self.n):
+            r = math.sin(math.pi * (2.0 * ii + 1.0) / (4.0 * self.n))
+            s = a2 + 2.0 * a * r + 1.0
+            self.A.append(a2 / s)
+            self.d1.append(2.0 * (1 - a2) / s)
+            self.d2.append(-(a2 - 2.0 * a * r + 1.0) / s)
+
+            self.w0.append(primer / (self.A[ii] * 4))
+            self.w1.append(primer / (self.A[ii] * 4))
+            self.w2.append(primer / (self.A[ii] * 4))
+
+    def filter(self, input):
+        for ii in range(0, self.n):
+            self.w0[ii] = self.d1[ii] * self.w1[ii] + self.d2[ii] * self.w2[ii] + input
+            output = self.A[ii] * (self.w0[ii] + 2.0 * self.w1[ii] + self.w2[ii])
+            self.w2[ii] = self.w1[ii]
+            self.w1[ii] = self.w0[ii]
+
+        return output
 
 ####################################################################################################
 #
@@ -2447,8 +2491,14 @@ def AutopilotProcessor(sweep_installed, gps_installed, compass_installed, initia
                                     s_yaw = math.sin(yaw_target)
                                     c_yaw = math.cos(yaw_target)
 
-                                    x = c_yaw * 1.0 # m/s evx_target
-                                    y = s_yaw * 1.0 # m/s evy_target
+                                    #---------------------------------------------------------------
+                                    # Because our max speed is 1m/s and we receive GPS updates at 1Hz
+                                    # and each target is 'reached' when it's less than 1m away, we slow
+                                    # down near the destination.
+                                    #---------------------------------------------------------------
+                                    speed = 1.0 if target_distance > 5.0 else target_distance / 5.0
+                                    x = c_yaw * speed # m/s evx_target
+                                    y = s_yaw * speed # m/s evy_target
 
                                     #---------------------------------------------------------------
                                     # Pause for though for 0.5s (i.e. stop), then head of in new direction
@@ -2627,7 +2677,6 @@ def AutopilotProcessor(sweep_installed, gps_installed, compass_installed, initia
                     continue
 
                 log.write("AP: PHASE CHANGE: %s\n" % phase_name)
-#                print "AP: POLL"
                 output = struct.pack(pack_format,
                                      evx_target,
                                      evy_target,
@@ -3228,8 +3277,8 @@ class Quadcopter:
                 sampling_rate = 500  # Hz
                 motion_rate = 75     # Hz
         else:
-            sampling_rate = 1000     # Hz
-            motion_rate = 100        # Hz
+            sampling_rate = 500      # Hz - thought 1000 should work, but not
+            motion_rate = 75         # Hz - thought 100 should work, but not
 
         glpf = 1                     #AB: 184Hz
 
@@ -3245,7 +3294,7 @@ class Quadcopter:
         elif sampling_rate >= 200:  #AB: SRD = 2, 3, 4 (333, 250, 200Hz)
             alpf = 2                #AB: alpf = 92Hz
         elif sampling_rate >= 100:  #AB: SRD = 5, 6, 7, 8, 9 (166, 143, 125, 111, 100Hz)
-            alpf = 3                #ABL alpf = 41Hz
+            alpf = 3                #AB: alpf = 41Hz
         else:
             #--------------------------------------------------------------------------------------
             # There's no point going less than 100Hz IMU sampling; we need about 100Hz motion
@@ -3731,17 +3780,18 @@ class Quadcopter:
         qry = 0.0
         qrz = 0.0
 
-        start = time.time()
-        now = start
+        sigma_dt = 0.0
         loops = 0
 
-        while now - start < 1.0: # seconds
-            now = time.time()
+        while sigma_dt < 1.0: # seconds
             time.sleep(20 / sampling_rate) # 20 < 0.5 x FIFO_SIZE
+
             nfb = mpu6050.numFIFOBatches()
             ax, ay, az, rx, ry, rz, dt = mpu6050.readFIFO(nfb)
 
             loops += 1
+            sigma_dt += dt
+
             qax += ax
             qay += ay
             qaz += az
@@ -3788,6 +3838,16 @@ class Quadcopter:
         # Get the value for gravity.
         #-------------------------------------------------------------------------------------------
         egx, egy, egz = RotateVector(qax, qay, qaz, -pa, -ra, -ya)
+        eax = egx
+        eay = egy
+        eaz = egz
+
+        #-------------------------------------------------------------------------------------------
+        # Setup and prime the butterworth - 0.01Hz 8th order, primed with the stable measured above.
+        #-------------------------------------------------------------------------------------------
+        bfx = BUTTERWORTH(motion_rate, 0.01, 8, egx)
+        bfy = BUTTERWORTH(motion_rate, 0.01, 8, egy)
+        bfz = BUTTERWORTH(motion_rate, 0.01, 8, egz)
 
         #-------------------------------------------------------------------------------------------
         # The tilt ratio is used to compensate sensor height (and thus velocity) for the fact the
@@ -3808,7 +3868,7 @@ class Quadcopter:
         #-------------------------------------------------------------------------------------------
         logger.warning("pitch, %f, roll, %f", math.degrees(pa), math.degrees(ra))
         logger.warning("egx, %f, egy, %f, egz %f", egx, egy, egz)
-        logger.warning("based upon %d samples", dt * sampling_rate)
+        logger.warning("based upon %d samples", sigma_dt * sampling_rate)
 
         logger.warning("EFTOH:, %f", eftoh)
 
@@ -3818,7 +3878,7 @@ class Quadcopter:
         mgx = 0.0
         mgy = 0.0
         mgz = 0.0
-        cya_prev = 0.0
+        cya_base = 0.0
         initial_orientation = 0.0
 
         if self.compass_installed:
@@ -3847,8 +3907,8 @@ class Quadcopter:
             #---------------------------------------------------------------------------------------
             cax, cay, caz = RotateVector(mgx, mgy, mgz, -pa, -ra, 0)
             initial_orientation = (math.atan2(cax, cay) + math.radians(1 + 5/60) + math.pi) % (2 * math.pi) - math.pi
-            cya_prev = (-math.atan2(cax, cay) + math.pi) % (2 * math.pi) - math.pi
-            logger.critical("Initial yaw:, %f." % (math.degrees(cya_prev)))
+            cya_base = (-math.atan2(cax, cay) + math.pi) % (2 * math.pi)
+            logger.critical("Initial yaw:, %f." % (math.degrees(cya_base)))
 
 
         ######################################### GO GO GO! ########################################
@@ -3892,7 +3952,9 @@ class Quadcopter:
                            "evx_target, evy_target, evz_target, " +
                            "qrx, qry, qrz, " +
                            "qax, qay, qaz, " +
+                           "eax, eay, eaz, " +
                            "qgx, qgy, qgz, " +
+                           "egx, egy, egz, " +
                            "pitch, roll, yaw, yaw2, " +
 
 #                           "qdx_input, qdy_input, qdz_input, " +
@@ -4152,8 +4214,18 @@ class Quadcopter:
 
 
             #---------------------------------------------------------------------------------------
-            # Rotate gravity to the new quadframe
+            # Low pass butterworth filter to account for long term drift to the IMU due to temperature
+            # change - this happens significantly in a cold environment.
+            # Note the butterworth can be disabled by deleting one surrounding pair of '''.
             #---------------------------------------------------------------------------------------
+            '''
+            '''
+            eax, eay, eaz = RotateVector(qax, qay, qaz, -pa, -ra, -ya)
+            egx = bfx.filter(eax)
+            egy = bfy.filter(eay)
+            egz = bfz.filter(eaz)
+            '''
+            '''
             qgx, qgy, qgz = RotateVector(egx, egy, egz, pa, ra, ya)
 
             #---------------------------------------------------------------------------------------
@@ -4208,9 +4280,13 @@ class Quadcopter:
                 # Rotate compass readings back to earth plane and rescale to 0 - 2 * pi
                 #-----------------------------------------------------------------------------------
                 cax, cay, caz = RotateVector(mgx, mgy, mgz, -pa, -ra, 0)
-                cya = (-math.atan2(cax, cay) + math.pi) % (2 * math.pi) - math.pi
-                cya_increment = (cya - cya_prev + math.pi) % (2 * math.pi) - math.pi
-                cya_prev = cya
+
+                #-----------------------------------------------------------------------------------
+                # Convert compass and gyro into 0-360 range
+                #-----------------------------------------------------------------------------------
+                cya = (-math.atan2(cax, cay) + math.pi) % (2 * math.pi)
+                cya = ((cya - cya_base) + math.pi) % (2 * math.pi)
+                ya_fused = (ya + math.pi) % (2 * math.pi)
 
                 #-----------------------------------------------------------------------------------
                 # Fuse the gyro and compass increments so that gyro yaw dominates short term and compass
@@ -4218,8 +4294,9 @@ class Quadcopter:
                 #-----------------------------------------------------------------------------------
                 yaw_tau = 1
                 yaw_fraction = yaw_tau / (yaw_tau + motion_dt)
-                yaw_increment = yaw_fraction * qrz * motion_dt + (1 - yaw_fraction) * cya_increment
-                ya_fused += yaw_increment
+                ya_fused = yaw_fraction * ya_fused + (1 - yaw_fraction) * cya
+                ya_fused = (ya_fused + math.pi) % (2 * math.pi) - math.pi
+
 
             #=======================================================================================
             # Acquire vertical distance (height) first, prioritizing the best sensors,
@@ -4354,17 +4431,20 @@ class Quadcopter:
             if yaw_control:
                 #-----------------------------------------------------------------------------------
                 # Under yaw control, the piDrone only moves forwards, and it's yaw which manages
-                # turning to do the right direction.
+                # turning to do the right direction.  Hence force qv?_input and targets such they only
+                # do that.
                 #-----------------------------------------------------------------------------------
+                qvx_input = math.pow(math.pow(qvx_input, 2) + math.pow(qvy_input, 2), 0.5)
+                qvy_input = 0.0
+
                 qvx_target = math.pow(math.pow(qvx_target, 2) + math.pow(qvy_target, 2), 0.5)
                 qvy_target = 0.0
-
             '''
             '''
             #---------------------------------------------------------------------------------------
-            # Constrain the target velocity to 1m/s.
+            # Constrain the target velocity to 1.5m/s.
             #---------------------------------------------------------------------------------------
-            MAX_VEL = 1.0
+            MAX_VEL = 1.5
             qvx_target = qvx_target if abs(qvx_target) < MAX_VEL else (qvx_target / abs(qvx_target) * MAX_VEL)
             qvy_target = qvy_target if abs(qvy_target) < MAX_VEL else (qvy_target / abs(qvy_target) * MAX_VEL)
             qvz_target = qvz_target if abs(qvz_target) < MAX_VEL else (qvz_target / abs(qvz_target) * MAX_VEL)
@@ -4408,7 +4488,7 @@ class Quadcopter:
             '''
             '''
             #---------------------------------------------------------------------------------------
-            # Contrain the target angle to 30 degrees.  Note yaw is deliberately not included as it
+            # Constrain the target angle to 30 degrees.  Note yaw is deliberately not included as it
             # needs full rotation to track the direction of flight when yaw_control = True.
             #---------------------------------------------------------------------------------------
             MAX_ANGLE = math.radians(30)
@@ -4564,7 +4644,9 @@ class Quadcopter:
                                "%f, %f, %f, " % (evx_target, evy_target, evz_target) +
                                "%f, %f, %f, " % (qrx, qry, qrz) +
                                "%f, %f, %f, " % (qax, qay, qaz) +
+                               "%f, %f, %f, " % (eax, eay, eaz) +
                                "%f, %f, %f, " % (qgx, qgy, qgz) +
+                               "%f, %f, %f, " % (egx, egy, egz) +
                                "%f, %f, %f, %f, " % (math.degrees(pa), math.degrees(ra), math.degrees(ya), math.degrees(ya_fused)) +
 
 #                               "%f, %f, %f, " % (qdx_input, qdy_input, qdz_input) +
