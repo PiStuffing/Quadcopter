@@ -5,6 +5,4 @@
 # - name is an arbitrary name put out to console to show flight progress
 
 # evx, evy, evz, time, name
-  0.0, 0.0, 0.5, 2.0,  ASCENT
-  0.0, 0.0, 0.0, 2.0,  HOVER
-  0.0, 0.0,-0.5, 2.0,  DESCENT
+  0.0, 0.0, 0.0, 20.0,  HOVER
