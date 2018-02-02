@@ -442,10 +442,6 @@ class MPU6050:
         #-------------------------------------------------------------------------------------------
         # Clear the interrupt status register and enable the FIFO overflow interrupt 0x10
         #-------------------------------------------------------------------------------------------
-        '''
-        #AB! Something odd here: can't clear the GPIO pin if the ISR is enabled, and then status read
-        #AB! in that order
-        '''
         self.i2c.write8(self.__MPU6050_RA_INT_ENABLE, 0x10)
         self.i2c.readU8(self.__MPU6050_RA_INT_STATUS)
 
@@ -986,8 +982,9 @@ class GLL:
 
         #-------------------------------------------------------------------------------------------
         # Include receiver bias correction 0x04
+        #AB! 0x04 | 0x01 should cause (falling edge?) GPIO_GLL_DR_INTERRUPT.  Can GPIO handle this?
         #-------------------------------------------------------------------------------------------
-        self.i2c.write8(self.__GLL_ACQ_COMMAND, 0x04)
+        self.i2c.write8(self.__GLL_ACQ_COMMAND, 0x04 | 0x01)
 
         #-------------------------------------------------------------------------------------------
         # Acquisition config register:
@@ -1004,37 +1001,13 @@ class GLL:
         # Reading the list from 0x8F seems to get the previous reading, probably cached for the sake
         # of calculating the velocity next time round.
         #-------------------------------------------------------------------------------------------
-        '''
-        gll_bytes = self.i2c.readList(0x80 | self.__GLL_LAST_DELAY_HIGH, 2)
-        dist1 = gll_bytes[0]
-        dist2 = gll_bytes[1]
-        distance = ((dist1 << 8) + dist2) / 100
-        '''
-
-        '''
-        #AB! # BUSY | HEALTHY flags only
-        #AB! status = self.i2c.readU8(self.__GLL_STATUS)
-        #AB! if status != 0x21:
-        #AB!    raise ValueError("0x%x" % status)
-        '''
-
         dist1 = self.i2c.readU8(self.__GLL_FULL_DELAY_HIGH)
         dist2 = self.i2c.readU8(self.__GLL_FULL_DELAY_LOW)
-        distance = ((dist1 << 8) + dist2) / 100
+        distance = (dist1 << 8) + dist2
 
-        '''
-        #AB! Worth trying incase I can drop the I2C usage as a result as it's
-        #AB! used above correctly for the previous reading.
-
-        gll_bytes = self.i2c.readList(0x80 | self.__GLL_LAST_DELAY_HIGH, 2)
-        dist1 = gll_bytes[0]
-        dist2 = gll_bytes[1]
-        distance_1 = ((dist1 << 8) + dist2) / 100
-
-        if distance != distance_1:
-            print "================WORTH A GO BUT NO===================="
-        '''
-
+        if distance == 1:
+            raise ValueError("GLL out of range")
+        distance /= 100
         velocity = -self.i2c.readS8(self.__GLL_VELOCITY) * self.rate / 100
         return distance, velocity
 
@@ -1334,11 +1307,12 @@ def GPIOInit(FIFOOverflowISR):
     GPIO.setup(GPIO_FIFO_OVERFLOW_INTERRUPT, GPIO.IN, GPIO.PUD_OFF)
     GPIO.add_event_detect(GPIO_FIFO_OVERFLOW_INTERRUPT, GPIO.RISING) #, FIFOOverflowISR)
 
-#AB:    GPIO.setup(GPIO_POWER_BROWN_OUT_INTERRUPT, GPIO.IN, GPIO.PUD_OFF)
-#AB:    GPIO.add_event_detect(GPIO_POWER_BROWN_OUT_INTERRUPT, GPIO.FALLING)
+    #AB: GPIO.setup(GPIO_POWER_BROWN_OUT_INTERRUPT, GPIO.IN, GPIO.PUD_OFF)
+    #AB: GPIO.add_event_detect(GPIO_POWER_BROWN_OUT_INTERRUPT, GPIO.FALLING)
 
-    GPIO.setup(GPIO_GARMIN_BUSY, GPIO.IN, GPIO.PUD_DOWN)
-#AB:    GPIO.add_event_detect(GPIO_GARMIN_BUSY, GPIO.FALLING)
+    #AB! Regardless of the (UP, OFF, DOWN) * (RISING, FALLING), none of these option raise a DR interrupt
+    GPIO.setup(GPIO_GLL_DR_INTERRUPT, GPIO.IN, GPIO.PUD_DOWN)
+    GPIO.add_event_detect(GPIO_GLL_DR_INTERRUPT, GPIO.FALLING)
 
     GPIO.setup(GPIO_BUTTON, GPIO.IN, GPIO.PUD_UP)
 
@@ -1352,7 +1326,9 @@ def GPIOInit(FIFOOverflowISR):
 #
 ####################################################################################################
 def GPIOTerm():
-#AB:    GPIO.remove_event_detect(GPIO_FIFO_OVERFLOW_INTERRUPT)
+    #AB: GPIO.remove_event_detect(GPIO_FIFO_OVERFLOW_INTERRUPT)
+
+    GPIO.remove_event_detect(GPIO_GLL_DR_INTERRUPT)
     GPIO.cleanup()
 
 
@@ -2179,7 +2155,6 @@ def AutopilotProcessor(sweep_installed, gps_installed, compass_installed, initia
     abort_fp = []
     file_fp = []
     gps_locating_fp = []
-    gps_orientation_fp = []
     gps_tracking_fp = []
 
     gps_waypoints = []
@@ -2202,10 +2177,6 @@ def AutopilotProcessor(sweep_installed, gps_installed, compass_installed, initia
     # If it fails, it drops automatically into landing after that minute.
     #-----------------------------------------------------------------------------------------------
     gps_locating_fp.append((0.0, 0.0, 0.0, 360, "GPS: WHERE AM I?"))
-    '''
-    #AB! If not compass installed, use this bit to move forwards blind to find where we are going
-    gps_orientation_fp.append((0.3, 0.0, 0.0, 360, "GPS: WHERE AM I POINTING"))
-    '''
     gps_tracking_fp.append((0.0, 0.0, 0.0, 60, "GPS TRACKING: 0"))
 
     #-----------------------------------------------------------------------------------------------
@@ -2385,7 +2356,7 @@ def AutopilotProcessor(sweep_installed, gps_installed, compass_installed, initia
                         # If we're currently not using a GPS flightplan, keep GPS processing
                         # out of it.
                         #---------------------------------------------------------------------------
-                        if active_fp != gps_locating_fp and active_fp != gps_orientation_fp and active_fp != gps_tracking_fp:
+                        if active_fp != gps_locating_fp and active_fp != gps_tracking_fp:
                             continue
 
                         #---------------------------------------------------------------------------
@@ -2427,18 +2398,6 @@ def AutopilotProcessor(sweep_installed, gps_installed, compass_installed, initia
                                 #                         FLIGHT PLAN CHANGE                       #
                                 #==================================================================#
 
-                                '''
-                                #==================================================================#
-                                #                         FLIGHT PLAN CHANGE                       #
-                                #==================================================================#
-                                log.write("AP: GPS ORIENTATION\n")
-                                active_fp = gps_orientation_fp
-                                afp_changed = True
-                                #==================================================================#
-                                #                         FLIGHT PLAN CHANGE                       #
-                                #==================================================================#
-                                '''
-
                             elif time.time() - sats_search_start > 60.0:
                                 #==================================================================#
                                 #                         FLIGHT PLAN CHANGE                       #
@@ -2449,29 +2408,6 @@ def AutopilotProcessor(sweep_installed, gps_installed, compass_installed, initia
                                 #==================================================================#
                                 #                         FLIGHT PLAN CHANGE                       #
                                 #==================================================================#
-
-                        '''
-                        #---------------------------------------------------------------------------
-                        # We've found a new GPS location while drifting blind, move on to tracking
-                        #---------------------------------------------------------------------------
-                        elif active_fp == gps_orientation_fp:
-
-                            #-----------------------------------------------------------------------
-                            # Set target to current here will trigger an update from the
-                            # waypoint list lower down.
-                            #-----------------------------------------------------------------------
-                            target_gps = current_gps
-
-                            #======================================================================#
-                            #                           FLIGHT PLAN CHANGE                         #
-                            #======================================================================#
-                            log.write("AP: GPS TRACKING\n")
-                            active_fp = gps_tracking_fp
-                            afp_changed = True
-                            #======================================================================#
-                            #                           FLIGHT PLAN CHANGE                         #
-                            #======================================================================#
-                        '''
 
                         #---------------------------------------------------------------------------
                         # First best effort to determine our current orientations based on an the
@@ -2652,7 +2588,7 @@ def AutopilotProcessor(sweep_installed, gps_installed, compass_installed, initia
                             #                           FLIGHT PLAN CHANGE                         #
                             #======================================================================#
 
-                    elif active_fp == gps_locating_fp or active_fp == gps_orientation_fp:
+                    elif active_fp == gps_locating_fp:
                         #---------------------------------------------------------------------------
                         # We've dropped off the end of the satellite acquisition flight plan i.e. it's
                         # timed out without a good result.  Swap to landing.
@@ -3144,11 +3080,11 @@ class Quadcopter:
 
         #-------------------------------------------------------------------------------------------
         # Set up extra sensors based on quad identify.
-        # -  Zoe is a Pi0W with a single CPU; many features are turned off to avoid spawning multiple 
+        # -  Zoe is a Pi0W with a single CPU; many features are turned off to avoid spawning multiple
         #    processes within that single CPU.  She runs one and a bit process - the bit is the Video
         #    processing which is mostly handled by the GPU.
         # -  Hermione is a B3 with 4 CPUs.  As a result she can run the four and a bit process required
-        #    for all features to be enabled. 
+        #    for all features to be enabled.
         #-------------------------------------------------------------------------------------------
         X8 = False
         if i_am_zoe:
@@ -3219,8 +3155,8 @@ class Quadcopter:
         global GPIO_FIFO_OVERFLOW_INTERRUPT
         GPIO_FIFO_OVERFLOW_INTERRUPT = 24 if X8 else 22
 
-        global GPIO_GARMIN_BUSY
-        GPIO_GARMIN_BUSY = 5
+        global GPIO_GLL_DR_INTERRUPT
+        GPIO_GLL_DR_INTERRUPT = 5
 
         global GPIO_BUTTON
         GPIO_BUTTON = 6
@@ -3734,19 +3670,25 @@ class Quadcopter:
                 try:
                     g_dist, g_vel = gll.read()
                 except ValueError as e:
-                    print "GLL status 1: %s" % e
-                    continue
+                    break
                 eftoh += g_dist
             eftoh /= (2 * fusion_rate)
 
         '''
-        #AB! Garmin is pants at take-off
+        #AB! Garmin is pants at take-off, especially with Zoe whose GLL nearly touches the floor.
         '''
         if i_am_zoe:
             eftoh = 0.04 # meters
         else:
             assert i_am_hermione, "Hey, I'm not supported"
             eftoh = 0.23 # meters: 0.23m long legs, 0.17m medium
+
+        #-------------------------------------------------------------------------------------------
+        # Set up the GLL base values for the very rate case that g_* don't get set up (as they always
+        # should) by gll.read() down in the core.    
+        #-------------------------------------------------------------------------------------------
+        g_distance = eftoh
+        g_velocity = 0.0
 
         #-------------------------------------------------------------------------------------------
         # Set up the video macro-block parameters
@@ -3765,7 +3707,7 @@ class Quadcopter:
             if i_am_hermione:
                 frame_width = 320    # an exact multiple of mb_size (320 = well lit gravel 1msquare.csv passed)
             elif i_am_zoe:
-                frame_width = 320    # an exact multiple of mb_size
+                frame_width = 240    # an exact multiple of mb_size
             frame_height = frame_width
             frame_rate = fusion_rate
 
@@ -3922,11 +3864,11 @@ class Quadcopter:
         eaz = egz
 
         #-------------------------------------------------------------------------------------------
-        # Setup and prime the butterworth - 0.01Hz 8th order, primed with the stable measured above.
+        # Setup and prime the butterworth - 0.1Hz 8th order, primed with the stable measured above.
         #-------------------------------------------------------------------------------------------
-        bfx = BUTTERWORTH(motion_rate, 0.01, 8, egx)
-        bfy = BUTTERWORTH(motion_rate, 0.01, 8, egy)
-        bfz = BUTTERWORTH(motion_rate, 0.01, 8, egz)
+        bfx = BUTTERWORTH(motion_rate, 0.1, 8, egx)
+        bfy = BUTTERWORTH(motion_rate, 0.1, 8, egy)
+        bfz = BUTTERWORTH(motion_rate, 0.1, 8, egz)
 
         #-------------------------------------------------------------------------------------------
         # The tilt ratio is used to compensate sensor height (and thus velocity) for the fact the
@@ -4022,9 +3964,11 @@ class Quadcopter:
         sampling_loops = 0
         motion_loops = 0
         fusion_loops = 0
-        garmin_loops = 0
+        gll_loops = 0
+        gll_misses = 0
         video_loops = 0
         autopilot_loops = 0
+        gll_dr_interrupts = 0
 
         #-------------------------------------------------------------------------------------------
         # Diagnostic log header
@@ -4162,7 +4106,7 @@ class Quadcopter:
                 try:
                     results = poll.poll(timeout * 1000)
                 except:
-                    logger.critical("ERROR: poll error")
+                    logger.critical("ABORT: poll error")
                     break
 
                 for fd, event in results:
@@ -4238,7 +4182,7 @@ class Quadcopter:
             #---------------------------------------------------------------------------------------
             '''
             if GPIO.event_detected(GPIO_POWER_BROWN_OUT_INTERRUPT):
-                logger.critical("BROWN-OUT, ABORT!")
+                logger.critical("ABORT: Brown-out.")
                 break
             '''
 
@@ -4248,9 +4192,9 @@ class Quadcopter:
             try:
                 qax, qay, qaz, qrx, qry, qrz, motion_dt = mpu6050.readFIFO(nfb)
             except IOError as err:
-                logger.critical("ABORT:")
+                logger.critical("ABORT: IMU problem.")
                 for arg in err.args:
-                    logger.critical("%s", arg)
+                    logger.critical("    %s", arg)
                 break
 
             #---------------------------------------------------------------------------------------
@@ -4311,6 +4255,12 @@ class Quadcopter:
             apa_increment += qry * motion_dt
             ara_increment += qrx * motion_dt
             aya_increment += qrz * motion_dt
+
+            '''
+            #AB! If apa or ara > 90 degrees, abort?  Problem here is then falling on her side which
+            #AB! may be worst than flipping.  Is it better to have combination of acceleration and gll_installed
+            #AB! both suggesting upside down?
+            '''
 
 
             ############################### IMU VELOCITY / DISTANCE ################################
@@ -4412,24 +4362,49 @@ class Quadcopter:
             # Acquire vertical distance (height) first, prioritizing the best sensors,
             # Garmin LiDAR-Lite first.  We need get this every motion processing loop so it's always
             # up to date at the point we use it for camera lateral tracking.
+            #
+            #
             #=======================================================================================
-            if self.gll_installed:
-                garmin_loops += 1
+            '''
+            #AB! Can we get a data ready interrupt working here?  Failed so far.  Better if so to reduce
+            #AB! motion processing and as a result, perhaps be Zoe working.  Until that's available, 
+            #AB! then next best option is to only read the GLL when we have video data worth processing. 
+            '''
+            if GPIO.event_detected(GPIO_GLL_DR_INTERRUPT):
+                gll_dr_interrupts += 1
+
+            if self.gll_installed and video_update:
+                gll_loops += 1
                 try:
                     g_distance, g_velocity = gll.read()
+
                 except ValueError as e:
-                    print "GLL status 2: %s" % e
-                    break
+                    #-------------------------------------------------------------------------------
+                    # Too far or poor reflection (windy wobbles?) for the GLL to work.
+                    #-------------------------------------------------------------------------------
+                    gll_misses += 1
 
-                edz_fuse = g_distance * tilt_ratio - eftoh
-                evz_fuse = g_velocity * tilt_ratio
+                else:
+                    pass
 
-                #-----------------------------------------------------------------------------------
-                # Set the flags for vertical velocity and distance fusion
-                #-----------------------------------------------------------------------------------
-                vvf = True
-                vdf = True
+                finally:
+                    #-------------------------------------------------------------------------------
+                    # We may have a new value, or may be using the previous one.  This is the best
+                    # compromise that then is used below for video lateral tracking.  
+                    #AB! There is a bug here that's assuming the g_* variable are got successfully
+                    #AB! first time round.
+                    #-------------------------------------------------------------------------------
+                    edz_fuse = g_distance * tilt_ratio - eftoh
+                    evz_fuse = g_velocity * tilt_ratio
 
+                    #-------------------------------------------------------------------------------
+                    # Set the flags for vertical velocity and distance fusion
+                    #-------------------------------------------------------------------------------
+                    vvf = True
+                    vdf = True
+
+                    gll_update = True
+                
             #=======================================================================================
             # Acquire horizontal distance next, again with prioritization of accuracy
             #=======================================================================================
@@ -4439,7 +4414,7 @@ class Quadcopter:
             # distance and velocity.
             #AB: gll_update if added above and test here would always be true.
             #---------------------------------------------------------------------------------------
-            if self.camera_installed and self.gll_installed and video_update:
+            if self.camera_installed and video_update and self.gll_installed and gll_update:
 
                 #-----------------------------------------------------------------------------------
                 # Take the increment of the scaled X and Y distance, and muliply by the height to
@@ -4460,23 +4435,17 @@ class Quadcopter:
                 edx_fuse += edx_increment
                 edy_fuse += edy_increment
 
-                '''
-                #AB: Occasionally vmp_dt is 0.0 resulting in division by zero; catch it here until
-                #AB: I know how this happens - it should be impossible AFAIK
-                '''
-                if vmp_dt != 0.0:
-                    evx_fuse = edx_increment / vmp_dt
-                    evy_fuse = edy_increment / vmp_dt
+                evx_fuse = edx_increment / vmp_dt
+                evy_fuse = edy_increment / vmp_dt
 
-                    #-----------------------------------------------------------------------------------
-                    # Set the flags for horizontal distance and velocity fusion
-                    #-----------------------------------------------------------------------------------
-                    hdf = True
-                    hvf = True
+                #-----------------------------------------------------------------------------------
+                # Set the flags for horizontal distance and velocity fusion
+                #-----------------------------------------------------------------------------------
+                hdf = True
+                hvf = True
 
-                    video_update = False
-                else:
-                    logger.critical("2: vmp_dt == 0.0!")
+                video_update = False
+                gll_update = False
 
 
             ######################################## FUSION ########################################
@@ -4608,7 +4577,7 @@ class Quadcopter:
             '''
             '''
             #---------------------------------------------------------------------------------------
-            # Constrain the target pitch / roll angle to 30 (ish) degrees.
+            # Constrain the target pitch / roll angle to 30 degrees.
             #---------------------------------------------------------------------------------------
             MAX_ANGLE = math.pi / 6
             pa_target = pa_target if abs(pa_target) < MAX_ANGLE else (pa_target / abs(pa_target) * MAX_ANGLE)
@@ -4790,8 +4759,10 @@ class Quadcopter:
         logger.critical("Sampling loops: %d", sampling_loops)
         logger.critical("Motion processing loops: %d", motion_loops)
         logger.critical("Fusion processing loops: %d", fusion_loops)
-        logger.critical("LiDAR processing loops: %d", garmin_loops)
         logger.critical("Autopilot processing loops: %d.", autopilot_loops)
+        logger.critical("GLL processing loops: %d", gll_loops)
+        logger.critical("GLL missed: %d", gll_misses)
+        logger.critical("GLL DR Interrupts: %d.", gll_dr_interrupts)
         if sampling_loops != 0:
             logger.critical("Video frame rate: %f", video_loops * sampling_rate / sampling_loops )
 
