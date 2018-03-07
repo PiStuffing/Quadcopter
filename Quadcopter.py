@@ -677,8 +677,8 @@ class MPU6050:
                 #-----------------------------------------------------------------------------------
                 # Collect compass X. Y compass values
                 #-------------------------------------------------------------------------------
-                GPIO.output(GPIO_LED, GPIO.HIGH)
-                print "Now, pick me up and rotate me horizontally twice until the light stops flashing."
+                GPIO.output(GPIO_BUZZER, GPIO.LOW)
+                print "Now, pick me up and rotate me horizontally twice until the buzzing stop."
                 raw_input("Press enter when you're ready to go.")
 
                 self.flushFIFO()
@@ -698,11 +698,6 @@ class MPU6050:
                     nfb = mpu6050.numFIFOBatches()
                     ax, ay, az, gx, gy, gz, dt = self.readFIFO(nfb)
                     ax, ay, az, gx, gy, gz = self.scaleSensors(ax, ay, az, gx, gy, gz)
-
-                    '''
-                    #AB: Do we get Eulers here to rotate back to earth?  It's a lot of unnecessary
-                    #AB: faff as long as the drone if pretty flat.
-                    '''
 
                     yaw += gz * dt
                     total_dt += dt
@@ -726,13 +721,13 @@ class MPU6050:
                         print "\b\b\b\b%s" % number_text,
                         sys.stdout.flush()
 
-                        GPIO.output(GPIO_LED, not GPIO.input(GPIO_LED))
+                        GPIO.output(GPIO_BUZZER, not GPIO.input(GPIO_BUZZER))
                 print
 
                 #-------------------------------------------------------------------------------
                 # Collect compass Z values
                 #-------------------------------------------------------------------------------
-                GPIO.output(GPIO_LED, GPIO.LOW)
+                GPIO.output(GPIO_BUZZER, GPIO.LOW)
                 print "\nGreat!  Now do the same but with my nose down."
                 raw_input("Press enter when you're ready to go.")
 
@@ -774,13 +769,13 @@ class MPU6050:
                         print "\b\b\b\b%s" % number_text,
                         sys.stdout.flush()
 
-                        GPIO.output(GPIO_LED, not GPIO.input(GPIO_LED))
+                        GPIO.output(GPIO_BUZZER, not GPIO.input(GPIO_BUZZER))
                 print
 
                 #-------------------------------------------------------------------------------
                 # Turn the light off regardless of the result
                 #-------------------------------------------------------------------------------
-                GPIO.output(GPIO_LED, GPIO.LOW)
+                GPIO.output(GPIO_BUZZER, GPIO.LOW)
 
                 #-------------------------------------------------------------------------------
                 # Write the good output to file.
@@ -1314,10 +1309,8 @@ def GPIOInit(FIFOOverflowISR):
     GPIO.setup(GPIO_GLL_DR_INTERRUPT, GPIO.IN, GPIO.PUD_DOWN)
     GPIO.add_event_detect(GPIO_GLL_DR_INTERRUPT, GPIO.FALLING)
 
-    GPIO.setup(GPIO_BUTTON, GPIO.IN, GPIO.PUD_UP)
-
-    GPIO.setup(GPIO_LED, GPIO.OUT)
-    GPIO.output(GPIO_LED, GPIO.LOW)
+    GPIO.setup(GPIO_BUZZER, GPIO.OUT)
+    GPIO.output(GPIO_BUZZER, GPIO.LOW)
 
 
 ####################################################################################################
@@ -1385,7 +1378,7 @@ def CheckCLI(argv):
     # account for frame unique momentum for required for rotation; however this does not need a
     # integral as there should not be a constant force that needs to be counteracted.
     #-----------------------------------------------------------------------------------------------
-    if i_am_hermione:
+    if i_am_hermione or i_am_penelope:
         #-------------------------------------------------------------------------------------------
         # Hermione's PID configuration due to using her frame / ESCs / motors / props
         #-------------------------------------------------------------------------------------------
@@ -1731,7 +1724,18 @@ def munlockall():
         raise Exception("cannot lock memory, errno=%s" % ctypes.get_errno())
 
 def Daemonize():
+    #-----------------------------------------------------------------------------------------------
+    # Discondect child processes so ctrl-C doesn't kill them
+    # Increment priority such that Motion is -10, Autopilot and Video are -5, and Sweep and GPS are 0.
+    #-----------------------------------------------------------------------------------------------
     os.setpgrp()
+    os.nice(5)
+
+    '''
+    #AB: ###########################################################################################
+    #AB: # Consider here munlockall() to allow paging for lower priority processes i.e. all be main and video
+    #AB: ###########################################################################################
+    '''
 
 
 ####################################################################################################
@@ -1743,7 +1747,15 @@ def SweepProcessor():
 
     SWEEP_IGNORE_BOUNDARY = 0.5 # 50cm from Sweep central and the prop tips.
     SWEEP_CRITICAL_BOUNDARY = 1.0 # 50cm or less beyond the ignore zone: Hermione's personal space encroached.
-    SWEEP_WARNING_BOUNDARY = 2.0 # 1m or less beyond the critical zone: Pause for thought what to do next.
+    SWEEP_WARNING_BOUNDARY = 1.5 # 50cm or less beyond the critical zone: Pause for thought what to do next.
+
+    sent_critical = False
+    warning_distance = 0.0
+    previous_degrees = 360.0
+
+    start_time = time.time()
+    loops = 0
+    samples = 0
 
     with serial.Serial("/dev/ttySWEEP",
                           baudrate = 115200,
@@ -1755,23 +1767,15 @@ def SweepProcessor():
                           dsrdtr = False) as sweep:
 
         try:
-            print "Scanse Sweep open"
             sweep.write("ID\n")
-            print "Query device information"
             resp = sweep.readline()
-            print "Response: " + resp
 
-            print "Starting scanning...",
             sweep.write("DS\n")
             resp = sweep.readline()
-            assert (len(resp) == 6), "Bad data"
+            assert (len(resp) == 6), "SWEEP: Bad data"
 
             status = resp[2:4]
-            if  status == "00":
-                print "OK"
-            else:
-                print "Failed %s" % status
-                assert (False), "Corrupt status"
+            assert status == "00", "SWEEP: Failed %s" % status
 
             with io.open("/dev/shm/sweep_stream", mode = "wb", buffering = 0) as sweep_fifo:
                 log = open("sweep.csv", "wb")
@@ -1785,6 +1789,16 @@ def SweepProcessor():
                 while True:
                     raw = sweep.read(unpack_size)
                     assert (len(raw) == unpack_size), "Bad data read: %d" % len(raw)
+
+                    #-------------------------------------------------------------------------------
+                    # Sweep is spinning at 5Hz sampling at 600Hz.  For large object detection within
+                    # SWEEP_CRITICAL range, we can discard 90% of all samples, hopefully providing
+                    # more efficient processing and limiting what's sent to the Autopilot.
+                    #-------------------------------------------------------------------------------
+                    samples += 1
+                    if samples % 10 != 0:
+                        continue
+
                     formatted = struct.unpack(unpack_format, raw)
                     assert (len(formatted) == 7), "Bad data type conversion: %d" % len(formatted)
 
@@ -1795,6 +1809,37 @@ def SweepProcessor():
                     azimuth_hi = formatted[2]
                     angle_int = (azimuth_hi << 8) + azimuth_lo
                     degrees = (angle_int >> 4) + (angle_int & 15) / 16
+
+                    '''
+                    #AB: ###########################################################################
+                    #AB: # SIX SERIAL REFLECTION FROM THE WIFI ANTENNA TAKES ITS 15CM DISTANCE TO 90CM
+                    #AB: # SMACK BANG IN THE CRITICAL ZONE!!! HENCE WE IGNORE THE RANGE OF ANGLES IT
+                    #AB: # IS SEEN IN!!
+                    #AB: ###########################################################################
+                    '''
+                    if degrees > 95 and degrees < 97:
+                        continue
+
+                    #-------------------------------------------------------------------------------
+                    # We only send one warning and critical per loop; warnings happen at the start
+                    # of a new loop, criticals immediately.
+                    #-------------------------------------------------------------------------------
+                    if degrees < previous_degrees:
+
+                        loops += 1
+
+                        #---------------------------------------------------------------------------
+                        # Did we get a proximity warning last loop? Send it if so.
+                        #---------------------------------------------------------------------------
+                        if warning_distance != 0.0:
+                            output = struct.pack(pack_format, False, True, warning_distance, warning_radians)
+                            sweep_fifo.write(output)
+                            log.write("PROXIMITY: %fm @ %f degrees.\n" % (distance, degrees % 360))
+
+                        warning_distance = 0.0
+                        sent_critical = False
+
+                    previous_degrees = degrees
 
                     #-------------------------------------------------------------------------------
                     # Sweep rotates ACW = - 360, which when slung underneath equates to CW in the piDrone
@@ -1809,6 +1854,7 @@ def SweepProcessor():
                     distance_hi = formatted[4]
                     distance = ((distance_hi << 8) + distance_lo) / 100
 
+                    '''
                     #-------------------------------------------------------------------------------
                     # Convert the results to a vector aligned with quad frame.
                     #-------------------------------------------------------------------------------
@@ -1816,6 +1862,7 @@ def SweepProcessor():
                     y = distance * math.sin(radians)
 
                     log.write("%f, %f, %f, %f\n" % (degrees, distance, x, y))
+                    '''
 
                     #-------------------------------------------------------------------------------
                     # If a reported distance lies inside the danger zone, pass it over to the autopilot
@@ -1823,12 +1870,14 @@ def SweepProcessor():
                     #-------------------------------------------------------------------------------
                     if distance < SWEEP_IGNORE_BOUNDARY:
                         pass
-                    elif distance < SWEEP_CRITICAL_BOUNDARY:
+                    elif distance < SWEEP_CRITICAL_BOUNDARY and not sent_critical:
                         output = struct.pack(pack_format, True, False, distance, radians)
                         sweep_fifo.write(output)
-                    elif distance < SWEEP_WARNING_BOUNDARY:
-                        output = struct.pack(pack_format, False, True, distance, radians)
-                        sweep_fifo.write(output)
+                        log.write("CRITICAL: %fm @ %f degrees.\n" % (distance, degrees % 360))
+                        sent_critical = True
+                    elif distance < SWEEP_WARNING_BOUNDARY and warning_distance < distance:
+                        warning_distance = distance
+                        warning_radians = radians
 
         #-------------------------------------------------------------------------------------------
         # Catch Ctrl-C - the 'with' wrapped around the FIFO should have closed that by here.  Has it?
@@ -1847,10 +1896,11 @@ def SweepProcessor():
         # Cleanup regardless otherwise the next run picks up data from this
         #-------------------------------------------------------------------------------------------
         finally:
-            print "Stop scanning"
             sweep.write("DX\n")
             resp = sweep.read()
-            print "Response: %s" % resp
+            log.write("Sweep loops: %d\n" % loops)
+            log.write("Time taken: %f\n" % (time.time() - start_time))
+            log.write("Samples: %d\n" % samples)
             log.close()
 
 
@@ -2295,8 +2345,14 @@ def AutopilotProcessor(sweep_installed, gps_installed, compass_installed, initia
                     if sweep_installed and fd == sweep_fd:
                         try:
                             sweep_critical, sweep_warning, sweep_distance, sweep_direction = sweepp.read()
-                            if sweep_critical and active_fp != landing_fp:
 
+                            if active_fp == takeoff_fp or active_fp == landing_fp:
+                                #-------------------------------------------------------------------
+                                # Ignore sweep objects on takeoff and landing
+                                #-------------------------------------------------------------------
+                                pass
+
+                            elif sweep_critical:
                                 #-------------------------------------------------------------------
                                 # What target height has the flight achieved so far? Use this to
                                 # determine how long the descent must be at fixed velocity of 0.3m/s.
@@ -2307,12 +2363,12 @@ def AutopilotProcessor(sweep_installed, gps_installed, compass_installed, initia
                                 #-------------------------------------------------------------------
                                 # Override that standard landing_fp to this custom one.
                                 #-------------------------------------------------------------------
-                                landing_fp = [(0.0, 0.0, -0.3, descent_time, "PROXIMITY (%.2fm)" % edz_target),]
+                                landing_fp = [(0.0, 0.0, -0.3, descent_time, "PROXIMITY %.2fm" % sweep_distance),]
 
                                 #==================================================================#
                                 #                        FLIGHT PLAN CHANGE                        #
                                 #==================================================================#
-                                log.write("AP: PROXIMITY LANDING\n")
+                                log.write("AP: PROXIMITY LANDING %.2f METERS\n" % edz_target)
                                 active_fp = landing_fp
                                 afp_changed = True
                                 #===================================================================
@@ -2381,7 +2437,6 @@ def AutopilotProcessor(sweep_installed, gps_installed, compass_installed, initia
                         if active_fp == gps_locating_fp:
 
                             if current_sats >= MIN_SATS:
-
                                 #-------------------------------------------------------------------
                                 # Set target to current here will trigger an update from the
                                 # waypoint list lower down.
@@ -2818,7 +2873,7 @@ def VideoProcessor(frame_width, frame_height, frame_rate):
         #-------------------------------------------------------------------------------------------
         camera.contrast = 50
 
-        with io.open("/dev/shm/motion_stream", mode = "wb", buffering = 0) as vofi:
+        with io.open("/dev/shm/video_stream", mode = "wb", buffering = 0) as vofi:
             camera.start_recording('/dev/null', format='h264', motion_output=vofi, quality=23)
             try:
                 while True:
@@ -3058,8 +3113,10 @@ class Quadcopter:
         #-------------------------------------------------------------------------------------------
         global i_am_zoe
         global i_am_hermione
+        global i_am_penelope
         i_am_zoe = False
         i_am_hermione = False
+        i_am_penelope = False
 
         my_name = os.uname()[1]
         if my_name == "zoe.local" or my_name == "zoe":
@@ -3068,6 +3125,9 @@ class Quadcopter:
         elif my_name == "hermione.local" or my_name == "hermione":
             print "Hi, I'm Hermione.  Nice to meet you!"
             i_am_hermione = True
+        elif my_name == "penelope.local" or my_name == "penelope":
+            print "Hi, I'm Penelope.  Nice to meet you!"
+            i_am_penelope = True
         else:
             print "Sorry, I'm not qualified to fly this piDrone."
             return
@@ -3098,6 +3158,14 @@ class Quadcopter:
             self.compass_installed = True
             self.camera_installed = True
             self.gll_installed = True
+            self.gps_installed = True
+            self.sweep_installed = True
+            self.autopilot_installed = True
+            X8 = True
+        elif i_am_penelope:
+            self.compass_installed = True
+            self.camera_installed = True
+            self.gll_installed = False
             self.gps_installed = True
             self.sweep_installed = False
             self.autopilot_installed = True
@@ -3158,11 +3226,8 @@ class Quadcopter:
         global GPIO_GLL_DR_INTERRUPT
         GPIO_GLL_DR_INTERRUPT = 5
 
-        global GPIO_BUTTON
-        GPIO_BUTTON = 6
-
-        global GPIO_LED
-        GPIO_LED = 25
+        global GPIO_BUZZER
+        GPIO_BUZZER = 25
 
         #-------------------------------------------------------------------------------------------
         # Enable RPIO for ESC PWM.  This must be set up prior to adding the SignalHandler below or it
@@ -3247,7 +3312,7 @@ class Quadcopter:
                      'back right underside']
 
         #-------------------------------------------------------------------------------------------
-        # Prime the ESCs to stop their anonying beeping!  All 4 of P, C, H & Z  use the T-motor ESCs
+        # Prime the ESCs to stop their annoying beeping!  All 4 of P, C, H & Z  use the T-motor ESCs
         # with the same ESC firmware so have the same spin_pwm
         #-------------------------------------------------------------------------------------------
         global stfu_pwm
@@ -3257,6 +3322,8 @@ class Quadcopter:
         if i_am_zoe:
             spin_pwm = 1150
         elif i_am_hermione:
+            spin_pwm = 1150
+        elif i_am_penelope:
             spin_pwm = 1150
 
         self.esc_list = []
@@ -3279,11 +3346,14 @@ class Quadcopter:
         global motion_rate
         global fusion_rate
 
-        adc_frequency = 1000        #AB: defined by dlpf >= 1; DO NOT USE ZERO => 8000 adc_frequency
+        adc_frequency = 1000         # defined by dlpf >= 1; DO NOT USE ZERO => 8000 adc_frequency
         fusion_rate = 10
 
         if self.camera_installed or self.gll_installed:
             if i_am_hermione:
+                sampling_rate = 500  # Hz
+                motion_rate = 75     # Hz
+            elif i_am_penelope:
                 sampling_rate = 500  # Hz
                 motion_rate = 75     # Hz
             elif i_am_zoe:
@@ -3293,21 +3363,21 @@ class Quadcopter:
             sampling_rate = 500      # Hz - thought 1000 should work, but not
             motion_rate = 75         # Hz - thought 100 should work, but not
 
-        glpf = 1                     #AB: 184Hz
+        glpf = 1                     # 184Hz
 
         #-------------------------------------------------------------------------------------------
         # This is not for antialiasing: the accelerometer low pass filter happens between the ADC
         # rate and our IMU sampling rate.  ADC rate is 1kHz through this case.  However, I've seen poor
         # behavious in double integration when IMU sampling rate is 500Hz and alpf = 460Hz.
         #-------------------------------------------------------------------------------------------
-        if sampling_rate == 1000:   #AB: SRD = 0 (1kHz)
-            alpf = 0                #AB: alpf = 460Hz
-        elif sampling_rate == 500:  #AB: SRD = 1 (500Hz)
-            alpf = 1                #AB: alpf = 184Hz
-        elif sampling_rate >= 200:  #AB: SRD = 2, 3, 4 (333, 250, 200Hz)
-            alpf = 2                #AB: alpf = 92Hz
-        elif sampling_rate >= 100:  #AB: SRD = 5, 6, 7, 8, 9 (166, 143, 125, 111, 100Hz)
-            alpf = 3                #AB: alpf = 41Hz
+        if sampling_rate == 1000:    # SRD = 0 (1kHz)
+            alpf = 0                 # alpf = 460Hz
+        elif sampling_rate == 500:   # SRD = 1 (500Hz)
+            alpf = 1                 # alpf = 184Hz
+        elif sampling_rate >= 200:   # SRD = 2, 3, 4 (333, 250, 200Hz)
+            alpf = 2                 # alpf = 92Hz
+        elif sampling_rate >= 100:   # SRD = 5, 6, 7, 8, 9 (166, 143, 125, 111, 100Hz)
+            alpf = 3                 # alpf = 41Hz
         else:
             #--------------------------------------------------------------------------------------
             # There's no point going less than 100Hz IMU sampling; we need about 100Hz motion
@@ -3679,13 +3749,15 @@ class Quadcopter:
         '''
         if i_am_zoe:
             eftoh = 0.04 # meters
+        elif i_am_penelope:
+            eftoh = 0.10 # meters
         else:
             assert i_am_hermione, "Hey, I'm not supported"
             eftoh = 0.23 # meters: 0.23m long legs, 0.17m medium
 
         #-------------------------------------------------------------------------------------------
         # Set up the GLL base values for the very rate case that g_* don't get set up (as they always
-        # should) by gll.read() down in the core.    
+        # should) by gll.read() down in the core.
         #-------------------------------------------------------------------------------------------
         g_distance = eftoh
         g_velocity = 0.0
@@ -3704,7 +3776,7 @@ class Quadcopter:
             global frame_width
             global frame_height
 
-            if i_am_hermione:
+            if i_am_hermione or i_am_penelope:
                 frame_width = 320    # an exact multiple of mb_size (320 = well lit gravel 1msquare.csv passed)
             elif i_am_zoe:
                 frame_width = 240    # an exact multiple of mb_size
@@ -3751,12 +3823,12 @@ class Quadcopter:
             #---------------------------------------------------------------------------------------
             # Setup a shared memory based data stream for the PiCamera video motion output
             #---------------------------------------------------------------------------------------
-            os.mkfifo("/dev/shm/motion_stream")
-            video_process = subprocess.Popen(["python", __file__, "MOTION", str(frame_width), str(frame_height), str(frame_rate)], preexec_fn = Daemonize)
+            os.mkfifo("/dev/shm/video_stream")
+            video_process = subprocess.Popen(["python", __file__, "VIDEO", str(frame_width), str(frame_height), str(frame_rate)], preexec_fn = Daemonize)
 
             while True:
                 try:
-                    video_fifo = io.open("/dev/shm/motion_stream", mode="rb")
+                    video_fifo = io.open("/dev/shm/video_stream", mode="rb")
                 except:
                     continue
                 else:
@@ -3943,8 +4015,6 @@ class Quadcopter:
             app = AutopilotManager(self.sweep_installed, self.gps_installed, self.compass_installed, initial_orientation, file_control, gps_control, fp_filename)
             autopilot_fifo = app.autopilot_fifo
             autopilot_fd = autopilot_fifo.fileno()
-            poll.register(autopilot_fd, select.POLLIN | select.POLLPRI)
-
         else:
             #-------------------------------------------------------------------------------------------
             # Register the flight plan with the authorities
@@ -4026,6 +4096,12 @@ class Quadcopter:
             else:
                 print "Video Flush: %d" % video_flush
                 vmp = None
+
+        #-------------------------------------------------------------------------------------------
+        # Only once the video FIFO has been flushed can the autopilot fd be added to the polling.
+        #-------------------------------------------------------------------------------------------
+        if self.autopilot_installed:
+            poll.register(autopilot_fd, select.POLLIN | select.POLLPRI)
 
         #-------------------------------------------------------------------------------------------
         # Flush the IMU FIFO and enable the FIFO overflow interrupt
@@ -4117,6 +4193,12 @@ class Quadcopter:
                         autopilot_loops += 1
                         evx_target, evy_target, evz_target, state_name, self.keep_looping = app.read()
                         logger.critical(state_name)
+
+                        if "PROXIMITY" in state_name:
+                            if not GPIO.input(GPIO_BUZZER):
+                                GPIO.output(GPIO_BUZZER, GPIO.HIGH)
+                        elif GPIO.input(GPIO_BUZZER):
+                            GPIO.output(GPIO_BUZZER, GPIO.LOW)
 
                     if self.camera_installed and fd == video_fd and vmp == None and not video_update:
                         #---------------------------------------------------------------------------
@@ -4367,8 +4449,8 @@ class Quadcopter:
             #=======================================================================================
             '''
             #AB! Can we get a data ready interrupt working here?  Failed so far.  Better if so to reduce
-            #AB! motion processing and as a result, perhaps be Zoe working.  Until that's available, 
-            #AB! then next best option is to only read the GLL when we have video data worth processing. 
+            #AB! motion processing and as a result, perhaps be Zoe working.  Until that's available,
+            #AB! then next best option is to only read the GLL when we have video data worth processing.
             '''
             if GPIO.event_detected(GPIO_GLL_DR_INTERRUPT):
                 gll_dr_interrupts += 1
@@ -4390,7 +4472,7 @@ class Quadcopter:
                 finally:
                     #-------------------------------------------------------------------------------
                     # We may have a new value, or may be using the previous one.  This is the best
-                    # compromise that then is used below for video lateral tracking.  
+                    # compromise that then is used below for video lateral tracking.
                     #AB! There is a bug here that's assuming the g_* variable are got successfully
                     #AB! first time round.
                     #-------------------------------------------------------------------------------
@@ -4404,7 +4486,7 @@ class Quadcopter:
                     vdf = True
 
                     gll_update = True
-                
+
             #=======================================================================================
             # Acquire horizontal distance next, again with prioritization of accuracy
             #=======================================================================================
@@ -4786,6 +4868,11 @@ class Quadcopter:
         mpu6050.disableFIFOOverflowISR()
 
         #-------------------------------------------------------------------------------------------
+        # Stop the buzzer.
+        #-------------------------------------------------------------------------------------------
+        GPIO.output(GPIO_BUZZER, GPIO.LOW)
+
+        #-------------------------------------------------------------------------------------------
         # Unregister poll registrars
         #-------------------------------------------------------------------------------------------
         if self.autopilot_installed:
@@ -4806,7 +4893,7 @@ class Quadcopter:
             except KeyboardInterrupt as e:
                 pass
             video_fifo.close()
-            os.unlink("/dev/shm/motion_stream")
+            os.unlink("/dev/shm/video_stream")
             print "stopped."
 
 
@@ -4895,8 +4982,8 @@ if __name__ == '__main__':
         #-------------------------------------------------------------------------------------------
         # Start the process recording video macro-blocks
         #-------------------------------------------------------------------------------------------
-        if sys.argv[1] == "MOTION":
-            assert (len(sys.argv) == 5), "Bad parameters for MOTION"
+        if sys.argv[1] == "VIDEO":
+            assert (len(sys.argv) == 5), "Bad parameters for Video"
             frame_width = int(sys.argv[2])
             frame_height = int(sys.argv[3])
             frame_rate = int(sys.argv[4])
@@ -4920,7 +5007,7 @@ if __name__ == '__main__':
         # Start the process recording Autopilot
         #-------------------------------------------------------------------------------------------
         elif sys.argv[1] == "AUTOPILOT":
-            assert (len(sys.argv) == 9), "Bad parameters for AUTOPILOT"
+            assert (len(sys.argv) == 9), "Bad parameters for Autopilot"
             sweep_installed = True if (sys.argv[2] == "True") else False
             gps_installed = True if (sys.argv[3] == "True") else False
             compass_installed = True if (sys.argv[4] == "True") else False
