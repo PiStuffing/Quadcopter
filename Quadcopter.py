@@ -1757,6 +1757,12 @@ def SweepProcessor():
     loops = 0
     samples = 0
 
+    distance = 0.0
+    direction = 0.0
+
+    warning_distance = SWEEP_WARNING_BOUNDARY
+    warning_radians = 0.0
+
     with serial.Serial("/dev/ttySWEEP",
                           baudrate = 115200,
                           parity = serial.PARITY_NONE,
@@ -1792,11 +1798,13 @@ def SweepProcessor():
 
                     #-------------------------------------------------------------------------------
                     # Sweep is spinning at 5Hz sampling at 600Hz.  For large object detection within
-                    # SWEEP_CRITICAL range, we can discard 90% of all samples, hopefully providing
+                    # SWEEP_CRITICAL range, we can discard 80% of all samples, hopefully providing
                     # more efficient processing and limiting what's sent to the Autopilot.
+                    #AB: 600 samples in 1 seconds at 5 circles per seconds = resolution of 3 degrees.
+                    #AB: Hence 5 below = 15 degrees checking
                     #-------------------------------------------------------------------------------
                     samples += 1
-                    if samples % 10 != 0:
+                    if samples % 5 != 0:
                         continue
 
                     formatted = struct.unpack(unpack_format, raw)
@@ -1821,22 +1829,37 @@ def SweepProcessor():
                         continue
 
                     #-------------------------------------------------------------------------------
-                    # We only send one warning and critical per loop; warnings happen at the start
+                    # We only send one warning and critical per loop (~0.2s); warnings happen at the start
                     # of a new loop, criticals immediately.
                     #-------------------------------------------------------------------------------
                     if degrees < previous_degrees:
 
                         loops += 1
+                        output = None
 
                         #---------------------------------------------------------------------------
                         # Did we get a proximity warning last loop? Send it if so.
                         #---------------------------------------------------------------------------
-                        if warning_distance != 0.0:
+                        if warning_distance < SWEEP_WARNING_BOUNDARY:
                             output = struct.pack(pack_format, False, True, warning_distance, warning_radians)
-                            sweep_fifo.write(output)
-                            log.write("PROXIMITY: %fm @ %f degrees.\n" % (distance, degrees % 360))
+                            log_string = "WARNING: %fm @ %f degrees.\n" % (warning_distance , math.degrees(warning_radians) % 360)
 
-                        warning_distance = 0.0
+                        #---------------------------------------------------------------------------
+                        # Have we already sent a critical proximity?  No? Then all's clear.
+                        #---------------------------------------------------------------------------
+                        '''
+                        #AB! This could be improved; there's only a need to send a NONE if the previous loop
+                        #AB! sent a WARNING previously, and no WARNING this time round.
+                        '''
+                        elif not sent_critical:
+                            output = struct.pack(pack_format, False, False, 0.0, 0.0)
+                            log_string = "PROXIMITY: %fm @ %f degrees.\n" % (distance, degrees % 360)
+
+                        if output != None:
+                            sweep_fifo.write(output)
+                            log.write(log_string)
+
+                        warning_distance = SWEEP_WARNING_BOUNDARY
                         sent_critical = False
 
                     previous_degrees = degrees
@@ -1875,7 +1898,7 @@ def SweepProcessor():
                         sweep_fifo.write(output)
                         log.write("CRITICAL: %fm @ %f degrees.\n" % (distance, degrees % 360))
                         sent_critical = True
-                    elif distance < SWEEP_WARNING_BOUNDARY and warning_distance < distance:
+                    elif distance < SWEEP_WARNING_BOUNDARY and warning_distance > distance:
                         warning_distance = distance
                         warning_radians = radians
 
@@ -2174,7 +2197,7 @@ class GPSManager():
 
 ####################################################################################################
 #
-# Start the Autopilot reading process.
+# Start the Autopilot reading process.  Invoke the Infinite Improbabilty Drive with a strong cup of tea!
 #
 ####################################################################################################
 def AutopilotProcessor(sweep_installed, gps_installed, compass_installed, initial_orientation, file_control = False, gps_control = False, fp_filename = ""):
@@ -2216,6 +2239,9 @@ def AutopilotProcessor(sweep_installed, gps_installed, compass_installed, initia
     # takeoff needs to clear the ground promply avoiding obstacles;
     # landing needs to hit the ground gently to avoid impact damage.
     #-----------------------------------------------------------------------------------------------
+    '''
+    #AB! Do we know we're Zoe camera resolution?  If so, rise to 1m not 1.5
+    '''
     takeoff_fp.append((0.0, 0.0, 0.0, 0.0, "RTF"))
     takeoff_fp.append((0.0, 0.0, 0.5, 3.0, "TAKEOFF"))
     takeoff_fp.append((0.0, 0.0, 0.0, 0.5, "HOVER"))
@@ -2228,6 +2254,11 @@ def AutopilotProcessor(sweep_installed, gps_installed, compass_installed, initia
     #-----------------------------------------------------------------------------------------------
     gps_locating_fp.append((0.0, 0.0, 0.0, 360, "GPS: WHERE AM I?"))
     gps_tracking_fp.append((0.0, 0.0, 0.0, 60, "GPS TRACKING: 0"))
+
+    #-----------------------------------------------------------------------------------------------
+    # None-existent object avoidance flight plan initially.
+    #-----------------------------------------------------------------------------------------------
+    oa_fp = None
 
     #-----------------------------------------------------------------------------------------------
     # Build the file-based flight plan if that's what we're using.
@@ -2336,6 +2367,8 @@ def AutopilotProcessor(sweep_installed, gps_installed, compass_installed, initia
                 delta_time = time.time() - start_time - elapsed_time
                 elapsed_time += delta_time
                 sleep_time = update_time - delta_time if delta_time < update_time else 0.0
+                paused_time = 0.0
+
                 results = poll.poll(sleep_time * 1000)
 
                 #----------------------------------------------------------------------------------
@@ -2350,7 +2383,7 @@ def AutopilotProcessor(sweep_installed, gps_installed, compass_installed, initia
                                 #-------------------------------------------------------------------
                                 # Ignore sweep objects on takeoff and landing
                                 #-------------------------------------------------------------------
-                                pass
+                                continue
 
                             elif sweep_critical:
                                 #-------------------------------------------------------------------
@@ -2363,7 +2396,7 @@ def AutopilotProcessor(sweep_installed, gps_installed, compass_installed, initia
                                 #-------------------------------------------------------------------
                                 # Override that standard landing_fp to this custom one.
                                 #-------------------------------------------------------------------
-                                landing_fp = [(0.0, 0.0, -0.3, descent_time, "PROXIMITY %.2fm" % sweep_distance),]
+                                landing_fp = [(0.0, 0.0, -0.3, descent_time, "PROXIMITY CRITICAL %.2fm" % sweep_distance),]
 
                                 #==================================================================#
                                 #                        FLIGHT PLAN CHANGE                        #
@@ -2377,10 +2410,77 @@ def AutopilotProcessor(sweep_installed, gps_installed, compass_installed, initia
 
                             elif sweep_warning:
                                 #-------------------------------------------------------------------
-                                #AB! For obstacle avoidance in the future: hover while considering
-                                #AB! what to do about where to go next.
+                                # If we're just hovering, there's nothing to do here.
                                 #-------------------------------------------------------------------
-                                pass
+                                if math.pow(evx_target, 2) + math.pow(evy_target, 2) == 0:
+                                    continue
+
+                                #-------------------------------------------------------------------
+                                # Find the direction the frame should be going under the standard flight plan.
+                                #-------------------------------------------------------------------
+                                if active_fp != oa_fp:
+                                    paused_direction = math.atan2(evy_target, evx_target)
+
+                                #-------------------------------------------------------------------
+                                # If the obstacle is behind the direction of travel, ignore it
+                                #-------------------------------------------------------------------
+                                if abs((paused_direction - sweep_direction + math.pi) % (math.pi * 2) - math.pi) > math.pi / 2:
+                                    continue
+
+                                #-------------------------------------------------------------------
+                                # We've spotted an obstruction worth avoiding; if the oa_fp is not already
+                                # running, then save off the current flight plan.
+                                #-------------------------------------------------------------------
+                                if active_fp != oa_fp:
+                                    paused_fp = active_fp
+                                    paused_time = elapsed_time
+
+                                #-------------------------------------------------------------------
+                                # We're to move +/- 90 degrees parallel to the obstruction direction;
+                                # find out which is 'forwards' wrt the paused flight direction.
+                                #--------------------------------------------------------------------
+                                if abs((sweep_direction - paused_direction + 3 * math.pi / 2) % (math.pi * 2) - math.pi) <  math.pi / 2:
+                                    oa_direction = (sweep_direction + 3 * math.pi / 2) % (math.pi * 2) - math.pi
+                                else:
+                                    oa_direction = (sweep_direction + math.pi / 2) % (math.pi * 2) - math.pi
+
+                                #-------------------------------------------------------------------
+                                # Set up the object avoidance flight plan - slow down to 0.3m/s
+                                #-------------------------------------------------------------------
+                                oax_target = 0.3 * math.cos(oa_direction)    
+                                oay_target = 0.3 * math.sin(oa_direction)    
+                                oa_fp = [(oax_target, oay_target, 0.0, 10.0, "AVOID @ %d DEGREES" % int(math.degrees(sweep_direction))),]
+
+                                #==================================================================#
+                                #                        FLIGHT PLAN CHANGE                        #
+                                #==================================================================#
+                                log.write("AP: AVOIDING OBSTACLE @ %d DEGREES.\n" % int(math.degrees(sweep_direction)))
+                                active_fp = oa_fp
+                                afp_changed = True
+                                #===================================================================
+                                #                        FLIGHT PLAN CHANGE                        #
+                                #===================================================================
+
+
+                            else:
+                                #-------------------------------------------------------------------
+                                # Neither critial nor warning proximity; if we currently using the oa_fp,
+                                # now reinstated the paused flight plan stored when an obstacle was detected.
+                                #-------------------------------------------------------------------
+                                if active_fp == oa_fp:
+
+                                    #==================================================================#
+                                    #                        FLIGHT PLAN CHANGE                        #
+                                    #==================================================================#
+                                    log.write("AP: OBSTACLE AVOIDED, RESUME PAUSED\n")
+                                    active_fp = paused_fp
+                                    afp_changed = True
+                                    #===================================================================
+                                    #                        FLIGHT PLAN CHANGE                        #
+                                    #===================================================================
+
+                                    paused_fp = None
+                                    oa_fp = None
 
                         except AssertionError as e:
                             '''
@@ -2589,8 +2689,9 @@ def AutopilotProcessor(sweep_installed, gps_installed, compass_installed, initia
                     #-------------------------------------------------------------------------------
                     if afp_changed:
                         afp_changed = False
-                        start_time = time.time()
-                        elapsed_time = 0.0
+                        elapsed_time = paused_time
+                        start_time = time.time() - elapsed_time
+
 
                 #-----------------------------------------------------------------------------------
                 # Based on the elapsed time since the flight plan started, find which of the flight
@@ -2683,6 +2784,20 @@ def AutopilotProcessor(sweep_installed, gps_installed, compass_installed, initia
                         #                             FLIGHT PLAN CHANGE                           #
                         #==========================================================================#
                         log.write("AP: FILE COMPLETE, LANDING...\n")
+                        active_fp = landing_fp
+                        #==========================================================================#
+                        #                             FLIGHT PLAN CHANGE                           #
+                        #==========================================================================#
+
+                    elif active_fp == oa_fp:
+                        #---------------------------------------------------------------------------
+                        # Object avoidance has run out of time, land.
+                        #---------------------------------------------------------------------------
+
+                        #==========================================================================#
+                        #                             FLIGHT PLAN CHANGE                           #
+                        #==========================================================================#
+                        log.write("AP: OA TIMEOUT, LANDING...\n")
                         active_fp = landing_fp
                         #==========================================================================#
                         #                             FLIGHT PLAN CHANGE                           #
