@@ -23,4 +23,9 @@ Index
 <li>smbus2.zip    - clone of I2C variount required for the RC joysticks (search GitHub for original)</li>
 <li>ZeroSparkfun.zip - Eagle board + Gerbers for SparkFun MPU-9250 breakout</li>
 <li>A+-X8-Sparkfun.zip - Eagle board + Gerbers for SparkFun MPU-9250 breakout</li>
+<li>IMU_spec.pdf  - Invensense MPU-9250 specifications</li>
+<li>GPS_spec.pdf  - u-blox NEO-M8T specification</li>
+<li>Sweep_spec.pdf - Scanse Sweep specification</li>
+<li>LiDAR_spec.pdf - Garmin LiDAR-Lite v3 specification</li>
+<li>Joystick_spec.pdf - Grayhill 67A specification</li>
 </ul>
