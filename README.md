@@ -17,6 +17,7 @@ Index
 <li>Installation.html - Installation instructions for Quadcopter prerequisites</li>
 <li>qc.py         - Python wrapper code</li>
 <li>Quadcopter.py - Core flight controller code</li>
+<li>RC.py         - Remote Control code</li>
 <li>20s_hover_fp.csv - Example simple flight plan CSV input file to hover a 1m</li>
 <li>2m_square_fp.csv - Example flight plan CSV input file to fly a 1m square 1m above the ground</li>
 <li>RPIO.tgz      - clone of RPIO hardware PWM library (search GitHub for original)</li>
