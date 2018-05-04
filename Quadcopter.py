@@ -44,6 +44,16 @@ EARTH_RADIUS = 6371000 # meters
 GRAV_ACCEL = 9.80665   # meters per second per second
 
 
+RC_PASSIVE = 0
+RC_TAKEOFF = 1
+RC_FLYING = 2
+RC_LANDING = 3
+RC_POWEROFF = 4
+
+rc_status_name = ("PASSIVE", "TAKEOFF", "FLYING", "LANDING", "POWEROFF")
+
+FULL_FIFO_BATCHES = 20 # << int(512 / 12)
+
 ####################################################################################################
 #
 #  Adafruit i2c interface enhanced with performance / error handling enhancements
@@ -653,7 +663,7 @@ class MPU6050:
         raw_input("First, put me on a stable surface, and press enter.")
 
         mpu6050.flushFIFO()
-        time.sleep(20 / sampling_rate)
+        time.sleep(FULL_FIFO_BATCHES / sampling_rate)
         nfb = mpu6050.numFIFOBatches()
         qax, qay, qaz, qrx, qry, qrz, dt = mpu6050.readFIFO(nfb)
         mpu6050.setGyroOffsets(qrx, qry, qrz)
@@ -870,7 +880,7 @@ class MPU6050:
             with open('0gOffsets', 'ab') as offs_file:
                 raw_input("Rest me on my props and press enter.")
                 self.flushFIFO()
-                time.sleep(20 / sampling_rate)
+                time.sleep(FULL_FIFO_BATCHES / sampling_rate)
                 fifo_batches = self.numFIFOBatches()
                 ax, ay, az, gx, gy, gz, dt = self.readFIFO(fifo_batches)
                 offs_file.write("%f %f %f\n" % (ax, ay, az))
@@ -1348,6 +1358,7 @@ def CheckCLI(argv):
     cli_gps_control = False
     cli_add_waypoint = False
     cli_clear_waypoints = False
+    cli_rc_control = False
 
     hover_pwm_defaulted = True
 
@@ -1409,7 +1420,7 @@ def CheckCLI(argv):
         # Defaults for yaw rotation rate PIDs
         #-------------------------------------------------------------------------------------------
         cli_yrp_gain = 180.0
-        cli_yri_gain = 0.0
+        cli_yri_gain = 1.8
         cli_yrd_gain = 0.0
 
     elif i_am_zoe:
@@ -1435,22 +1446,22 @@ def CheckCLI(argv):
         #-------------------------------------------------------------------------------------------
         # Defaults for roll angle PIDs
         #-------------------------------------------------------------------------------------------
-        cli_rrp_gain = 20.0
-        cli_rri_gain = 0.2
+        cli_rrp_gain = 18.0
+        cli_rri_gain = 0.18
         cli_rrd_gain = 0.0
 
         #-------------------------------------------------------------------------------------------
         # Defaults for yaw angle PIDs
         #-------------------------------------------------------------------------------------------
         cli_yrp_gain = 40.0
-        cli_yri_gain = 0.0
+        cli_yri_gain = 0.4
         cli_yrd_gain = 0.0
 
     #-----------------------------------------------------------------------------------------------
     # Right, let's get on with reading the command line and checking consistency
     #-----------------------------------------------------------------------------------------------
     try:
-        opts, args = getopt.getopt(argv,'df:gh:y', ['cc', 'tc=', 'awp', 'cwp', 'gps', 'tau=', 'vdp=', 'vdi=', 'vdd=', 'vvp=', 'vvi=', 'vvd=', 'hdp=', 'hdi=', 'hdd=', 'hvp=', 'hvi=', 'hvd=', 'prp=', 'pri=', 'prd=', 'rrp=', 'rri=', 'rrd=', 'tau=', 'yrp=', 'yri=', 'yrd='])
+        opts, args = getopt.getopt(argv,'df:gh:y', ['cc', 'rc', 'tc=', 'awp', 'cwp', 'gps', 'tau=', 'vdp=', 'vdi=', 'vdd=', 'vvp=', 'vvi=', 'vvd=', 'hdp=', 'hdi=', 'hdd=', 'hvp=', 'hvi=', 'hvd=', 'prp=', 'pri=', 'prd=', 'rrp=', 'rri=', 'rrd=', 'tau=', 'yrp=', 'yri=', 'yrd='])
     except getopt.GetoptError:
         logger.critical('Must specify one of -f, --gps, --awp, --cwp, --cc or --tc')
         logger.critical('  sudo python ./qc.py')
@@ -1460,6 +1471,7 @@ def CheckCLI(argv):
         logger.critical('  -g calibrate X, Y axis 0g - futile, ignore!')
         logger.critical('  -y use yaw to control the direction of flight')
         logger.critical('  --cc   check or calibrate compass')
+        logger.critical('  --rc   use the human control RC')
         logger.critical('  --tc   select which testcase to run')
         logger.critical('  --awp  add GPS waypoint to flight plan')
         logger.critical('  --cwp  clear GPS waypoints from flight plan')
@@ -1510,6 +1522,10 @@ def CheckCLI(argv):
         elif opt in '--cc':
             cli_cc_compass = True
 
+        elif opt in '--rc':
+            cli_fly = True
+            cli_rc_control = True
+
         elif opt in '--tc':
             cli_test_case = int(arg)
 
@@ -1520,8 +1536,8 @@ def CheckCLI(argv):
             cli_clear_waypoints = True
 
         elif opt in '--gps':
-            cli_gps_control = True
             cli_fly = True
+            cli_gps_control = True
             cli_fp_filename = "GPSWaypoints.csv"
 
         elif opt in '--tau':
@@ -1597,7 +1613,9 @@ def CheckCLI(argv):
         raise ValueError('Hover speed must lie in the following range: 1000 <= hover pwm < 2000')
 
     elif cli_test_case == 0 and cli_fly:
-        if cli_file_control and not os.path.isfile(cli_fp_filename):
+        if not (cli_file_control ^ cli_gps_control ^ cli_rc_control):
+            raise ValueError('Only one of file, gps or rc control may be chosen')
+        elif cli_file_control and not os.path.isfile(cli_fp_filename):
             raise ValueError('The flight plan file "%s" does not exist.' % cli_fp_filename)
         elif cli_gps_control and not os.path.isfile("GPSWaypoints.csv"):
             raise ValueError('We need at least the target waypoint set for GPS flight control')
@@ -1622,7 +1640,7 @@ def CheckCLI(argv):
     elif cli_test_case == 1 and hover_pwm_defaulted:
         raise ValueError('You must choose a specific hover speed (-h) for test case 1 - try 1150')
 
-    return cli_fp_filename, cli_calibrate_0g, cli_cc_compass, cli_yaw_control, cli_file_control, cli_gps_control, cli_add_waypoint, cli_clear_waypoints, cli_hover_pwm, cli_vdp_gain, cli_vdi_gain, cli_vdd_gain, cli_vvp_gain, cli_vvi_gain, cli_vvd_gain, cli_hdp_gain, cli_hdi_gain, cli_hdd_gain, cli_hvp_gain, cli_hvi_gain, cli_hvd_gain, cli_prp_gain, cli_pri_gain, cli_prd_gain, cli_rrp_gain, cli_rri_gain, cli_rrd_gain, cli_yrp_gain, cli_yri_gain, cli_yrd_gain, cli_test_case, cli_tau, cli_diagnostics
+    return cli_fp_filename, cli_calibrate_0g, cli_cc_compass, cli_yaw_control, cli_file_control, cli_rc_control, cli_gps_control, cli_add_waypoint, cli_clear_waypoints, cli_hover_pwm, cli_vdp_gain, cli_vdi_gain, cli_vdd_gain, cli_vvp_gain, cli_vvi_gain, cli_vvd_gain, cli_hdp_gain, cli_hdi_gain, cli_hdd_gain, cli_hvp_gain, cli_hvi_gain, cli_hvd_gain, cli_prp_gain, cli_pri_gain, cli_prd_gain, cli_rrp_gain, cli_rri_gain, cli_rrd_gain, cli_yrp_gain, cli_yri_gain, cli_yrd_gain, cli_test_case, cli_tau, cli_diagnostics
 
 
 ####################################################################################################
@@ -1646,7 +1664,7 @@ class FlightPlan():
 
         self.fp = []
         self.fp.append((0.0, 0.0, 0.0, 0.0, "RTF"))
-        self.fp.append((0.0, 0.0, 0.5, 3.0, "TAKEOFF"))
+        self.fp.append((0.0, 0.0, 0.33, 3.0, "TAKEOFF"))
         self.fp.append((0.0, 0.0, 0.0, 0.5, "HOVER"))
 
         self.edx_target = 0.0
@@ -1668,7 +1686,7 @@ class FlightPlan():
                                 float(fp_row[self.PERIOD]),
                                 fp_row[self.NAME].strip()))
             else:
-                self.fp.append((0.0, 0.0, -0.25, 6.0, "LANDING"))
+                self.fp.append((0.0, 0.0, -0.25, 4.0, "LANDING"))
                 self.fp.append((0.0, 0.0, 0.0, 0.0, "STOP"))
                 return
 
@@ -1846,11 +1864,9 @@ def SweepProcessor():
 
                         #---------------------------------------------------------------------------
                         # Have we already sent a critical proximity?  No? Then all's clear.
-                        #---------------------------------------------------------------------------
-                        '''
                         #AB! This could be improved; there's only a need to send a NONE if the previous loop
                         #AB! sent a WARNING previously, and no WARNING this time round.
-                        '''
+                        #---------------------------------------------------------------------------
                         elif not sent_critical:
                             output = struct.pack(pack_format, False, False, 0.0, 0.0)
                             log_string = "PROXIMITY: %fm @ %f degrees.\n" % (distance, degrees % 360)
@@ -2447,8 +2463,8 @@ def AutopilotProcessor(sweep_installed, gps_installed, compass_installed, initia
                                 #-------------------------------------------------------------------
                                 # Set up the object avoidance flight plan - slow down to 0.3m/s
                                 #-------------------------------------------------------------------
-                                oax_target = 0.3 * math.cos(oa_direction)    
-                                oay_target = 0.3 * math.sin(oa_direction)    
+                                oax_target = 0.3 * math.cos(oa_direction)
+                                oay_target = 0.3 * math.sin(oa_direction)
                                 oa_fp = [(oax_target, oay_target, 0.0, 10.0, "AVOID @ %d DEGREES" % int(math.degrees(sweep_direction))),]
 
                                 #==================================================================#
@@ -2972,6 +2988,58 @@ class AutopilotManager():
 
 ####################################################################################################
 #
+# Remote control manager
+#
+####################################################################################################
+class RCManager():
+
+    def __init__(self):
+        self.server = socket.socket()
+        addr = "192.168.42.1"
+        port = 31415
+        self.server.bind((addr, port))
+        self.server.listen(5)
+
+    def connect(self):
+        pack_format = "=?"
+        self.connection, addr = self.server.accept()
+        connection_fd = self.connection.fileno()
+        output = struct.pack(pack_format, True)
+        self.connection.send(output)
+        return connection_fd
+
+    def send(self):
+        pass
+
+    def read(self):
+        unpack_format = "=ffffb?"
+        unpack_size = struct.calcsize(unpack_format)
+
+        raw = self.connection.recv(unpack_size)
+        assert (len(raw) == unpack_size), "Invalid data"
+
+        #-----------------------------------------------------------------------------------
+        # React on the action
+        #-----------------------------------------------------------------------------------
+        formatted = struct.unpack(unpack_format, raw)
+        assert (len(formatted) == 6), "Bad formatted size"
+
+        evz_target = formatted[0]
+        yr_target = formatted[1]
+        evx_target = formatted[2]
+        evy_target = formatted[3]
+        state = formatted[4]
+        beep = formatted[5]
+
+        return evx_target, evy_target, evz_target, yr_target, state, beep
+
+    def close(self):
+        self.server.shutdown(socket.SHUT_RDWR)
+        self.server.close()
+
+
+####################################################################################################
+#
 # Video at 10fps. Each frame is 320 x 320 pixels.  Each macro-block is 16 x 16 pixels.  Due to an
 # extra column of macro-blocks (dunno why), that means each frame breaks down into 21 columns by
 # 20 rows = 420 macro-blocks, each of which is 4 bytes - 1 signed byte X, 1 signed byte Y and 2 unsigned
@@ -3269,6 +3337,7 @@ class Quadcopter:
             self.gps_installed = False
             self.sweep_installed = False
             self.autopilot_installed = False
+            self.rc_installed = True
         elif i_am_hermione:
             self.compass_installed = True
             self.camera_installed = True
@@ -3276,15 +3345,19 @@ class Quadcopter:
             self.gps_installed = True
             self.sweep_installed = True
             self.autopilot_installed = True
+            self.rc_installed = False
             X8 = True
         elif i_am_penelope:
             self.compass_installed = True
             self.camera_installed = True
-            self.gll_installed = False
-            self.gps_installed = True
+            self.gll_installed = True
+            self.gps_installed = False
             self.sweep_installed = False
-            self.autopilot_installed = True
+            self.autopilot_installed = False
+            self.rc_installed = True
             X8 = True
+
+        assert (self.autopilot_installed ^ self.rc_installed), "Autopilot or RC but not both nor neither"
 
         #-------------------------------------------------------------------------------------------
         # Lock code permanently in memory - no swapping to disk
@@ -3472,8 +3545,8 @@ class Quadcopter:
                 sampling_rate = 500  # Hz
                 motion_rate = 75     # Hz
             elif i_am_zoe:
-                sampling_rate = 500  # Hz
-                motion_rate = 75     # Hz
+                sampling_rate = 333  # Hz
+                motion_rate = 66     # Hz
         else:
             sampling_rate = 500      # Hz - thought 1000 should work, but not
             motion_rate = 75         # Hz - thought 100 should work, but not
@@ -3533,33 +3606,55 @@ class Quadcopter:
             gll = GLL(rate = fusion_rate)
 
     #===============================================================================================
-    # Keyboard input between flights for CLI update etc
+    # Keyboard / command line input between flights for CLI update etc
     #===============================================================================================
     def go(self):
-        while True:
+        cli_argv = ""
+
+        if self.rc_installed:
+            self.rc = RCManager()
+            self.rc_status = RC_PASSIVE
+
+        shutdown = False
+        while not shutdown:
+
             print "============================================"
             cli_argv = raw_input("Wassup? ")
             print "============================================"
             if len(cli_argv) != 0 and (cli_argv == 'exit' or cli_argv == 'quit'):
-                self.shutdown()
+                shutdown = True
+                continue
 
             self.argv = sys.argv[1:] + cli_argv.split()
-            self.fly()
+
+            #---------------------------------------------------------------------------------------
+            # Check the command line for calibration or flight parameters
+            #---------------------------------------------------------------------------------------
+            print "Just checking a few details.  Gimme a few seconds..."
+            try:
+                cli_parms = CheckCLI(self.argv)
+            except ValueError, err:
+                print "Command line error: %s" % err
+                continue
+
+            self.fly(cli_parms)
+
+        else:
+            if self.rc_installed:
+                self.rc.close()
+            self.shutdown()
 
     #===============================================================================================
     # Per-flight configuration, initializations and flight control itself
     #===============================================================================================
-    def fly(self):
+    def fly(self, cli_parms):
+
+        print "Just checking a few details.  Gimme a few seconds..."
+
         #-------------------------------------------------------------------------------------------
         # Check the command line for calibration or flight parameters
         #-------------------------------------------------------------------------------------------
-        print "Just checking a few details.  Gimme a few seconds..."
-        try:
-            fp_filename, calibrate_0g, cc_compass, yaw_control, file_control, gps_control, add_waypoint, clear_waypoints, hover_pwm, vdp_gain, vdi_gain, vdd_gain, vvp_gain, vvi_gain, vvd_gain, hdp_gain, hdi_gain, hdd_gain, hvp_gain, hvi_gain, hvd_gain, prp_gain, pri_gain, prd_gain, rrp_gain, rri_gain, rrd_gain, yrp_gain, yri_gain, yrd_gain, test_case, atau, diagnostics = CheckCLI(self.argv)
-        except ValueError, err:
-            print "Command line error: %s" % err
-            return
-
+        fp_filename, calibrate_0g, cc_compass, yaw_control, file_control, rc_control, gps_control, add_waypoint, clear_waypoints, hover_pwm, vdp_gain, vdi_gain, vdd_gain, vvp_gain, vvi_gain, vvd_gain, hdp_gain, hdi_gain, hdd_gain, hvp_gain, hvi_gain, hvd_gain, prp_gain, pri_gain, prd_gain, rrp_gain, rri_gain, rrd_gain, yrp_gain, yri_gain, yrd_gain, test_case, atau, diagnostics = cli_parms
         logger.warning("fp_filename = %s, calibrate_0g = %d, check / calibrate compass = %s, yaw_control = %s, file_control = %s, gps_control = %s, add_waypoint = %s, clear_waypoints = %s, hover_pwm = %d, vdp_gain = %f, vdi_gain = %f, vdd_gain= %f, vvp_gain = %f, vvi_gain = %f, vvd_gain= %f, hdp_gain = %f, hdi_gain = %f, hdd_gain = %f, hvp_gain = %f, hvi_gain = %f, hvd_gain = %f, prp_gain = %f, pri_gain = %f, prd_gain = %f, rrp_gain = %f, rri_gain = %f, rrd_gain = %f, yrp_gain = %f, yri_gain = %f, yrd_gain = %f, test_case = %d, atau = %f, diagnostics = %s",
                 fp_filename, calibrate_0g, cc_compass, yaw_control, file_control, gps_control, add_waypoint, clear_waypoints, hover_pwm, vdp_gain, vdi_gain, vdd_gain, vvp_gain, vvi_gain, vvd_gain, hdp_gain, hdi_gain, hdd_gain, hvp_gain, hvi_gain, hvd_gain, prp_gain, pri_gain, prd_gain, rrp_gain, rri_gain, rrd_gain, yrp_gain, yri_gain, yrd_gain, test_case, atau, diagnostics)
 
@@ -3587,6 +3682,13 @@ class Quadcopter:
                 return
         elif cc_compass:
             print "Compass not installed, check / calibration not possible."
+            return
+
+        #-------------------------------------------------------------------------------------------
+        # Sanity check that if we are using RC flight plan, then RC needs to have been installed.
+        #-------------------------------------------------------------------------------------------
+        if rc_control and not self.rc_installed:
+            print "Can't do RC processing without RC installed!"
             return
 
         #-------------------------------------------------------------------------------------------
@@ -3659,6 +3761,8 @@ class Quadcopter:
         evx_target = 0.0
         evy_target = 0.0
         evz_target = 0.0
+
+        eyr_target = 0.0
 
         ya_target = 0.0
 
@@ -3894,7 +3998,7 @@ class Quadcopter:
             if i_am_hermione or i_am_penelope:
                 frame_width = 320    # an exact multiple of mb_size (320 = well lit gravel 1msquare.csv passed)
             elif i_am_zoe:
-                frame_width = 240    # an exact multiple of mb_size
+                frame_width = 160    # an exact multiple of mb_size
             frame_height = frame_width
             frame_rate = fusion_rate
 
@@ -3959,7 +4063,7 @@ class Quadcopter:
         #--------------------------------------------------------------------------------------------
         # Last chance to change your mind about the flight if all's ok so far
         #--------------------------------------------------------------------------------------------
-        rtg = raw_input("Ready when you are!")
+        rtg = "" if rc_control else raw_input("Ready when you are!")
         if len(rtg) != 0:
             print "OK, I'll skip at the next possible opportunity."
             self.keep_looping = False
@@ -3992,7 +4096,7 @@ class Quadcopter:
         loops = 0
 
         while sigma_dt < 1.0: # seconds
-            time.sleep(20 / sampling_rate) # 20 < 0.5 x FIFO_SIZE
+            time.sleep(FULL_FIFO_BATCHES / sampling_rate)
 
             nfb = mpu6050.numFIFOBatches()
             ax, ay, az, rx, ry, rz, dt = mpu6050.readFIFO(nfb)
@@ -4123,17 +4227,18 @@ class Quadcopter:
         ######################################### GO GO GO! ########################################
 
         if self.autopilot_installed:
-            #-------------------------------------------------------------------------------------------
-            # Start the autopilot - use compass angle plus magnetic declination angle (1o 5') to pass through the
-            # take-off orientation angle wrt GPS / true north
-            #-------------------------------------------------------------------------------------------
+            #---------------------------------------------------------------------------------------
+            # Start the autopilot - use compass angle plus magnetic declination angle (1o 5') to pass
+            # through the take-off orientation angle wrt GPS / true north
+            #---------------------------------------------------------------------------------------
             app = AutopilotManager(self.sweep_installed, self.gps_installed, self.compass_installed, initial_orientation, file_control, gps_control, fp_filename)
             autopilot_fifo = app.autopilot_fifo
             autopilot_fd = autopilot_fifo.fileno()
-        else:
-            #-------------------------------------------------------------------------------------------
+
+        elif not rc_control:
+            #---------------------------------------------------------------------------------------
             # Register the flight plan with the authorities
-            #-------------------------------------------------------------------------------------------
+            #---------------------------------------------------------------------------------------
             try:
                 fp = FlightPlan(self, fp_filename)
             except Exception, err:
@@ -4213,10 +4318,17 @@ class Quadcopter:
                 vmp = None
 
         #-------------------------------------------------------------------------------------------
-        # Only once the video FIFO has been flushed can the autopilot fd be added to the polling.
+        # Only once the video FIFO has been flushed can the autopilot / rc fd be added to the polling.
         #-------------------------------------------------------------------------------------------
         if self.autopilot_installed:
             poll.register(autopilot_fd, select.POLLIN | select.POLLPRI)
+
+        elif rc_control:
+            #---------------------------------------------------------------------------------------
+            # Accept RC connection and send go-go-go
+            #---------------------------------------------------------------------------------------
+            rc_fd = self.rc.connect()
+            poll.register(rc_fd, select.POLLIN | select.POLLPRI)
 
         #-------------------------------------------------------------------------------------------
         # Flush the IMU FIFO and enable the FIFO overflow interrupt
@@ -4314,6 +4426,20 @@ class Quadcopter:
                                 GPIO.output(GPIO_BUZZER, GPIO.HIGH)
                         elif GPIO.input(GPIO_BUZZER):
                             GPIO.output(GPIO_BUZZER, GPIO.LOW)
+
+                    if rc_control and fd == rc_fd:
+                        #---------------------------------------------------------------------------
+                        # Get the WiFi targets etc e.g. make sure keep_looping from rc is triggered
+                        # somehow between flights
+                        #---------------------------------------------------------------------------
+                        evx_target, evy_target, evz_target, eyr_target, rc_status, rc_beep = self.rc.read()
+
+                        if rc_status != self.rc_status:
+                            self.rc_status = rc_status
+                            logger.critical(rc_status_name[rc_status])
+
+                        if self.rc_status == RC_POWEROFF:
+                            self.keep_looping = False
 
                     if self.camera_installed and fd == video_fd and vmp == None and not video_update:
                         #---------------------------------------------------------------------------
@@ -4682,7 +4808,7 @@ class Quadcopter:
             ########################### VELOCITY / DISTANCE PID TARGETS ############################
 
 
-            if not self.autopilot_installed:
+            if not self.autopilot_installed and not rc_control:
                 #-----------------------------------------------------------------------------------
                 # Check the flight plan for earth frame velocity and distance targets.
                 #-----------------------------------------------------------------------------------
@@ -4699,6 +4825,14 @@ class Quadcopter:
             edy_target += evy_target * motion_dt
             edz_target += evz_target * motion_dt
             qdx_target, qdy_target, qdz_target = RotateVector(edx_target, edy_target, edz_target, pa, ra, ya)
+
+            #---------------------------------------------------------------------------------------
+            # If using RC, take yaw from the rotation and integrated rotation rate target to yaw angle target
+            #---------------------------------------------------------------------------------------
+            if rc_control:
+                qdx_target, qdy_target, qdz_target = RotateVector(edx_target, edy_target, edz_target, pa, ra, 0.0)
+                ya_target += eyr_target * motion_dt
+                ya_target = (ya_target + math.pi) % (2 * math.pi) - math.pi
 
 
             ########### QUAD FRAME VELOCITY / DISTANCE / ANGLE / ROTATION PID PROCESSING ###########
@@ -4951,7 +5085,6 @@ class Quadcopter:
                                "%f, %f, %f, %f, %d, " % (math.degrees(aya), math.degrees(ya_target), math.degrees(qrz), math.degrees(yr_target), yr_out) +
                                pwm_data)
 
-
         logger.critical("Flight time %f", time.time() - start_flight)
         logger.critical("Sampling loops: %d", sampling_loops)
         logger.critical("Motion processing loops: %d", motion_loops)
@@ -4979,7 +5112,7 @@ class Quadcopter:
         # Stop the PWM and FIFO overflow interrupt between flights
         #-------------------------------------------------------------------------------------------
         for esc in self.esc_list:
-            esc.set(0)
+            esc.set(stfu_pwm)
         mpu6050.disableFIFOOverflowISR()
 
         #-------------------------------------------------------------------------------------------
@@ -4995,6 +5128,9 @@ class Quadcopter:
 
         if self.camera_installed:
             poll.unregister(video_fd)
+
+        if rc_control:
+            poll.unregister(rc_fd)
 
         #-------------------------------------------------------------------------------------------
         # Stop the Camera process if it's still running, and clean up the FIFO.
