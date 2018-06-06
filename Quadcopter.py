@@ -933,10 +933,10 @@ class MPU6050:
 
 ####################################################################################################
 #
-#  Garmin LIDAR-Lite V3 range finder
+#  Garmin LiDAR-Lite v3 range finder
 #
 ####################################################################################################
-class GLL:
+class GLLv3:
     i2c = None
 
     __GLL_ACQ_COMMAND       = 0x00
@@ -1012,9 +1012,68 @@ class GLL:
 
         if distance == 1:
             raise ValueError("GLL out of range")
-        distance /= 100
-        velocity = -self.i2c.readS8(self.__GLL_VELOCITY) * self.rate / 100
-        return distance, velocity
+
+        return distance / 100
+
+
+####################################################################################################
+#
+#  Garmin LiDAR-Lite v3HP range finder
+#
+####################################################################################################
+class GLLv3HP:
+    i2c = None
+
+    __GLL_ACQ_COMMAND       = 0x00
+    __GLL_STATUS            = 0x01
+    __GLL_SIG_COUNT_VAL     = 0x02
+    __GLL_ACQ_CONFIG_REG    = 0x04
+    __GLL_LEGACY_RESET_EN   = 0x06
+    __GLL_SIGNAL_STRENGTH   = 0x0E
+    __GLL_FULL_DELAY_HIGH   = 0x0F
+    __GLL_FULL_DELAY_LOW    = 0x10
+    __GLL_REF_COUNT_VAL     = 0x12
+    __GLL_UNIT_ID_HIGH      = 0x16
+    __GLL_UNIT_ID_LOW       = 0x17
+    __GLL_I2C_ID_HIGHT      = 0x18
+    __GLL_I2C_ID_LOW        = 0x19
+    __GLL_I2C_SEC_ADDR      = 0x1A
+    __GLL_THRESHOLD_BYPASS  = 0x1C
+    __GLL_I2C_CONFIG        = 0x1E
+    __GLL_PEAK_STACK_HIGH   = 0x26
+    __GLL_PEAK_STACK_LOW    = 0x27
+    __GLL_COMMAND           = 0x40
+    __GLL_HEALTHY_STATUS    = 0x48
+    __GLL_CORR_DATA         = 0x52
+    __GLL_CORR_DATA_SIGN    = 0x53
+    __GLL_POWER_CONTROL     = 0x65
+
+    def __init__(self, address=0x62):
+        self.i2c = I2C(address)
+
+        self.i2c.write8(self.__GLL_SIG_COUNT_VAL, 0x80)
+        self.i2c.write8(self.__GLL_ACQ_CONFIG_REG, 0x08)
+        self.i2c.write8(self.__GLL_REF_COUNT_VAL, 0x05)
+        self.i2c.write8(self.__GLL_THRESHOLD_BYPASS, 0x00)
+
+    def read(self):
+        acquired = False
+
+        # Trigger acquisition
+        self.i2c.write8(self.__GLL_ACQ_COMMAND, 0x01)
+
+        # Poll acquired?
+        while not acquired:
+            acquired = not (self.i2c.readU8(self.__GLL_STATUS) & 0x01)
+        else:    
+            dist1 = self.i2c.readU8(self.__GLL_FULL_DELAY_HIGH)
+            dist2 = self.i2c.readU8(self.__GLL_FULL_DELAY_LOW)
+            distance = (dist1 << 8) + dist2
+
+            if distance == 10:
+                raise ValueError("GLL out of range")
+
+        return distance / 100
 
 
 ####################################################################################################
@@ -1664,7 +1723,7 @@ class FlightPlan():
 
         self.fp = []
         self.fp.append((0.0, 0.0, 0.0, 0.0, "RTF"))
-        self.fp.append((0.0, 0.0, 0.33, 3.0, "TAKEOFF"))
+        self.fp.append((0.0, 0.0, 0.5, 3.0, "TAKEOFF"))
         self.fp.append((0.0, 0.0, 0.0, 0.5, "HOVER"))
 
         self.edx_target = 0.0
@@ -1686,7 +1745,7 @@ class FlightPlan():
                                 float(fp_row[self.PERIOD]),
                                 fp_row[self.NAME].strip()))
             else:
-                self.fp.append((0.0, 0.0, -0.25, 4.0, "LANDING"))
+                self.fp.append((0.0, 0.0, -0.25, 6.0, "LANDING"))
                 self.fp.append((0.0, 0.0, 0.0, 0.0, "STOP"))
                 return
 
@@ -3331,7 +3390,7 @@ class Quadcopter:
         #-------------------------------------------------------------------------------------------
         X8 = False
         if i_am_zoe:
-            self.compass_installed = True
+            self.compass_installed = False
             self.camera_installed = True
             self.gll_installed = True
             self.gps_installed = False
@@ -3351,10 +3410,10 @@ class Quadcopter:
             self.compass_installed = True
             self.camera_installed = True
             self.gll_installed = True
-            self.gps_installed = False
+            self.gps_installed = True
             self.sweep_installed = False
-            self.autopilot_installed = False
-            self.rc_installed = True
+            self.autopilot_installed = True
+            self.rc_installed = False
             X8 = True
 
         assert (self.autopilot_installed ^ self.rc_installed), "Autopilot or RC but not both nor neither"
@@ -3603,7 +3662,10 @@ class Quadcopter:
         #-------------------------------------------------------------------------------------------
         if self.gll_installed:
             global gll
-            gll = GLL(rate = fusion_rate)
+            if i_am_penelope:
+                gll = GLLv3HP()
+            else:
+                gll = GLLv3(rate = fusion_rate)
 
     #===============================================================================================
     # Keyboard / command line input between flights for CLI update etc
@@ -3957,7 +4019,7 @@ class Quadcopter:
             for ii in range(2 * fusion_rate):
                 time.sleep(1 / fusion_rate)
                 try:
-                    g_dist, g_vel = gll.read()
+                    g_dist = gll.read()
                 except ValueError as e:
                     break
                 eftoh += g_dist
@@ -3995,10 +4057,12 @@ class Quadcopter:
             global frame_width
             global frame_height
 
-            if i_am_hermione or i_am_penelope:
-                frame_width = 320    # an exact multiple of mb_size (320 = well lit gravel 1msquare.csv passed)
-            elif i_am_zoe:
-                frame_width = 160    # an exact multiple of mb_size
+            if i_am_penelope:        # RPi 3B+ 
+                frame_width = 400    # an exact multiple of mb_size
+            elif i_am_hermione:      # RPi 3B 
+                frame_width = 320    # an exact multiple of mb_size
+            elif i_am_zoe:           # RPi 0W
+                frame_width = 240    # an exact multiple of mb_size
             frame_height = frame_width
             frame_rate = fusion_rate
 
@@ -4190,6 +4254,7 @@ class Quadcopter:
         mgx = 0.0
         mgy = 0.0
         mgz = 0.0
+        cya = 0.0
         cya_base = 0.0
         initial_orientation = 0.0
 
@@ -4251,14 +4316,15 @@ class Quadcopter:
         start_flight = time.time()
         motion_dt = 0.0
         fusion_dt = 0.0
+        gll_dt = 0.0
         sampling_loops = 0
         motion_loops = 0
         fusion_loops = 0
         gll_loops = 0
-        gll_misses = 0
         video_loops = 0
         autopilot_loops = 0
         gll_dr_interrupts = 0
+        gll_misses = 0
 
         #-------------------------------------------------------------------------------------------
         # Diagnostic log header
@@ -4539,6 +4605,7 @@ class Quadcopter:
             sampling_loops += motion_dt * sampling_rate
             fusion_dt += motion_dt
             vmpt += motion_dt
+            gll_dt += motion_dt
 
 
             ################################## ANGLES PROCESSING ###################################
@@ -4699,7 +4766,7 @@ class Quadcopter:
             if self.gll_installed and video_update:
                 gll_loops += 1
                 try:
-                    g_distance, g_velocity = gll.read()
+                    g_distance = gll.read()
 
                 except ValueError as e:
                     #-------------------------------------------------------------------------------
@@ -4717,8 +4784,9 @@ class Quadcopter:
                     #AB! There is a bug here that's assuming the g_* variable are got successfully
                     #AB! first time round.
                     #-------------------------------------------------------------------------------
+                    evz_fuse = ((g_distance * tilt_ratio - eftoh) - edz_fuse) / gll_dt
                     edz_fuse = g_distance * tilt_ratio - eftoh
-                    evz_fuse = g_velocity * tilt_ratio
+                    gll_dt = 0.0
 
                     #-------------------------------------------------------------------------------
                     # Set the flags for vertical velocity and distance fusion
