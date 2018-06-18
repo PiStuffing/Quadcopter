@@ -23,8 +23,8 @@ Index
 <li>2m_square_fp.csv   - Example flight plan CSV input file to fly a 1m square 1m above the ground</li>
 <li>RPIO.tgz           - clone of RPIO hardware PWM library (search GitHub for original)</li>
 <li>smbus2.zip         - clone of I2C variount required for the RC joysticks (search GitHub for original)</li>
-<li>ZeroSparkfun.zip   - Eagle board + Gerbers for SparkFun MPU-9250 breakout</li>
-<li>A+-X8-Sparkfun.zip - Eagle board + Gerbers for SparkFun MPU-9250 breakout</li>
+<li>RPi0-PCB.brd       - Eagle board for Raspberry Pi 0 Quad</li>
+<li>RPi3-PCB.brd       - Eagle board for Raspberry Pi 3 X8</li>
 <li>IMU_spec.pdf       - Invensense MPU-9250 specifications</li>
 <li>GPS_spec.pdf       - u-blox NEO-M8T specification</li>
 <li>Sweep_spec.pdf     - Scanse Sweep specification</li>
