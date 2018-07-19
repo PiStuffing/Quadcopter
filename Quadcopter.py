@@ -66,94 +66,41 @@ class I2C:
         self.bus = bus
         self.misses = 0
 
-    def reverseByteOrder(self, data):
-        "Reverses the byte order of an int (16-bit) or long (32-bit) value"
-        # Courtesy Vishal Sapre
-        dstr = hex(data)[2:].replace('L','')
-        byteCount = len(dstr[::2])
-        val = 0
-        for i, n in enumerate(range(byteCount)):
-            d = data & 0xFF
-            val |= (d << (8 * (byteCount - i - 1)))
-            data >>= 8
-        return val
-
     def writeByte(self, value):
-        while True:
-            try:
-                self.bus.write_byte(self.address, value)
-                break
-            except IOError, err:
-                self.misses += 1
+        self.bus.write_byte(self.address, value)
 
     def write8(self, reg, value):
-        "Writes an 8-bit value to the specified register/address"
-        while True:
-            try:
-                self.bus.write_byte_data(self.address, reg, value)
-                break
-            except IOError, err:
-                self.misses += 1
+        self.bus.write_byte_data(self.address, reg, value)
 
     def writeList(self, reg, list):
-        "Writes an array of bytes using I2C format"
-        while True:
-            try:
-                self.bus.write_i2c_block_data(self.address, reg, list)
-                break
-            except IOError, err:
-                self.misses += 1
+        self.bus.write_i2c_block_data(self.address, reg, list)
 
     def readU8(self, reg):
-        "Read an unsigned byte from the I2C device"
-        while True:
-            try:
-                result = self.bus.read_byte_data(self.address, reg)
-                return result
-            except IOError, err:
-                self.misses += 1
-
-    def readS8(self, reg):
-        "Reads a signed byte from the I2C device"
-        while True:
-            try:
-                result = self.bus.read_byte_data(self.address, reg)
-                if (result > 127):
-                    return result - 256
-                else:
-                    return result
-            except IOError, err:
-                self.misses += 1
-
-    def readU16(self, reg):
-        "Reads an unsigned 16-bit value from the I2C device"
-        while True:
-            try:
-                hibyte = self.bus.read_byte_data(self.address, reg)
-                result = (hibyte << 8) + self.bus.read_byte_data(self.address, reg+1)
-                return result
-            except IOError, err:
-                self.misses += 1
-
-    def readS16(self, reg):
-        "Reads a signed 16-bit value from the I2C device"
-        while True:
-            try:
-                hibyte = self.bus.read_byte_data(self.address, reg)
-                if (hibyte > 127):
-                    hibyte -= 256
-                result = (hibyte << 8) + self.bus.read_byte_data(self.address, reg+1)
-                return result
-            except IOError, err:
-                self.misses += 1
-
-    def readList(self, reg, length):
-        "Reads a byte array value from the I2C device"
-        result = self.bus.read_i2c_block_data(self.address, reg, length)
+        result = self.bus.read_byte_data(self.address, reg)
         return result
 
-    def getMisses(self):
-        return self.misses
+    def readS8(self, reg):
+        result = self.bus.read_byte_data(self.address, reg)
+        result = result - 256 if result > 127 else result
+        return result
+
+    def readU16(self, reg):
+        hibyte = self.bus.read_byte_data(self.address, reg)
+        result = (hibyte << 8) + self.bus.read_byte_data(self.address, reg+1)
+        return result
+
+    def readS16(self, reg):
+        hibyte = self.bus.read_byte_data(self.address, reg)
+        hibyte = hibyte - 256 if hibyte > 127 else hibyte
+        result = (hibyte << 8) + self.bus.read_byte_data(self.address, reg+1)
+        return result
+
+    def readList(self, reg, length):
+        "Reads a byte array value from the I2C device. The content depends on the device.  The "
+        "FIFO read return sequential values from the same register.  For all other, sequestial"
+        "regester values are returned"
+        result = self.bus.read_i2c_block_data(self.address, reg, length)
+        return result
 
 
 ####################################################################################################
@@ -468,7 +415,6 @@ class MPU6050:
         #-------------------------------------------------------------------------------------------
         fifo_bytes = self.i2c.readU16(self.__MPU6050_RA_FIFO_COUNTH)
         fifo_batches = int(fifo_bytes / 12)  # This rounds down
-
         return fifo_batches
 
     def readFIFO(self, fifo_batches):
@@ -476,22 +422,20 @@ class MPU6050:
         # Read n x 12 bytes of FIFO data averaging, and return the averaged values and inferred time
         # based upon the sampling rate and the number of samples.
         #-------------------------------------------------------------------------------------------
-        ax = 0.0
-        ay = 0.0
-        az = 0.0
-        gx = 0.0
-        gy = 0.0
-        gz = 0.0
+        ax = 0
+        ay = 0
+        az = 0
+        gx = 0
+        gy = 0
+        gz = 0
 
         for ii in range(fifo_batches):
             sensor_data = []
             fifo_batch = self.i2c.readList(self.__MPU6050_RA_FIFO_R_W, 12)
             for jj in range(0, 12, 2):
                 hibyte = fifo_batch[jj]
+                hibyte = hibyte - 256 if hibyte > 127 else hibyte
                 lobyte = fifo_batch[jj + 1]
-                if (hibyte > 127):
-                    hibyte -= 256
-
                 sensor_data.append((hibyte << 8) + lobyte)
 
             ax += sensor_data[0]
@@ -515,14 +459,7 @@ class MPU6050:
             self.min_gz = self.min_gz if sensor_data[5] > self.min_gz else sensor_data[5]
             '''
 
-        ax /= fifo_batches
-        ay /= fifo_batches
-        az /= fifo_batches
-        gx /= fifo_batches
-        gy /= fifo_batches
-        gz /= fifo_batches
-
-        return ax, ay, az, gx, gy, gz, fifo_batches / sampling_rate
+        return ax / fifo_batches, ay / fifo_batches, az / fifo_batches, gx / fifo_batches, gy / fifo_batches, gz / fifo_batches, fifo_batches / sampling_rate
 
     def flushFIFO(self):
         #-------------------------------------------------------------------------------------------
@@ -590,9 +527,7 @@ class MPU6050:
         for ii in range(0, 6, 2):
             lobyte = compass_bytes[ii]
             hibyte = compass_bytes[ii + 1]
-            if (hibyte > 127):
-                hibyte -= 256
-
+            hibyte = hibyte - 256 if hibyte > 127 else hibyte
             compass_data.append((hibyte << 8) + lobyte)
 
         [mgx, mgy, mgz] = compass_data
@@ -987,7 +922,7 @@ class GLLv3:
 
         #-------------------------------------------------------------------------------------------
         # Include receiver bias correction 0x04
-        #AB! 0x04 | 0x01 should cause (falling edge?) GPIO_GLL_DR_INTERRUPT.  Can GPIO handle this?
+        #AB: 0x04 | 0x01 should cause (falling edge?) GPIO_GLL_DR_INTERRUPT.  Test GPIO handle this?
         #-------------------------------------------------------------------------------------------
         self.i2c.write8(self.__GLL_ACQ_COMMAND, 0x04 | 0x01)
 
@@ -1006,10 +941,7 @@ class GLLv3:
         # Reading the list from 0x8F seems to get the previous reading, probably cached for the sake
         # of calculating the velocity next time round.
         #-------------------------------------------------------------------------------------------
-        dist1 = self.i2c.readU8(self.__GLL_FULL_DELAY_HIGH)
-        dist2 = self.i2c.readU8(self.__GLL_FULL_DELAY_LOW)
-        distance = (dist1 << 8) + dist2
-
+        distance = self.i2c.readU16(self.__GLL_FULL_DELAY_HIGH)
         if distance == 1:
             raise ValueError("GLL out of range")
 
@@ -1065,12 +997,9 @@ class GLLv3HP:
         # Poll acquired?
         while not acquired:
             acquired = not (self.i2c.readU8(self.__GLL_STATUS) & 0x01)
-        else:    
-            dist1 = self.i2c.readU8(self.__GLL_FULL_DELAY_HIGH)
-            dist2 = self.i2c.readU8(self.__GLL_FULL_DELAY_LOW)
-            distance = (dist1 << 8) + dist2
-
-            if distance == 10:
+        else:
+            distance = self.i2c.readU16(self.__GLL_FULL_DELAY_HIGH)
+            if distance == 0:
                 raise ValueError("GLL out of range")
 
         return distance / 100
@@ -1374,7 +1303,10 @@ def GPIOInit(FIFOOverflowISR):
     #AB: GPIO.setup(GPIO_POWER_BROWN_OUT_INTERRUPT, GPIO.IN, GPIO.PUD_OFF)
     #AB: GPIO.add_event_detect(GPIO_POWER_BROWN_OUT_INTERRUPT, GPIO.FALLING)
 
+    '''
     #AB! Regardless of the (UP, OFF, DOWN) * (RISING, FALLING), none of these option raise a DR interrupt
+    #AB! in v3. v3HP seems to work at a glance.
+    '''
     GPIO.setup(GPIO_GLL_DR_INTERRUPT, GPIO.IN, GPIO.PUD_DOWN)
     GPIO.add_event_detect(GPIO_GLL_DR_INTERRUPT, GPIO.FALLING)
 
@@ -1923,8 +1855,8 @@ def SweepProcessor():
 
                         #---------------------------------------------------------------------------
                         # Have we already sent a critical proximity?  No? Then all's clear.
-                        #AB! This could be improved; there's only a need to send a NONE if the previous loop
-                        #AB! sent a WARNING previously, and no WARNING this time round.
+                        #AB: This could be improved; there's only a need to send a NONE if the previous loop
+                        #AB: sent a WARNING previously, and no WARNING this time round.
                         #---------------------------------------------------------------------------
                         elif not sent_critical:
                             output = struct.pack(pack_format, False, False, 0.0, 0.0)
@@ -2314,9 +2246,6 @@ def AutopilotProcessor(sweep_installed, gps_installed, compass_installed, initia
     # takeoff needs to clear the ground promply avoiding obstacles;
     # landing needs to hit the ground gently to avoid impact damage.
     #-----------------------------------------------------------------------------------------------
-    '''
-    #AB! Do we know we're Zoe camera resolution?  If so, rise to 1m not 1.5
-    '''
     takeoff_fp.append((0.0, 0.0, 0.0, 0.0, "RTF"))
     takeoff_fp.append((0.0, 0.0, 0.5, 3.0, "TAKEOFF"))
     takeoff_fp.append((0.0, 0.0, 0.0, 0.5, "HOVER"))
@@ -3113,13 +3042,16 @@ def VideoProcessor(frame_width, frame_height, frame_rate):
         #-------------------------------------------------------------------------------------------
         # 50% contrast seems to work well - completely arbitrary.
         #-------------------------------------------------------------------------------------------
-        camera.contrast = 50
+        camera.contrast = 42
 
         with io.open("/dev/shm/video_stream", mode = "wb", buffering = 0) as vofi:
-            camera.start_recording('/dev/null', format='h264', motion_output=vofi, quality=23)
+            camera.start_recording('/dev/null', format='h264', motion_output=vofi, quality=42)
             try:
                 while True:
-                    camera.wait_recording(1.0)
+                    '''
+                    #AB! Can I up this to say 10s and still cancel it immediately with a Ctrl-C?
+                    '''
+                    camera.wait_recording(10)
             except KeyboardInterrupt:
                 pass
             finally:
@@ -3459,7 +3391,7 @@ class Quadcopter:
         #-------------------------------------------------------------------------------------------
         # First log, whose flying and under what configuration
         #-------------------------------------------------------------------------------------------
-        logger.warning("%s is flying.", "Zoe" if i_am_zoe else "Hermione")
+        logger.warning("%s is flying.", "Zoe" if i_am_zoe else "Hermione" if i_am_hermione else "Penelope")
 
         #-------------------------------------------------------------------------------------------
         # Set the BCM pin assigned to the FIFO overflow
@@ -3494,7 +3426,7 @@ class Quadcopter:
         signal.signal(signal.SIGINT, self.shutdownSignalHandler)
 
         #-------------------------------------------------------------------------------------------
-        # Zoe is a Quad, Hermione is an X8
+        # Zoe is a Quad, Hermione and Penelope are X8
         #-------------------------------------------------------------------------------------------
         ESC_BCM_FLT = 0
         ESC_BCM_FRT = 0
@@ -3559,7 +3491,7 @@ class Quadcopter:
                      'back right underside']
 
         #-------------------------------------------------------------------------------------------
-        # Prime the ESCs to stop their annoying beeping!  All 4 of P, C, H & Z  use the T-motor ESCs
+        # Prime the ESCs to stop their annoying beeping!  All 3 of P, H & Z use the T-motor ESCs
         # with the same ESC firmware so have the same spin_pwm
         #-------------------------------------------------------------------------------------------
         global stfu_pwm
@@ -3662,7 +3594,7 @@ class Quadcopter:
         #-------------------------------------------------------------------------------------------
         if self.gll_installed:
             global gll
-            if i_am_penelope:
+            if i_am_penelope or i_am_zoe:
                 gll = GLLv3HP()
             else:
                 gll = GLLv3(rate = fusion_rate)
@@ -4025,16 +3957,16 @@ class Quadcopter:
                 eftoh += g_dist
             eftoh /= (2 * fusion_rate)
 
-        '''
-        #AB! Garmin is pants at take-off, especially with Zoe whose GLL nearly touches the floor.
-        '''
+        #-------------------------------------------------------------------------------------------
+        # The distance from grounds to the GLLv3 can't meansure this accurate; hard code them.
+        #-------------------------------------------------------------------------------------------
         if i_am_zoe:
             eftoh = 0.04 # meters
         elif i_am_penelope:
-            eftoh = 0.10 # meters
+            eftoh = 0.13 # meters
         else:
             assert i_am_hermione, "Hey, I'm not supported"
-            eftoh = 0.23 # meters: 0.23m long legs, 0.17m medium
+            eftoh = 0.23 # meters
 
         #-------------------------------------------------------------------------------------------
         # Set up the GLL base values for the very rate case that g_* don't get set up (as they always
@@ -4057,9 +3989,9 @@ class Quadcopter:
             global frame_width
             global frame_height
 
-            if i_am_penelope:        # RPi 3B+ 
+            if i_am_penelope:        # RPi 3B+
                 frame_width = 400    # an exact multiple of mb_size
-            elif i_am_hermione:      # RPi 3B 
+            elif i_am_hermione:      # RPi 3B
                 frame_width = 320    # an exact multiple of mb_size
             elif i_am_zoe:           # RPi 0W
                 frame_width = 240    # an exact multiple of mb_size
@@ -4317,6 +4249,7 @@ class Quadcopter:
         motion_dt = 0.0
         fusion_dt = 0.0
         gll_dt = 0.0
+        rc_dt = 0.0
         sampling_loops = 0
         motion_loops = 0
         fusion_loops = 0
@@ -4507,6 +4440,8 @@ class Quadcopter:
                         if self.rc_status == RC_POWEROFF:
                             self.keep_looping = False
 
+                        rc_dt = 0.0
+
                     if self.camera_installed and fd == video_fd and vmp == None and not video_update:
                         #---------------------------------------------------------------------------
                         # Run the Video Motion Processor.
@@ -4606,7 +4541,17 @@ class Quadcopter:
             fusion_dt += motion_dt
             vmpt += motion_dt
             gll_dt += motion_dt
+            rc_dt += motion_dt
 
+            #---------------------------------------------------------------------------------------
+            # If we're on RC control, and we've heard nothing from it in 0.5 seconds, abort.  The RC
+            # sends requests at 5Hz.
+            #AB: Ideally this should be an ordered landing by permanently override the flights
+            #AB: but this'll do for now.
+            #---------------------------------------------------------------------------------------
+            if rc_control and rc_dt > 0.5: # seconds
+                logger.critical("ABORT: RC lost")
+                break
 
             ################################## ANGLES PROCESSING ###################################
 
@@ -4752,16 +4697,14 @@ class Quadcopter:
             # Acquire vertical distance (height) first, prioritizing the best sensors,
             # Garmin LiDAR-Lite first.  We need get this every motion processing loop so it's always
             # up to date at the point we use it for camera lateral tracking.
-            #
-            #
             #=======================================================================================
             '''
             #AB! Can we get a data ready interrupt working here?  Failed so far.  Better if so to reduce
             #AB! motion processing and as a result, perhaps be Zoe working.  Until that's available,
             #AB! then next best option is to only read the GLL when we have video data worth processing.
-            '''
             if GPIO.event_detected(GPIO_GLL_DR_INTERRUPT):
                 gll_dr_interrupts += 1
+            '''
 
             if self.gll_installed and video_update:
                 gll_loops += 1
@@ -4781,8 +4724,6 @@ class Quadcopter:
                     #-------------------------------------------------------------------------------
                     # We may have a new value, or may be using the previous one.  This is the best
                     # compromise that then is used below for video lateral tracking.
-                    #AB! There is a bug here that's assuming the g_* variable are got successfully
-                    #AB! first time round.
                     #-------------------------------------------------------------------------------
                     evz_fuse = ((g_distance * tilt_ratio - eftoh) - edz_fuse) / gll_dt
                     edz_fuse = g_distance * tilt_ratio - eftoh
@@ -5104,6 +5045,10 @@ class Quadcopter:
                 # Apply the blended outputs to the esc PWM signal
                 #-----------------------------------------------------------------------------------
                 esc.set(int(round(pulse_width)))
+                '''
+                esc.set(stfu_pwm)
+                '''
+
 
             #---------------------------------------------------------------------------------------
             # Diagnostic log - every motion loop
