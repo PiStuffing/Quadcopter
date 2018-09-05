@@ -43,14 +43,14 @@ MIN_SATS = 7
 EARTH_RADIUS = 6371000 # meters
 GRAV_ACCEL = 9.80665   # meters per second per second
 
-
 RC_PASSIVE = 0
 RC_TAKEOFF = 1
 RC_FLYING = 2
 RC_LANDING = 3
-RC_POWEROFF = 4
+RC_DONE = 4
+RC_ABORT = 5
 
-rc_status_name = ("PASSIVE", "TAKEOFF", "FLYING", "LANDING", "POWEROFF")
+rc_status_name = ["PASSIVE", "TAKEOFF", "FLYING", "LANDING", "DONE", "ABORT"]
 
 FULL_FIFO_BATCHES = 20 # << int(512 / 12)
 
@@ -445,10 +445,10 @@ class MPU6050:
             gy += sensor_data[4]
             gz += sensor_data[5]
 
+            '''
             self.max_az = self.max_az if sensor_data[2] < self.max_az else sensor_data[2]
             self.min_az = self.min_az if sensor_data[2] > self.min_az else sensor_data[2]
 
-            '''
             self.max_gx = self.max_gx if sensor_data[3] < self.max_gx else sensor_data[3]
             self.min_gx = self.min_gx if sensor_data[3] > self.min_gx else sensor_data[3]
 
@@ -1418,6 +1418,11 @@ def CheckCLI(argv):
         #-------------------------------------------------------------------------------------------
         # Zoe's PID configuration due to using her ESCs / motors / props
         #-------------------------------------------------------------------------------------------
+
+        '''
+        #-------------------------------------------------------------------------------------------
+        # T-motor antiGravity 9030 CF white props
+        #-------------------------------------------------------------------------------------------
         cli_hover_pwm = 1300
 
         #-------------------------------------------------------------------------------------------
@@ -1430,15 +1435,15 @@ def CheckCLI(argv):
         #-------------------------------------------------------------------------------------------
         # Defaults for pitch angle PIDs
         #-------------------------------------------------------------------------------------------
-        cli_prp_gain = 20.0
-        cli_pri_gain = 0.2
+        cli_prp_gain = 16.0
+        cli_pri_gain = 0.16
         cli_prd_gain = 0.0
 
         #-------------------------------------------------------------------------------------------
         # Defaults for roll angle PIDs
         #-------------------------------------------------------------------------------------------
-        cli_rrp_gain = 18.0
-        cli_rri_gain = 0.18
+        cli_rrp_gain = 15.0
+        cli_rri_gain = 0.15
         cli_rrd_gain = 0.0
 
         #-------------------------------------------------------------------------------------------
@@ -1446,6 +1451,39 @@ def CheckCLI(argv):
         #-------------------------------------------------------------------------------------------
         cli_yrp_gain = 40.0
         cli_yri_gain = 0.4
+        cli_yrd_gain = 0.0
+        '''
+        #-------------------------------------------------------------------------------------------
+        # GEMFAN 6040BC 3 Blade Nylon white props
+        #-------------------------------------------------------------------------------------------
+        cli_hover_pwm = 1450
+
+        #-------------------------------------------------------------------------------------------
+        # Defaults for vertical velocity PIDs
+        #-------------------------------------------------------------------------------------------
+        cli_vvp_gain = 300.0
+        cli_vvi_gain = 150.0
+        cli_vvd_gain = 0.0
+
+        #-------------------------------------------------------------------------------------------
+        # Defaults for pitch angle PIDs
+        #-------------------------------------------------------------------------------------------
+        cli_prp_gain = 35.0
+        cli_pri_gain = 0.35
+        cli_prd_gain = 0.0
+
+        #-------------------------------------------------------------------------------------------
+        # Defaults for roll angle PIDs
+        #-------------------------------------------------------------------------------------------
+        cli_rrp_gain = 25.0
+        cli_rri_gain = 0.25
+        cli_rrd_gain = 0.0
+
+        #-------------------------------------------------------------------------------------------
+        # Defaults for yaw angle PIDs
+        #-------------------------------------------------------------------------------------------
+        cli_yrp_gain = 80.0
+        cli_yri_gain = 0.8
         cli_yrd_gain = 0.0
 
     #-----------------------------------------------------------------------------------------------
@@ -1469,11 +1507,11 @@ def CheckCLI(argv):
         logger.critical('  --gps  use the GPS waypoint flight plan')
         logger.critical('  --tau  set the angle CF -3dB point - default: %fs', cli_tau)
         logger.critical('  --vdp  set vertical distance PID P gain - default: %f', cli_vvp_gain)
-        logger.critical('  --vdi  set vertical distance PID P gain - default: %f', cli_vvi_gain)
-        logger.critical('  --vdd  set vertical distance PID P gain - default: %f', cli_vvd_gain)
+        logger.critical('  --vdi  set vertical distance PID I gain - default: %f', cli_vvi_gain)
+        logger.critical('  --vdd  set vertical distance PID D gain - default: %f', cli_vvd_gain)
         logger.critical('  --vvp  set vertical speed PID P gain - default: %f', cli_vvp_gain)
-        logger.critical('  --vvi  set vertical speed PID P gain - default: %f', cli_vvi_gain)
-        logger.critical('  --vvd  set vertical speed PID P gain - default: %f', cli_vvd_gain)
+        logger.critical('  --vvi  set vertical speed PID I gain - default: %f', cli_vvi_gain)
+        logger.critical('  --vvd  set vertical speed PID D gain - default: %f', cli_vvd_gain)
         logger.critical('  --hdp  set horizontal speed PID P gain - default: %f', cli_hdp_gain)
         logger.critical('  --hdi  set horizontal speed PID I gain - default: %f', cli_hdi_gain)
         logger.critical('  --hdd  set horizontal speed PID D gain - default: %f', cli_hdd_gain)
@@ -1655,7 +1693,7 @@ class FlightPlan():
 
         self.fp = []
         self.fp.append((0.0, 0.0, 0.0, 0.0, "RTF"))
-        self.fp.append((0.0, 0.0, 0.5, 3.0, "TAKEOFF"))
+        self.fp.append((0.0, 0.0, 0.5, 2.0, "TAKEOFF"))
         self.fp.append((0.0, 0.0, 0.0, 0.5, "HOVER"))
 
         self.edx_target = 0.0
@@ -1677,7 +1715,7 @@ class FlightPlan():
                                 float(fp_row[self.PERIOD]),
                                 fp_row[self.NAME].strip()))
             else:
-                self.fp.append((0.0, 0.0, -0.25, 6.0, "LANDING"))
+                self.fp.append((0.0, 0.0, -0.25, 5.0, "LANDING"))
                 self.fp.append((0.0, 0.0, 0.0, 0.0, "STOP"))
                 return
 
@@ -2708,7 +2746,7 @@ def AutopilotProcessor(sweep_installed, gps_installed, compass_installed, initia
                         break
                 else:
                     #-------------------------------------------------------------------------------
-                    # We're fallen out the end of one flight plan - change active_fp to the next in
+                    # We've fallen out the end of one flight plan - change active_fp to the next in
                     # line.
                     #-------------------------------------------------------------------------------
                     if active_fp == takeoff_fp:
@@ -2986,7 +3024,7 @@ class RCManager():
         addr = "192.168.42.1"
         port = 31415
         self.server.bind((addr, port))
-        self.server.listen(5)
+        self.server.listen(0)
 
     def connect(self):
         pack_format = "=?"
@@ -3021,6 +3059,12 @@ class RCManager():
 
         return evx_target, evy_target, evz_target, yr_target, state, beep
 
+    def disconnect(self):
+        pack_format = "=?"
+        output = struct.pack(pack_format, False)
+        self.connection.send(output)
+        self.connection.close()
+
     def close(self):
         self.server.shutdown(socket.SHUT_RDWR)
         self.server.close()
@@ -3048,9 +3092,6 @@ def VideoProcessor(frame_width, frame_height, frame_rate):
             camera.start_recording('/dev/null', format='h264', motion_output=vofi, quality=42)
             try:
                 while True:
-                    '''
-                    #AB! Can I up this to say 10s and still cancel it immediately with a Ctrl-C?
-                    '''
                     camera.wait_recording(10)
             except KeyboardInterrupt:
                 pass
@@ -3350,6 +3391,10 @@ class Quadcopter:
 
         assert (self.autopilot_installed ^ self.rc_installed), "Autopilot or RC but not both nor neither"
 
+        '''
+        #AB! Swap the above to autonomous_control and manual_control
+        '''
+
         #-------------------------------------------------------------------------------------------
         # Lock code permanently in memory - no swapping to disk
         #-------------------------------------------------------------------------------------------
@@ -3607,7 +3652,7 @@ class Quadcopter:
 
         if self.rc_installed:
             self.rc = RCManager()
-            self.rc_status = RC_PASSIVE
+            self.rc_status = RC_DONE
 
         shutdown = False
         while not shutdown:
@@ -3958,7 +4003,7 @@ class Quadcopter:
             eftoh /= (2 * fusion_rate)
 
         #-------------------------------------------------------------------------------------------
-        # The distance from grounds to the GLLv3 can't meansure this accurate; hard code them.
+        # The distance from grounds to the GLLv3 can't be measured accurately; hard code them.
         #-------------------------------------------------------------------------------------------
         if i_am_zoe:
             eftoh = 0.04 # meters
@@ -3990,11 +4035,11 @@ class Quadcopter:
             global frame_height
 
             if i_am_penelope:        # RPi 3B+
-                frame_width = 400    # an exact multiple of mb_size
+                frame_width = 400    # an exact multiple of mb_size (16)
             elif i_am_hermione:      # RPi 3B
-                frame_width = 320    # an exact multiple of mb_size
+                frame_width = 320    # an exact multiple of mb_size (16)
             elif i_am_zoe:           # RPi 0W
-                frame_width = 240    # an exact multiple of mb_size
+                frame_width = 160    # an exact multiple of mb_size (16)
             frame_height = frame_width
             frame_rate = fusion_rate
 
@@ -4437,7 +4482,7 @@ class Quadcopter:
                             self.rc_status = rc_status
                             logger.critical(rc_status_name[rc_status])
 
-                        if self.rc_status == RC_POWEROFF:
+                        if self.rc_status == RC_DONE or self.rc_status == RC_ABORT:
                             self.keep_looping = False
 
                         rc_dt = 0.0
@@ -4539,9 +4584,9 @@ class Quadcopter:
             motion_loops += 1
             sampling_loops += motion_dt * sampling_rate
             fusion_dt += motion_dt
-            vmpt += motion_dt
             gll_dt += motion_dt
             rc_dt += motion_dt
+            vmpt += motion_dt
 
             #---------------------------------------------------------------------------------------
             # If we're on RC control, and we've heard nothing from it in 0.5 seconds, abort.  The RC
@@ -4603,16 +4648,14 @@ class Quadcopter:
 
             #---------------------------------------------------------------------------------------
             # Low pass butterworth filter to account for long term drift to the IMU due to temperature
-            # change - this happens significantly in a cold environment.
+            # drift - this happens significantly in a cold environment.
             # Note the butterworth can be disabled by deleting one surrounding pair of '''.
             #---------------------------------------------------------------------------------------
-            '''
             '''
             eax, eay, eaz = RotateVector(qax, qay, qaz, -pa, -ra, -ya)
             egx = bfx.filter(eax)
             egy = bfy.filter(eay)
             egz = bfz.filter(eaz)
-            '''
             '''
             qgx, qgy, qgz = RotateVector(egx, egy, egz, pa, ra, ya)
 
@@ -5007,30 +5050,21 @@ class Quadcopter:
                 # meaning PID output is positive, meaning this needs to be added to the left blades
                 # and subtracted from the right.
                 #-----------------------------------------------------------------------------------
-                if esc.motor_location & self.MOTOR_LOCATION_RIGHT:
-                    pulse_width -= rr_out
-                else:
-                    pulse_width += rr_out
+                pulse_width -= (rr_out if esc.motor_location & self.MOTOR_LOCATION_RIGHT else -rr_out)
 
                 #-----------------------------------------------------------------------------------
                 # For a forward downwards pitch, the y gyro goes positive The PID error is negative as a
                 # result, meaning PID output is negative, meaning this needs to be subtracted from the
                 # front blades and added to the back.
                 #-----------------------------------------------------------------------------------
-                if esc.motor_location & self.MOTOR_LOCATION_BACK:
-                    pulse_width += pr_out
-                else:
-                    pulse_width -= pr_out
+                pulse_width += (pr_out if esc.motor_location & self.MOTOR_LOCATION_BACK else -pr_out)
 
                 #-----------------------------------------------------------------------------------
                 # For CW yaw, the z gyro goes negative, so the PID error is postitive, meaning PID
                 # output is positive, meaning this need to be added to the ACW (FL and BR) blades and
                 # subtracted from the CW (FR & BL) blades.
                 #-----------------------------------------------------------------------------------
-                if esc.motor_rotation == self.MOTOR_ROTATION_CW:
-                    pulse_width += yr_out
-                else:
-                    pulse_width -= yr_out
+                pulse_width += (yr_out if esc.motor_rotation == self.MOTOR_ROTATION_CW else -yr_out)
 
                 #-----------------------------------------------------------------------------------
                 # Ensure the props don't stop in poorly tuned scenarios.
@@ -5144,6 +5178,7 @@ class Quadcopter:
 
         if rc_control:
             poll.unregister(rc_fd)
+            self.rc.disconnect()
 
         #-------------------------------------------------------------------------------------------
         # Stop the Camera process if it's still running, and clean up the FIFO.
