@@ -1482,8 +1482,8 @@ def CheckCLI(argv):
         #-------------------------------------------------------------------------------------------
         # Defaults for yaw angle PIDs
         #-------------------------------------------------------------------------------------------
-        cli_yrp_gain = 80.0
-        cli_yri_gain = 0.8
+        cli_yrp_gain = 50.0
+        cli_yri_gain = 5.0
         cli_yrd_gain = 0.0
 
     #-----------------------------------------------------------------------------------------------
@@ -1715,7 +1715,7 @@ class FlightPlan():
                                 float(fp_row[self.PERIOD]),
                                 fp_row[self.NAME].strip()))
             else:
-                self.fp.append((0.0, 0.0, -0.25, 5.0, "LANDING"))
+                self.fp.append((0.0, 0.0, -0.25, 5.0, "LANDING")) # Extended landed for safety
                 self.fp.append((0.0, 0.0, 0.0, 0.0, "STOP"))
                 return
 
@@ -2288,7 +2288,7 @@ def AutopilotProcessor(sweep_installed, gps_installed, compass_installed, initia
     takeoff_fp.append((0.0, 0.0, 0.5, 3.0, "TAKEOFF"))
     takeoff_fp.append((0.0, 0.0, 0.0, 0.5, "HOVER"))
 
-    landing_fp.append((0.0, 0.0, -0.25, 6.0, "LANDING"))
+    landing_fp.append((0.0, 0.0, -0.25, 7.0, "LANDING")) #  # Extended landed for safety
 
     #-----------------------------------------------------------------------------------------------
     # Build the initial post-takeoff GPS flight plan as a minutes hover pending GPS satellite acquisition.
@@ -3023,8 +3023,9 @@ class RCManager():
         self.server = socket.socket()
         addr = "192.168.42.1"
         port = 31415
+        self.server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         self.server.bind((addr, port))
-        self.server.listen(0)
+        self.server.listen(5)
 
     def connect(self):
         pack_format = "=?"
@@ -3359,6 +3360,8 @@ class Quadcopter:
         #    processes within that single CPU.  She runs one and a bit process - the bit is the Video
         #    processing which is mostly handled by the GPU.
         # -  Hermione is a B3 with 4 CPUs.  As a result she can run the four and a bit process required
+        #    for all features to be enabled.
+        # -  Penelope is a B3+ with 4 CPUs.  As a result she can run the four and a bit process required
         #    for all features to be enabled.
         #-------------------------------------------------------------------------------------------
         X8 = False
@@ -4008,7 +4011,7 @@ class Quadcopter:
         if i_am_zoe:
             eftoh = 0.04 # meters
         elif i_am_penelope:
-            eftoh = 0.13 # meters
+            eftoh = 0.18 # meters
         else:
             assert i_am_hermione, "Hey, I'm not supported"
             eftoh = 0.23 # meters
@@ -4039,7 +4042,7 @@ class Quadcopter:
             elif i_am_hermione:      # RPi 3B
                 frame_width = 320    # an exact multiple of mb_size (16)
             elif i_am_zoe:           # RPi 0W
-                frame_width = 160    # an exact multiple of mb_size (16)
+                frame_width = 240    # an exact multiple of mb_size (16)
             frame_height = frame_width
             frame_rate = fusion_rate
 
